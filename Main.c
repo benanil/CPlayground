@@ -49,91 +49,6 @@ typedef struct PlatformContext_
 
 static PlatformContext PlatformCtx = {0};
 
-// Convert Sokol mouse button to our button flags
-static uint32_t sokol_mouse_button_to_flag(sapp_mousebutton btn) {
-    switch (btn) {
-        case SAPP_MOUSEBUTTON_LEFT:   return MouseButton_Left;
-        case SAPP_MOUSEBUTTON_RIGHT:  return MouseButton_Right;
-        case SAPP_MOUSEBUTTON_MIDDLE: return MouseButton_Middle;
-        default: return 0;
-    }
-}
-
-// Convert Sokol keycode to Windows virtual key code (approximate mapping)
-static int sokol_keycode_to_vk(sapp_keycode key) {
-    switch (key) {
-        case SAPP_KEYCODE_A: return 'A';
-        case SAPP_KEYCODE_B: return 'B';
-        case SAPP_KEYCODE_C: return 'C';
-        case SAPP_KEYCODE_D: return 'D';
-        case SAPP_KEYCODE_E: return 'E';
-        case SAPP_KEYCODE_F: return 'F';
-        case SAPP_KEYCODE_G: return 'G';
-        case SAPP_KEYCODE_H: return 'H';
-        case SAPP_KEYCODE_I: return 'I';
-        case SAPP_KEYCODE_J: return 'J';
-        case SAPP_KEYCODE_K: return 'K';
-        case SAPP_KEYCODE_L: return 'L';
-        case SAPP_KEYCODE_M: return 'M';
-        case SAPP_KEYCODE_N: return 'N';
-        case SAPP_KEYCODE_O: return 'O';
-        case SAPP_KEYCODE_P: return 'P';
-        case SAPP_KEYCODE_Q: return 'Q';
-        case SAPP_KEYCODE_R: return 'R';
-        case SAPP_KEYCODE_S: return 'S';
-        case SAPP_KEYCODE_T: return 'T';
-        case SAPP_KEYCODE_U: return 'U';
-        case SAPP_KEYCODE_V: return 'V';
-        case SAPP_KEYCODE_W: return 'W';
-        case SAPP_KEYCODE_X: return 'X';
-        case SAPP_KEYCODE_Y: return 'Y';
-        case SAPP_KEYCODE_Z: return 'Z';
-        
-        case SAPP_KEYCODE_0: return '0';
-        case SAPP_KEYCODE_1: return '1';
-        case SAPP_KEYCODE_2: return '2';
-        case SAPP_KEYCODE_3: return '3';
-        case SAPP_KEYCODE_4: return '4';
-        case SAPP_KEYCODE_5: return '5';
-        case SAPP_KEYCODE_6: return '6';
-        case SAPP_KEYCODE_7: return '7';
-        case SAPP_KEYCODE_8: return '8';
-        case SAPP_KEYCODE_9: return '9';
-        
-        case SAPP_KEYCODE_SPACE:     return 32;  // VK_SPACE
-        case SAPP_KEYCODE_ENTER:     return 13;  // VK_RETURN
-        case SAPP_KEYCODE_ESCAPE:    return 27;  // VK_ESCAPE
-        case SAPP_KEYCODE_BACKSPACE: return 8;   // VK_BACK
-        case SAPP_KEYCODE_TAB:       return 9;   // VK_TAB
-        case SAPP_KEYCODE_LEFT_SHIFT:   return 16; // VK_SHIFT
-        case SAPP_KEYCODE_RIGHT_SHIFT:  return 16; // VK_SHIFT
-        case SAPP_KEYCODE_LEFT_CONTROL: return 17; // VK_CONTROL
-        case SAPP_KEYCODE_RIGHT_CONTROL: return 17; // VK_CONTROL
-        case SAPP_KEYCODE_LEFT_ALT:     return 18; // VK_MENU
-        case SAPP_KEYCODE_RIGHT_ALT:    return 18; // VK_MENU
-        
-        case SAPP_KEYCODE_F1:  return 112; // VK_F1
-        case SAPP_KEYCODE_F2:  return 113; // VK_F2
-        case SAPP_KEYCODE_F3:  return 114; // VK_F3
-        case SAPP_KEYCODE_F4:  return 115; // VK_F4
-        case SAPP_KEYCODE_F5:  return 116; // VK_F5
-        case SAPP_KEYCODE_F6:  return 117; // VK_F6
-        case SAPP_KEYCODE_F7:  return 118; // VK_F7
-        case SAPP_KEYCODE_F8:  return 119; // VK_F8
-        case SAPP_KEYCODE_F9:  return 120; // VK_F9
-        case SAPP_KEYCODE_F10: return 121; // VK_F10
-        case SAPP_KEYCODE_F11: return 122; // VK_F11
-        case SAPP_KEYCODE_F12: return 123; // VK_F12
-        
-        case SAPP_KEYCODE_UP:    return 38; // VK_UP
-        case SAPP_KEYCODE_DOWN:  return 40; // VK_DOWN
-        case SAPP_KEYCODE_LEFT:  return 37; // VK_LEFT
-        case SAPP_KEYCODE_RIGHT: return 39; // VK_RIGHT
-        
-        default: return 0;
-    }
-}
-
 // Sokol event callback
 void sokol_event_callback(const sapp_event* event) 
 {
@@ -147,12 +62,12 @@ void sokol_event_callback(const sapp_event* event)
             break;
             
         case SAPP_EVENTTYPE_MOUSE_DOWN: {
-            uint32_t button_flag = sokol_mouse_button_to_flag(event->mouse_button);
+            uint32_t button_flag = 1 << (event->mouse_button);
             PlatformCtx.MouseDown |= button_flag;
             break;
         }
         case SAPP_EVENTTYPE_MOUSE_UP: {
-            uint32_t button_flag = sokol_mouse_button_to_flag(event->mouse_button);
+            uint32_t button_flag = 1 << (event->mouse_button);
             
             // Handle double click detection for left button
             if (button_flag == MouseButton_Left) {
@@ -167,14 +82,14 @@ void sokol_event_callback(const sapp_event* event)
             break;
         }
         case SAPP_EVENTTYPE_KEY_DOWN: {
-            int vk_code = sokol_keycode_to_vk(event->key_code);
+            int vk_code = event->key_code;
             if (vk_code > 0 && vk_code < 128) {
                 BitSet128_Set(&PlatformCtx.DownKeys, vk_code);
             }
             break;
         }
         case SAPP_EVENTTYPE_KEY_UP: {
-            int vk_code = sokol_keycode_to_vk(event->key_code);
+            int vk_code = event->key_code;
             if (vk_code > 0 && vk_code < 128) {
                 BitSet128_Clear(&PlatformCtx.DownKeys, vk_code);
             }
