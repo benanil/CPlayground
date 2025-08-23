@@ -145,7 +145,7 @@ purefn Matrix4 MatrixFromScalePtr(float* vec3)
     return MatrixFromScale(vec3[0], vec3[1], vec3[2]);
 }
     
-purefn Matrix4 MatrixFromScaleSingle(float scale)
+purefn Matrix4 MatrixFromScalef(float scale)
 {
     return MatrixFromScale(scale, scale, scale);
 }
@@ -338,7 +338,7 @@ inline Matrix4 VECTORCALL Matrix4Inverse(Matrix4 mat)
 }
 #endif
 
-purefn Matrix4 VECTORCALL Matrix4Multiply(Matrix4 in1, Matrix4 in2)
+purefn Matrix4 VECTORCALL Matrix4Multiply(Matrix4 in2, Matrix4 in1)
 {
     Vector4x32f m0;
     m0 = VecMul(in1.r[0], VecSplatX(in2.r[0]));

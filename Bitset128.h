@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include "Common.h"
 
 /*********************************************************************************
     *    Description:                                                               *
@@ -19,18 +20,15 @@ typedef struct BitSet128_ {
 
 // Construction and initialization
 static inline BitSet128 BitSet128_Zero(void) {
-    BitSet128 bs = {{0, 0}};
-    return bs;
+    return (BitSet128){{0, 0}};
 }
 
 static inline BitSet128 BitSet128_Ones(void) {
-    BitSet128 bs = {{UINT64_MAX, UINT64_MAX}};
-    return bs;
+    return (BitSet128){{UINT64_MAX, UINT64_MAX}};
 }
 
 static inline BitSet128 BitSet128_FromU64(uint64_t low, uint64_t high) {
-    BitSet128 bs = {{low, high}};
-    return bs;
+    return (BitSet128){{low, high}};
 }
 
 // Bit manipulation
@@ -67,23 +65,23 @@ static inline bool BitSet128_Test(const BitSet128* bs, unsigned int index) {
 
 // Set operations
 static inline BitSet128 BitSet128_And(BitSet128 a, BitSet128 b) {
-    BitSet128 result = {{a.bits[0] & b.bits[0], a.bits[1] & b.bits[1]}};
-    return result;
+    return (BitSet128){{a.bits[0] & b.bits[0], a.bits[1] & b.bits[1]}};
+}
+
+static inline BitSet128 BitSet128_AndNot(BitSet128 a, BitSet128 b) {
+    return (BitSet128){{a.bits[0] & ~b.bits[0], a.bits[1] & ~b.bits[1]}};
 }
 
 static inline BitSet128 BitSet128_Or(BitSet128 a, BitSet128 b) {
-    BitSet128 result = {{a.bits[0] | b.bits[0], a.bits[1] | b.bits[1]}};
-    return result;
+    return (BitSet128){{a.bits[0] | b.bits[0], a.bits[1] | b.bits[1]}};
 }
 
 static inline BitSet128 BitSet128_Xor(BitSet128 a, BitSet128 b) {
-    BitSet128 result = {{a.bits[0] ^ b.bits[0], a.bits[1] ^ b.bits[1]}};
-    return result;
+    return (BitSet128){{a.bits[0] ^ b.bits[0], a.bits[1] ^ b.bits[1]}};
 }
 
 static inline BitSet128 BitSet128_Not(BitSet128 a) {
-    BitSet128 result = {{~a.bits[0], ~a.bits[1]}};
-    return result;
+    return (BitSet128){{~a.bits[0], ~a.bits[1]}};
 }
 
 // In-place operations
@@ -123,56 +121,14 @@ static inline bool BitSet128_IsOnes(BitSet128 a) {
 // Utility functions
 static inline unsigned int BitSet128_PopCount(BitSet128 a) {
     // Count set bits using builtin popcount if available
-    #if defined(__GNUC__) || defined(__clang__)
-    return __builtin_popcountll(a.bits[0]) + __builtin_popcountll(a.bits[1]);
-    #else
-    // Fallback implementation
-    unsigned int count = 0;
-    uint64_t x = a.bits[0];
-    while (x) {
-        count++;
-        x &= x - 1;  // Clear lowest set bit
-    }
-    x = a.bits[1];
-    while (x) {
-        count++;
-        x &= x - 1;
-    }
-    return count;
-    #endif
+    return PopCount64(a.bits[0]) + PopCount64(a.bits[1]);
 }
 
 static inline unsigned int BitSet128_FindFirstSet(BitSet128 a) {
     if (a.bits[0] != 0) {
-        #if defined(__GNUC__) || defined(__clang__)
-        return __builtin_ctzll(a.bits[0]);
-        #else
-        // Fallback implementation
-        unsigned int pos = 0;
-        uint64_t x = a.bits[0];
-        if ((x & 0xFFFFFFFF) == 0) { pos += 32; x >>= 32; }
-        if ((x & 0xFFFF) == 0) { pos += 16; x >>= 16; }
-        if ((x & 0xFF) == 0) { pos += 8; x >>= 8; }
-        if ((x & 0xF) == 0) { pos += 4; x >>= 4; }
-        if ((x & 0x3) == 0) { pos += 2; x >>= 2; }
-        if ((x & 0x1) == 0) { pos += 1; }
-        return pos;
-        #endif
+        return LeadingZeroCount64(a.bits[0]);
     } else if (a.bits[1] != 0) {
-        #if defined(__GNUC__) || defined(__clang__)
-        return 64 + __builtin_ctzll(a.bits[1]);
-        #else
-        // Fallback implementation for high word
-        unsigned int pos = 64;
-        uint64_t x = a.bits[1];
-        if ((x & 0xFFFFFFFF) == 0) { pos += 32; x >>= 32; }
-        if ((x & 0xFFFF) == 0) { pos += 16; x >>= 16; }
-        if ((x & 0xFF) == 0) { pos += 8; x >>= 8; }
-        if ((x & 0xF) == 0) { pos += 4; x >>= 4; }
-        if ((x & 0x3) == 0) { pos += 2; x >>= 2; }
-        if ((x & 0x1) == 0) { pos += 1; }
-        return pos;
-        #endif
+        return 64 + LeadingZeroCount64(a.bits[1]);
     }
     return 128; // No bits set
 }

@@ -77,7 +77,7 @@ inline RayV ScreenPointToRay(Camera* camera, Vec2f pos)
     return ray;
 }
 
-purefn void CameraInit(Camera* camera)
+inline void CameraInit(Camera* camera)
 {
     Camera_CalculateLook(camera);
     Camera_RecalculateView(camera);
@@ -101,8 +101,8 @@ inline void InfiniteMouse(Vec2f point)
 
 inline void CameraUpdate(Camera* camera, float dt)
 {
-    bool pressing = IsRightMouseDown();
-    float speed = dt * (1.0f + is_key_down(SAPP_KEYCODE_LEFT_SHIFT) * 2.0f) * 5.0f;
+    bool pressing = GetMouseDown(MouseButton_Right);
+    float speed = dt * (1.0f + GetKeyDown(SAPP_KEYCODE_LEFT_SHIFT) * 2.0f) * 5.0f;
 
     if (!pressing) { camera->wasPressing = false; return; }
         
@@ -133,12 +133,12 @@ inline void CameraUpdate(Camera* camera, float dt)
     camera->mouseOld = mousePos;
     camera->wasPressing = true;
 
-    if (is_key_down(SAPP_KEYCODE_D)) camera->position = Vec3Add(camera->position, Vec3MulF(camera->Right, camera->speed));
-    if (is_key_down(SAPP_KEYCODE_A)) camera->position = Vec3Sub(camera->position, Vec3MulF(camera->Right, camera->speed));
-    if (is_key_down(SAPP_KEYCODE_W)) camera->position = Vec3Add(camera->position, Vec3MulF(camera->Front, camera->speed));
-    if (is_key_down(SAPP_KEYCODE_S)) camera->position = Vec3Sub(camera->position, Vec3MulF(camera->Front, camera->speed));
-    if (is_key_down(SAPP_KEYCODE_E)) camera->position = Vec3Add(camera->position, Vec3MulF(camera->Up, camera->speed));
-    if (is_key_down(SAPP_KEYCODE_Q)) camera->position = Vec3Sub(camera->position, Vec3MulF(camera->Up, camera->speed));
+    if (GetKeyDown(SAPP_KEYCODE_D)) camera->position = Vec3Add(camera->position, Vec3MulF(camera->Right, camera->speed));
+    if (GetKeyDown(SAPP_KEYCODE_A)) camera->position = Vec3Sub(camera->position, Vec3MulF(camera->Right, camera->speed));
+    if (GetKeyDown(SAPP_KEYCODE_W)) camera->position = Vec3Add(camera->position, Vec3MulF(camera->Front, camera->speed));
+    if (GetKeyDown(SAPP_KEYCODE_S)) camera->position = Vec3Sub(camera->position, Vec3MulF(camera->Front, camera->speed));
+    if (GetKeyDown(SAPP_KEYCODE_E)) camera->position = Vec3Add(camera->position, Vec3MulF(camera->Up, camera->speed));
+    if (GetKeyDown(SAPP_KEYCODE_Q)) camera->position = Vec3Sub(camera->position, Vec3MulF(camera->Up, camera->speed));
 
     InfiniteMouse(mousePos);
     Camera_RecalculateView(camera);

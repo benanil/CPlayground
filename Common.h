@@ -447,7 +447,7 @@ purefn int CalculateArrayGrowth(int _size)
 }
 
 
-#if (defined(__GNUC__) || defined(__clang__)) ||  (defined(_MSC_VER) && (AX_CPP_VERSION >= AX_CPP17))
+#if (defined(__GNUC__) || defined(__clang__))
     #define StringLength(s) (int)__builtin_strlen(s)
 #else
     typedef unsigned long long unsignedLongLong;

@@ -25,7 +25,7 @@ typedef struct Ray_ {
 } Ray;
 
 
-// VECTOR3
+// VECTOR32
 purefn Vec3f Vec3Add(Vec3f a, Vec3f b) { return (Vec3f){a.x + b.x, a.y + b.y, a.z + b.z}; }
 purefn Vec3f Vec3Mul(Vec3f a, Vec3f b) { return (Vec3f){a.x * b.x, a.y * b.y, a.z * b.z}; }
 purefn Vec3f Vec3Div(Vec3f a, Vec3f b) { return (Vec3f){a.x / b.x, a.y / b.y, a.z / b.z}; }

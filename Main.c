@@ -1,5 +1,4 @@
 
-#define HANDMADE_MATH_IMPLEMENTATION
 #define SOKOL_APP_IMPL
 #define SOKOL_GFX_IMPL
 #define SOKOL_LOG_IMPL
@@ -7,11 +6,15 @@
 #define SOKOL_D3D11
 #define SOKOL_TIME_IMPL
 
-#include "sokol/sokol_gfx.h"
-#include "sokol/sokol_app.h"
-#include "sokol/sokol_log.h"
-#include "sokol/sokol_glue.h"
-#include "sokol/sokol_time.h"
+#define STB_IMAGE_IMPLEMENTATION
+
+#include "Extern/sokol/sokol_gfx.h"
+#include "Extern/sokol/sokol_app.h"
+#include "Extern/sokol/sokol_log.h"
+#include "Extern/sokol/sokol_glue.h"
+#include "Extern/sokol/sokol_time.h"
+
+#include "Extern/stb/stb_image.h"
 
 #include "Math/Matrix.h"
 #include "Camera.h"
@@ -19,145 +22,27 @@
 
 #include "Shaders/Cube.glsl.h"
 
+#include "Platform.c"
+#include "Graphics.c"
+
 static struct {
     float rx, ry;
     sg_pipeline pip;
     sg_bindings bind;
 } state;
 
+typedef struct {
+    float x, y, z;
+    uint32_t color;
+    int16_t u, v;
+} vertex_t;
+
 static Camera camera;
-
-// Platform context structure
-typedef struct PlatformContext_ 
-{
-    // Mouse state
-    float MousePosX, MousePosY;
-    float MouseWheelDelta;
-    uint32_t MouseDown;
-    bool DoubleClicked;
-    float SecondsSinceLastClick;
-    uint64_t LastClickTime;
-    
-    // Window state
-    int WindowWidth, WindowHeight;
-    int WindowPosX, WindowPosY;
-    
-    // Keyboard state
-    BitSet128 DownKeys;
-    
-} PlatformContext;
-
-static PlatformContext PlatformCtx = {0};
-
-// Sokol event callback
-void sokol_event_callback(const sapp_event* event) 
-{
-    switch (event->type) {
-        case SAPP_EVENTTYPE_MOUSE_MOVE:
-            PlatformCtx.MousePosX = event->mouse_x;
-            PlatformCtx.MousePosY = event->mouse_y;
-            break;
-        case SAPP_EVENTTYPE_MOUSE_SCROLL:
-            PlatformCtx.MouseWheelDelta = event->scroll_y;
-            break;
-            
-        case SAPP_EVENTTYPE_MOUSE_DOWN: {
-            uint32_t button_flag = 1 << (event->mouse_button);
-            PlatformCtx.MouseDown |= button_flag;
-            break;
-        }
-        case SAPP_EVENTTYPE_MOUSE_UP: {
-            uint32_t button_flag = 1 << (event->mouse_button);
-            
-            // Handle double click detection for left button
-            if (button_flag == MouseButton_Left) {
-                uint64_t current_time = stm_now();
-                double time_diff = stm_sec(stm_diff(current_time, PlatformCtx.LastClickTime));
-                PlatformCtx.DoubleClicked = (time_diff < 0.4);
-                PlatformCtx.SecondsSinceLastClick = 0.0f;
-                PlatformCtx.LastClickTime = current_time;
-            }
-            
-            PlatformCtx.MouseDown &= ~button_flag;
-            break;
-        }
-        case SAPP_EVENTTYPE_KEY_DOWN: {
-            int vk_code = event->key_code;
-            if (vk_code > 0 && vk_code < 128) {
-                BitSet128_Set(&PlatformCtx.DownKeys, vk_code);
-            }
-            break;
-        }
-        case SAPP_EVENTTYPE_KEY_UP: {
-            int vk_code = event->key_code;
-            if (vk_code > 0 && vk_code < 128) {
-                BitSet128_Clear(&PlatformCtx.DownKeys, vk_code);
-            }
-            break;
-        }
-        case SAPP_EVENTTYPE_QUIT_REQUESTED:
-            sapp_request_quit();
-            break;
-            
-        default:
-            break;
-    }
-}
-
-
-void GetMousePos(float* x, float* y)
-{
-    ASSERT((uint64_t)x & (uint64_t)y); // shouldn't be nullptr
-    POINT point;
-    GetCursorPos(&point);
-    *x = (float)point.x;
-    *y = (float)point.y;
-}
-
-void SetMousePos(float x, float y)
-{
-    SetCursorPos((int)x, (int)y);
-}
-
-void GetMouseWindowPos(float* x, float* y)
-{
-    *x = PlatformCtx.MousePosX; *y = PlatformCtx.MousePosY;
-}
-
-void SetMouseWindowPos(float x, float y)
-{
-    SetMousePos(PlatformCtx.WindowPosX + x, PlatformCtx.WindowPosY + y);
-}
-
-// Update function to handle time-based updates (call this each frame)
-void platform_update(float dt) {
-    PlatformCtx.SecondsSinceLastClick += dt;
-}
-
-// Utility functions to match your original API
-bool is_key_down(int vk_code) {
-    if (vk_code < 0 || vk_code >= 128) return false;
-    return BitSet128_Test(&PlatformCtx.DownKeys, vk_code);
-}
-
-bool is_mouse_button_down(uint32_t button) {
-    return (PlatformCtx.MouseDown & button) != 0;
-}
-
-void wGetMonitorSize(int* width, int* height)
-{
-    *width  = GetSystemMetrics(SM_CXSCREEN);
-    *height = GetSystemMetrics(SM_CYSCREEN);
-}
-
-float get_mouse_x() { return PlatformCtx.MousePosX; }
-float get_mouse_y() { return PlatformCtx.MousePosY; }
-float get_mouse_wheel_delta() { return PlatformCtx.MouseWheelDelta; }
-bool get_double_clicked() { return PlatformCtx.DoubleClicked; }
 
 void init(void) 
 {
     stm_setup();
+    PlatformCtx.StartupTime = stm_now();
     MemsetZero(&camera, sizeof(camera));
     camera.pitch = 0.0f;
     camera.yaw = -9.0f;
@@ -174,38 +59,49 @@ void init(void)
         .logger.func = slog_func,
     });
 
-    /* cube vertex buffer */
-    float vertices[] = {
-        -1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-        1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-        1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-        
-        -1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-        1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-        1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
+    int channels;
+    sg_image_data img_data;
+    sg_image_desc imageDesc = {};
+    unsigned char* pixels = stbi_load("Test.jpg", &imageDesc.width, &imageDesc.height, &channels, 4);
+    imageDesc.num_mipmaps = rGetMipmapImageData(&img_data, pixels, imageDesc.width, imageDesc.height);
+    imageDesc.pixel_format = SG_PIXELFORMAT_RGBA8;
+    imageDesc.data = img_data;
 
-        -1.0, -1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
+    sg_image image = sg_make_image(&imageDesc);
 
-        1.0, -1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0, -1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
+    vertex_t vertices[] = {
+        /* pos                  color       uvs */
+        { -1.0f, -1.0f, -1.0f,  0xFF0000FF,     0,     0 },
+        {  1.0f, -1.0f, -1.0f,  0xFF0000FF, 32767,     0 },
+        {  1.0f,  1.0f, -1.0f,  0xFF0000FF, 32767, 32767 },
+        { -1.0f,  1.0f, -1.0f,  0xFF0000FF,     0, 32767 },
 
-        -1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-        1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-        1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-        
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
-        -1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-        1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-        1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0
+        { -1.0f, -1.0f,  1.0f,  0xFF00FF00,     0,     0 },
+        {  1.0f, -1.0f,  1.0f,  0xFF00FF00, 32767,     0 },
+        {  1.0f,  1.0f,  1.0f,  0xFF00FF00, 32767, 32767 },
+        { -1.0f,  1.0f,  1.0f,  0xFF00FF00,     0, 32767 },
+
+        { -1.0f, -1.0f, -1.0f,  0xFFFF0000,     0,     0 },
+        { -1.0f,  1.0f, -1.0f,  0xFFFF0000, 32767,     0 },
+        { -1.0f,  1.0f,  1.0f,  0xFFFF0000, 32767, 32767 },
+        { -1.0f, -1.0f,  1.0f,  0xFFFF0000,     0, 32767 },
+
+        {  1.0f, -1.0f, -1.0f,  0xFFFF007F,     0,     0 },
+        {  1.0f,  1.0f, -1.0f,  0xFFFF007F, 32767,     0 },
+        {  1.0f,  1.0f,  1.0f,  0xFFFF007F, 32767, 32767 },
+        {  1.0f, -1.0f,  1.0f,  0xFFFF007F,     0, 32767 },
+
+        { -1.0f, -1.0f, -1.0f,  0xFFFF7F00,     0,     0 },
+        { -1.0f, -1.0f,  1.0f,  0xFFFF7F00, 32767,     0 },
+        {  1.0f, -1.0f,  1.0f,  0xFFFF7F00, 32767, 32767 },
+        {  1.0f, -1.0f, -1.0f,  0xFFFF7F00,     0, 32767 },
+
+        { -1.0f,  1.0f, -1.0f,  0xFF007FFF,     0,     0 },
+        { -1.0f,  1.0f,  1.0f,  0xFF007FFF, 32767,     0 },
+        {  1.0f,  1.0f,  1.0f,  0xFF007FFF, 32767, 32767 },
+        {  1.0f,  1.0f, -1.0f,  0xFF007FFF,     0, 32767 },
     };
+
     sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
         .data = SG_RANGE(vertices),
         .label = "cube-vertices"
@@ -226,32 +122,45 @@ void init(void)
         .label = "cube-indices"
     });
 
+    // the first 4 samplers are just different min-filters
+    sg_sampler_desc smp_desc = { .mag_filter = SG_FILTER_LINEAR, };
+
+    smp_desc.min_lod = 0.0f;
+    smp_desc.max_lod = imageDesc.num_mipmaps;
+    smp_desc.min_filter = SG_FILTER_LINEAR;
+    smp_desc.mag_filter = SG_FILTER_LINEAR;
+    smp_desc.mipmap_filter = SG_FILTER_LINEAR;
+    smp_desc.max_anisotropy = 8;
+
+    sg_sampler sampler = sg_make_sampler(&smp_desc);
+    
     /* create shader */
     sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
 
     /* create pipeline object */
     state.pip = sg_make_pipeline(&(sg_pipeline_desc){
         .layout = {
-            /* test to provide buffer stride, but no attr offsets */
-            .buffers[0].stride = 28,
             .attrs = {
-                [ATTR_cube_position].format = SG_VERTEXFORMAT_FLOAT3,
-                [ATTR_cube_color0].format   = SG_VERTEXFORMAT_FLOAT4
+                [0].format = SG_VERTEXFORMAT_FLOAT3,
+                [1].format = SG_VERTEXFORMAT_UBYTE4N,
+                [2].format = SG_VERTEXFORMAT_SHORT2N
             }
         },
         .shader = shd,
         .index_type = SG_INDEXTYPE_UINT16,
         .cull_mode = SG_CULLMODE_BACK,
         .depth = {
-            .write_enabled = true,
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
+            .write_enabled = true
         },
-        .label = "cube-pipeline"
+        .label = "texcube-pipeline"
     });
 
     /* setup resource bindings */
     state.bind = (sg_bindings) {
         .vertex_buffers[0] = vbuf,
+        .samplers[0] = sampler,
+        .images[0] = image,
         .index_buffer = ibuf
     };
 }
@@ -261,19 +170,22 @@ void frame(void) {
     vs_params_t vs_params;
     const float w = sapp_widthf();
     const float h = sapp_heightf();
-    const float t = sapp_frame_duration();
-	Matrix4 proj = PerspectiveFovRH(60.0f * (MATH_PI / 180.0f), w, h, 0.01f, 10.0f);
+    const double dt = sapp_frame_duration();
+    PlatformCtx.DeltaTime = dt;
+    Matrix4 proj = PerspectiveFovRH(60.0f * (MATH_PI / 180.0f), w, h, 0.01f, 10.0f);
     Matrix4 view = LookAtRH((Vec3f){0.0f, 1.5f, 6.0f}, (Vec3f){0.0f, 0.0f, -1.0f}, (Vec3f){0.0f, 1.0f, 0.0f});
     Matrix4 view_proj = Matrix4Multiply(proj, view);
-    state.rx += t; state.ry += t;
+    state.rx += (float)dt; state.ry += (float)dt;
 
-    Matrix4 rym = Matrix4RotationY(FModf(state.ry + MATH_PI, MATH_TwoPI) - MATH_PI);
-    Matrix4 model = rym; //Matrix4Multiply(rxm, rym);
 
-    CameraUpdate(&camera, t);
+    PlatformCtx.SecondsSinceLastClick += (float)dt;
+    //Matrix4 rym = Matrix4RotationY(FModf(state.ry + MATH_PI, MATH_TwoPI) - MATH_PI);
+    Matrix4 model = MatrixFromScalef(5.0f); // Matrix4Multiply(MatrixFromScalef(4.0f), rym); //(rxm, rym);
 
-    view_proj = Matrix4Multiply(camera.projection, camera.view);
-    vs_params.mvp = Matrix4Multiply(view_proj, model);
+    CameraUpdate(&camera, (float)dt);
+
+    view_proj = Matrix4Multiply(camera.view, camera.projection);
+    vs_params.mvp = Matrix4Multiply(model, view_proj);
 
     sg_begin_pass(&(sg_pass){
         .action = {
@@ -295,6 +207,8 @@ void frame(void) {
 void cleanup(void) {
     sg_shutdown();
 }
+
+extern void sokol_event_callback(const sapp_event* event);
 
 sapp_desc sokol_main(int argc, char* argv[]) {
     (void)argc;

@@ -1,0 +1,13 @@
+[submodule "sokol"]
+	path = Extern/sokol
+	url = https://github.com/floooh/sokol
+
+[submodule "stb"]
+	path = Extern/stb
+	url = https://github.com/nothings/stb
+[submodule "Extern/stb"]
+	path = Extern/stb
+	url = https://github.com/nothings/stb.git
+[submodule "Extern/sokol"]
+	path = Extern/sokol
+	url = https://github.com/floooh/sokol
