@@ -37,15 +37,13 @@ void sokol_event_callback(const sapp_event* event)
         }
         case SAPP_EVENTTYPE_KEY_DOWN: {
             int vk_code = event->key_code;
-            if (vk_code > 0 && vk_code < 128) {
-                BitSet128_Set(&PlatformCtx.DownKeys, vk_code);
-            }
+            Bitset_Set(&PlatformCtx.DownKeys, vk_code);
             break;
         }
         case SAPP_EVENTTYPE_KEY_UP: {
             int vk_code = event->key_code;
-            if (vk_code > 0 && vk_code < 128) {
-                BitSet128_Clear(&PlatformCtx.DownKeys, vk_code);
+            if (vk_code > 0 && vk_code < 512) {
+                Bitset_Reset(&PlatformCtx.DownKeys, vk_code);
             }
             break;
         }
@@ -58,9 +56,44 @@ void sokol_event_callback(const sapp_event* event)
     }
 }
 
+void FatalError(const char* format, ...)
+{
+    char buffer[1024]; // Adjust the size according to your needs
+    // Format the error message
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    puts(buffer);
+    OutputDebugString(buffer);
+    // Display the message box
+    #ifdef PLATFORM_WINDOWS
+    MessageBoxA(NULL, buffer, "Fatal Error", MB_ICONERROR | MB_OK);
+    #elif PLATFORM_ANDROID
+    __android_log_write(ANDROID_LOG_ERROR, "ANIL", line_buf);
+    #endif
+}
+
+void DebugLog(const char* format, ...)
+{
+    char buffer[1024]; // Adjust the size according to your needs
+    // Format the error message
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    puts(buffer);
+    #ifdef PLATFORM_WINDOWS
+    MessageBoxA(NULL, buffer, "DebugLog", MB_ICONWARNING | MB_OK);
+    OutputDebugString(buffer);
+    #elif PLATFORM_ANDROID
+    __android_log_write(ANDROID_LOG_INFO, "ANIL", line_buf);
+    #endif
+}
+
 void GetMousePos(float* x, float* y) {
     #ifdef PLATFORM_WINDOWS
-    ASSERT((uint64_t)x & (uint64_t)y); // shouldn't be nullptr
+    //ASSERT((uint64_t)x & (uint64_t)y); // shouldn't be nullptr
     POINT point;
     GetCursorPos(&point);
     *x = (float)point.x;
@@ -101,10 +134,10 @@ void SetMouseWindowPos(float x, float y)
     SetMousePos(PlatformCtx.WindowPosX + x, PlatformCtx.WindowPosY + y);
 }
 
-bool AnyKeyDown()           { return (PlatformCtx.DownKeys.bits[0] + PlatformCtx.DownKeys.bits[1]) > 0; }
-bool GetKeyDown(char c)     { return BitSet128_Test(&PlatformCtx.DownKeys, c); }
-bool GetKeyReleased(char c) { return BitSet128_Test(&PlatformCtx.ReleasedKeys, c); }
-bool GetKeyPressed(char c)  { return BitSet128_Test(&PlatformCtx.PressedKeys, c); }
+bool AnyKeyDown()           { return Bitset_Count(&PlatformCtx.DownKeys) > 0; }
+bool GetKeyDown(char c)     { return Bitset_Get(&PlatformCtx.DownKeys, c); }
+bool GetKeyReleased(char c) { return Bitset_Get(&PlatformCtx.ReleasedKeys, c); }
+bool GetKeyPressed(char c)  { return Bitset_Get(&PlatformCtx.PressedKeys, c); }
 
 float GetMouseWheelDelta() { return PlatformCtx.MouseWheelDelta; }
 bool GetDoubleClicked() { return PlatformCtx.DoubleClicked; }
@@ -115,8 +148,8 @@ bool GetMousePressed(uint32_t button)  { return !!(PlatformCtx.MousePressed  & b
 
 static void SetPressedAndReleasedKeys()
 {
-    PlatformCtx.ReleasedKeys = BitSet128_AndNot(PlatformCtx.LastKeys, PlatformCtx.DownKeys);
-    PlatformCtx.PressedKeys  = BitSet128_AndNot(PlatformCtx.DownKeys, PlatformCtx.LastKeys);
+    Bitset_AndNot(&PlatformCtx.ReleasedKeys, &PlatformCtx.LastKeys, &PlatformCtx.DownKeys);
+    Bitset_AndNot(&PlatformCtx.PressedKeys , &PlatformCtx.DownKeys, &PlatformCtx.LastKeys);
     // Mouse
     PlatformCtx.MouseReleased = PlatformCtx.MouseLast & ~PlatformCtx.MouseDown;
     PlatformCtx.MousePressed  = ~PlatformCtx.MouseLast & PlatformCtx.MouseDown;
@@ -160,7 +193,7 @@ static void FixSeperators(char* dst, const char* src)
 bool wOpenFolder(const char* folderPath) 
 {
     #ifdef PLATFORM_WINDOWS
-    char copy[512] = {};
+    char copy[512] = {0};
     FixSeperators(copy, folderPath);
 
     if ((size_t)ShellExecuteA(NULL, "open", copy, NULL, NULL, SW_SHOWNORMAL) <= 32) 
@@ -174,10 +207,10 @@ bool wOpenFolder(const char* folderPath)
 bool wOpenFile(const char* filePath)
 {
     #ifdef PLATFORM_WINDOWS
-    char copy[512] = {};
+    char copy[512] = {0};
     FixSeperators(copy, filePath);  
 
-    if ((size_t)ShellExecuteA(NULL, NULL, copy, NULL, NULL, SW_SHOW) <= 32) 
+    if ((size_t)ShellExecuteA(NULL, NULL, copy, NULL, NULL, SW_SHOW) <= 32)
         return false;
     return true;
     #else 
@@ -189,6 +222,19 @@ bool wOpenFile(const char* filePath)
 double GetDeltaTime() 
 { 
     return PlatformCtx.DeltaTime; 
+}
+
+static uint64_t DownKeys[8]; 
+static uint64_t LastKeys[8]; 
+static uint64_t PressedKeys[8];
+static uint64_t ReleasedKeys[8];
+
+void PlatformInit()
+{
+    PlatformCtx.DownKeys.bits = DownKeys;
+    PlatformCtx.LastKeys.bits = LastKeys;
+    PlatformCtx.PressedKeys.bits = PressedKeys;
+    PlatformCtx.ReleasedKeys.bits = ReleasedKeys;
 }
 
 double TimeSinceStartup()

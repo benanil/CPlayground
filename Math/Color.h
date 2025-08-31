@@ -5,14 +5,14 @@
 #include "SIMD.h"
 
 purefn uint32_t PackColorToUint(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-    return r | (uint32_t(g) << 8) | (uint32_t(b) << 16) | (uint32_t(a) << 24);
+    return r | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 16) | ((uint32_t)(a) << 24);
 }
 
 purefn uint32_t MakeRGBAGrayScale(uint8_t gray) {
-    return uint32_t(gray) * 0x01010101u;
+    return (uint32_t)(gray) * 0x01010101u;
 }
 
-purefn uint32_t PackColorToUint(float r, float g, float b) {
+purefn uint32_t PackColorToUint3Float(float r, float g, float b) {
     return (uint32_t)(r * 255.0f) | ((uint32_t)(g * 255.0f) << 8) | ((uint32_t)(b * 255.0f) << 16);
 }
 

@@ -118,6 +118,18 @@
     #error you should define pack function
 #endif
 
+#if defined(_MSC_VER)       /* MSVC */
+#  define AX_ALIGN(N) __declspec(align(N))
+#elif defined(__GNUC__)     /* GCC, Clang */
+#  define AX_ALIGN(N) __attribute__((aligned(N)))
+#elif defined(__INTEL_COMPILER) /* Intel C Compiler */
+#  define AX_ALIGN(N) __attribute__((aligned(N)))
+#else                       /* Unknown compiler, no alignment */
+#  define ALIGN(N)
+#endif
+
+#define ALIGNOF(type) offsetof(struct { char c; type t; }, t)
+
 #if defined(__GNUC__) || defined(__MINGW32__)
     #define RESTRICT __restrict__
 #elif defined(_MSC_VER)
@@ -143,17 +155,31 @@
 #endif
 
 // https://nullprogram.com/blog/2022/06/26/
+// https://nullprogram.com/blog/2022/06/26/
 #if defined(_DEBUG) || defined(Debug)
     #if __GNUC__
-        #define ASSERT(c) if (!(c)) __builtin_trap()
+        #define ASSERT(c) if (!(c)) { __builtin_trap(); }
     #elif _MSC_VER
-        #define ASSERT(c) if (!(c)) __debugbreak()
+        #define ASSERT(c) if (!(c)) { __debugbreak(); }
     #else
-        #define ASSERT(c) if (!(c)) *(volatile int *)0 = 0
+        #define ASSERT(c) if (!(c)) { *(volatile int *)0 = 0; }
     #endif
 #else
     #define ASSERT(c)
 #endif
+
+#if defined(_DEBUG) || defined(Debug)
+    #if __GNUC__
+        #define ASSERTR(c, r) if (!(c)) { __builtin_trap(); r; }
+    #elif _MSC_VER
+        #define ASSERTR(c, r) if (!(c)) { __debugbreak(); r; }
+    #else
+        #define ASSERTR(c, r) if (!(c)) { *(volatile int *)0 = 0; r; }
+    #endif
+#else
+    #define ASSERTR(c, r) if (!(c)) { r; }
+#endif
+
 
 #if AX_COMPILER_HAS_BUILTIN(__builtin_prefetch)
     #define AX_PREFETCH(x) __builtin_prefetch(x)
@@ -401,6 +427,16 @@ purefn int64_t NextPowerOf2_64(int64_t x) {
 #define MCLAMP(x, mn, mx) (MMIN((mx), MMAX((x), (mn))))
 
 #define MCLAMP01(x) (MMIN((1.0f), MMAX((x), (0.0f))))
+
+purefn float Clamp01f(float x) { return MMIN((1.0f), MMAX((x), (0.0f))); }
+
+purefn float Minf(float a, float b) { return a < b ? a : b; }
+
+purefn float Maxf(float a, float b) { return a > b ? a : b; }
+
+purefn float Min32(int a, int b) { return a < b ? a : b; }
+
+purefn float Max32(int a, int b) { return a > b ? a : b; }
 
 purefn int64_t Abs64(int64_t x) {
     int64_t temp = x >> 63;

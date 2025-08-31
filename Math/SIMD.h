@@ -387,7 +387,7 @@ purefn Vector4x32f ARMVector3Load(float* src)
 }
 
 purefn Vector4x32f ARMCreateVec(float x, float y, float z, float w) {
-    alignas(16) float v[4] = {x, y, z, w};
+    AX_ALIGN(16) float v[4] = {x, y, z, w};
     return vld1q_f32(v);
 }
 

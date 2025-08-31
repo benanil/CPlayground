@@ -33,20 +33,20 @@ typedef struct Camera_
 } Camera;
 
 
-inline void Camera_RecalculateProjection(Camera* camera, int width, int height)
+static inline void Camera_RecalculateProjection(Camera* camera, int width, int height)
 {
     camera->viewportSize.x = width; camera->viewportSize.y = height;
     camera->projection = PerspectiveFovRH(camera->verticalFOV * MATH_DegToRad, (float)width, (float)height, camera->nearClip, camera->farClip);
     camera->inverseProjection = Matrix4Inverse(camera->projection);
 }
 
-inline void Camera_RecalculateView(Camera* camera)
+static inline void Camera_RecalculateView(Camera* camera)
 {
     camera->view = LookAtRH(camera->position, camera->Front, camera->Up);
     camera->inverseView = Matrix4Inverse(camera->view);
 }
 
-inline void Camera_CalculateLook(Camera* camera) // from yaw pitch
+static inline void Camera_CalculateLook(Camera* camera) // from yaw pitch
 {
     camera->Front.x = Cos(camera->yaw * MATH_DegToRad) * Cos(camera->pitch * MATH_DegToRad);
     camera->Front.y = Sin(camera->pitch * MATH_DegToRad);
@@ -58,7 +58,7 @@ inline void Camera_CalculateLook(Camera* camera) // from yaw pitch
     camera->Up = Vec3Cross(camera->Right, camera->Front);
 }
 
-inline RayV ScreenPointToRay(Camera* camera, Vec2f pos)
+static inline RayV ScreenPointToRay(Camera* camera, Vec2f pos)
 {
     Vec2f coord = (Vec2f){ pos.x / (float)camera->viewportSize.x, pos.y / (float)camera->viewportSize.y };
     coord.y = 1.0f - coord.y;    // Flip Y to match the NDC coordinate system
@@ -77,7 +77,7 @@ inline RayV ScreenPointToRay(Camera* camera, Vec2f pos)
     return ray;
 }
 
-inline void CameraInit(Camera* camera)
+static inline void CameraInit(Camera* camera)
 {
     Camera_CalculateLook(camera);
     Camera_RecalculateView(camera);
@@ -85,7 +85,7 @@ inline void CameraInit(Camera* camera)
 }
 
 
-inline void InfiniteMouse(Vec2f point)
+static inline void InfiniteMouse(Vec2f point)
 {
     Vec2i monitorSize;
     wGetMonitorSize(&monitorSize.x, &monitorSize.y);
@@ -99,7 +99,7 @@ inline void InfiniteMouse(Vec2f point)
     #endif
 }
 
-inline void CameraUpdate(Camera* camera, float dt)
+static inline void CameraUpdate(Camera* camera, float dt)
 {
     bool pressing = GetMouseDown(MouseButton_Right);
     float speed = dt * (1.0f + GetKeyDown(SAPP_KEYCODE_LEFT_SHIFT) * 2.0f) * 5.0f;

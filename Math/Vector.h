@@ -80,6 +80,8 @@ purefn Vec3f Vec3Cross(Vec3f a, Vec3f b) {
     };
 }
 
+purefn Vec3f Vec3FromPtr(float* ptr) { return (Vec3f){ ptr[0], ptr[1], ptr[2] }; }
+
 purefn Vec3f Vec3Zero()     { return (Vec3f){ 0.0f,  0.0f,  0.0f}; }
 purefn Vec3f Vec3One()      { return (Vec3f){ 1.0f,  1.0f,  1.0f}; }
 purefn Vec3f Vec3Up()       { return (Vec3f){ 0.0f,  1.0f,  0.0f}; }
