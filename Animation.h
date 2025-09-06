@@ -57,7 +57,7 @@ typedef struct Matrix3x4f16_
 typedef struct AnimationController_
 {
     Texture mMatrixTex;
-    Prefab* mPrefab;
+    SceneBundle* mPrefab;
     eAnimState mState;
 
     int mRootNodeIndex;
@@ -163,8 +163,8 @@ void AnimationController_UploadPoseUpperLower(AnimationController* ac, Pose* low
 void AnimationController_SampleAnimationPose(AnimationController* ac, Pose* pose, int animIdx, float normTime);
 
 // bool humanoid = true, int lowerBodyStart = 58
-void CreateAnimationController(Prefab* prefab, AnimationController* animController, bool humanoid, int lowerBodyStart);
+void AnimationController_Create(SceneBundle* prefab, AnimationController* animController, bool humanoid, int lowerBodyStart);
 
-void ClearAnimationController(AnimationController* ac);
+void AnimationController_Clear(AnimationController* ac);
 
 #endif _ANIMATION_H

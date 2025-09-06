@@ -914,8 +914,8 @@ void ReadGLTFString(char** str, AFile file, FixedPow2Allocator* stringAllocator)
     if (nameLen)    
     {
         *str = FixedPow2Allocator_AllocateUninitialized(stringAllocator, nameLen + 1);
-        AFileRead(str, nameLen + 1, file, 1);
-        str[nameLen + 1] = 0;
+        AFileRead(*str, nameLen + 1, file, 1);
+        (*str)[nameLen + 1] = 0;
     }
 }
 
@@ -956,7 +956,7 @@ int LoadSceneBundleBinary(const char* path, SceneBundle* gltf)
     AFileRead(&gltf->totalIndices, sizeof(int), file, 1);
     AFileRead(&gltf->totalVertices, sizeof(int), file, 1);
     
-    size_t vertexSize = 4;
+    size_t vertexSize = sizeof(ASkinedVertex);
     size_t vertexAlignment = 4;
 
     {
@@ -991,7 +991,7 @@ int LoadSceneBundleBinary(const char* path, SceneBundle* gltf)
         
         AFileRead(&mesh->numPrimitives, sizeof(int), file, 1);
         
-        mesh->primitives = dynarray_create_prealloc(mesh->primitives, mesh->numPrimitives);
+        mesh->primitives = dynarray_create_prealloc(APrimitive, mesh->numPrimitives);
         
         for (int j = 0; j < mesh->numPrimitives; j++)
         {

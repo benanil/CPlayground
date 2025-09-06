@@ -415,7 +415,7 @@ purefn float SinPI(float x)  { return Sin(x) / MATH_PI; }
 
 // packs -1,1 range float to short
 purefn short PackSnorm16(float x) {
-    return (short)MCLAMP(x * (float)INT16_MAX, (float)INT16_MIN, (float)INT16_MAX);
+    return (short)Clampf(x * (float)INT16_MAX, (float)INT16_MIN, (float)INT16_MAX);
 }
 
 purefn float UnpackSnorm16(short x) {
@@ -424,7 +424,7 @@ purefn float UnpackSnorm16(short x) {
 
 // packs 0,1 range float to short
 purefn short PackUnorm16(float x) {
-    return (short)MCLAMP(x * (float)INT16_MAX, (float)INT16_MIN, (float)INT16_MAX);
+    return (short)Clampf(x * (float)INT16_MAX, (float)INT16_MIN, (float)INT16_MAX);
 }
 
 purefn float UnpackUnorm16(short x) {
@@ -450,7 +450,7 @@ purefn float EaseInOut(float x) {
 
 // integral symbol shaped interpolation, similar to EaseInOut
 purefn float SmoothStep(float edge0, float edge1, float x) {
-    float t = MCLAMP((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+    float t = Clamp01f((x - edge0) / (edge1 - edge0));
     return t * t * (3.0f - t * 2.0f);
 }
 
@@ -480,7 +480,7 @@ purefn float SmoothDamp(float current, float target, float* currentVelocity, flo
 
     // Clamp maximum speed
     float maxChange = maxSpeed * smoothTime;
-    change = MCLAMP(change, -maxChange, maxChange);
+    change = Clampf(change, -maxChange, maxChange);
     target = current - change;
 
     float temp = (*currentVelocity + omega * change) * deltaTime;
@@ -504,7 +504,7 @@ purefn float Remap(float in, float inMin, float inMax, float outMin, float outMa
 
 purefn float Repeat(float t, float length)
 {
-    return MCLAMP(t - Floorf(t / length) * length, 0.0f, length);
+    return Clampf(t - Floorf(t / length) * length, 0.0f, length);
 }
 
 purefn float Step(float edge, float x)

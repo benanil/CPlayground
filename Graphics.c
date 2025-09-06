@@ -218,6 +218,105 @@ void rDeleteMipData(sg_image_data* img_data, int numMips)
     rpfree((void*)img_data->subimage[0][1].ptr);
 }
 
+typedef struct ImageInfo_
+{
+    int width, height;
+    int numComp;
+    int isNormal;
+} ImageInfo;
+
+#define g_AXTextureVersion 12351
+
+static void LoadSceneImagesGeneric(const char* texturePath, Texture* textures, int numImages)
+{
+    if (numImages == 0) {
+        return;
+    }
+    AFile file = AFileOpen(texturePath, AOpenFlag_ReadBinary);
+    int version = 0;
+    AFileRead(&version, sizeof(int), file, 1);
+    ASSERT(version == g_AXTextureVersion); // probably using old version, find newer version of texture or reload the gltf or fbx scene
+    
+    ImageInfo* imageInfos = rpmalloc(sizeof(ImageInfo) * numImages);
+    
+    for (int i = 0; i < numImages; i++)
+    {
+        AFileRead(&imageInfos[i], sizeof(ImageInfo), file, 1);
+    }
+    
+    uint64_t decompressedSize, compressedSize;
+    AFileRead(&decompressedSize, sizeof(uint64_t), file, 1);
+    AFileRead(&compressedSize, sizeof(uint64_t), file, 1);
+    
+    unsigned char* compressedBuffer = rpmalloc(compressedSize);
+    AFileRead(compressedBuffer, compressedSize, file, 1);
+    
+    unsigned char* decompressedBuffer = rpmalloc(decompressedSize);
+    decompressedSize = ZSTD_decompress(decompressedBuffer, decompressedSize, compressedBuffer, compressedSize);
+    ASSERT(!ZSTD_isError(decompressedSize));
+    
+    unsigned char* currentImage = decompressedBuffer;
+    
+    for (int i = 0; i < numImages; i++)
+    {
+        ImageInfo info = imageInfos[i];
+        if (info.width == 0)
+            continue;
+        
+        int imageSize = info.width * info.height;
+        bool isBC4 = info.numComp == 1 && (IsAndroid() == false);
+        
+        sg_pixel_format textureType;
+        switch (info.numComp)
+        {
+            case 1: textureType = SG_PIXELFORMAT_BC4_R; break;
+            case 2: textureType = SG_PIXELFORMAT_BC5_RG; break;
+            case 3: case 4: textureType = SG_PIXELFORMAT_BC3_RGBA; break;
+        }
+
+        imageSize >>= (int)isBC4; // BC4 is 0.5 byte per pixel
+        
+        TexFlags flags = TexFlags_Compressed | TexFlags_MipMap;
+        bool notCompressed = info.width <= 128 && info.height <= 128;
+        if (notCompressed)
+        {
+            imageSize = info.width * info.height * info.numComp;
+            flags = TexFlags_RawData;
+            isBC4 = false;
+            switch (info.numComp)
+            {
+                case 1: textureType = SG_PIXELFORMAT_R8;    break;
+                case 2: textureType = SG_PIXELFORMAT_RG8;   break;
+                case 3: case 4: textureType = SG_PIXELFORMAT_RGBA8; break;
+                default: 
+                    textureType = SG_PIXELFORMAT_R8; 
+                    AX_WARN("texture numComp is undefined, %i", info.numComp);
+                    break;
+            } 
+        }
+        Texture imported = rCreateTexture(info.width, info.height, currentImage, textureType, flags, "LoadSceneImagesGeneric");
+        textures[i] = imported;
+        currentImage += imageSize;
+        
+        #ifdef __ANDROID__
+        if (!notCompressed)
+        {
+            int mip = MAX((int)Log2_32((unsigned int)info.width) >> 1, 1) - 1;
+            while (mip-- > 0)
+            {
+                info.width >>= 1;
+                info.height >>= 1;
+                currentImage += info.width * info.height;
+            }
+        }
+        #endif
+    }
+    
+    AFileClose(file);
+    rpfree(compressedBuffer);
+    rpfree(decompressedBuffer);
+}
+
 Texture rCreateTexture(int width, int height, void* data, sg_pixel_format format, TexFlags flags, const char* label)
 {
     sg_image_desc imageDesc = {
@@ -226,11 +325,21 @@ Texture rCreateTexture(int width, int height, void* data, sg_pixel_format format
         .height = height,
         .label = label
     };
-    
-    imageDesc.data.subimage[0][0] = (sg_range){ data, width * height * rTextureTypeToBytesPerPixel(format) };
+
+    if (data != NULL)
+        imageDesc.data.subimage[0][0] = (sg_range){ data, width * height * rTextureTypeToBytesPerPixel(format) };
     
     if (!!(flags & TexFlags_MipMap))
-        imageDesc.num_mipmaps = rGetMipmapImageData(&imageDesc.data, data, imageDesc.width, imageDesc.height);
+    {
+        if (!!(flags & TexFlags_Compressed))
+        {
+            
+        }
+        else
+        {
+            imageDesc.num_mipmaps = rGetMipmapImageData(&imageDesc.data, data, imageDesc.width, imageDesc.height);
+        }
+    }
 
     if (!!(flags & (TexFlags_DynamicUpdate | TexFlags_StreamUpdate)))
         imageDesc.usage.immutable = false;
@@ -241,14 +350,23 @@ Texture rCreateTexture(int width, int height, void* data, sg_pixel_format format
 
     Texture texture = {
         .width = width,
-        .width = height,
+        .height = height,
         .format = format,
         .handle = sg_make_image(&imageDesc),
         .buffer = data
     };
     
     if ((flags & TexFlags_MipMap))
-        rDeleteMipData(&imageDesc.data, imageDesc.num_mipmaps);
+    {
+        if (!!(flags & TexFlags_Compressed))
+        {
+            
+        }
+        else
+        {
+            rDeleteMipData(&imageDesc.data, imageDesc.num_mipmaps);
+        }
+    }
 
     return texture;
 }

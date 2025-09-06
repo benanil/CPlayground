@@ -49,9 +49,9 @@ purefn uint32_t MultiplyU32Colors(uint32_t a, uint32_t b)
 }
 
 purefn Vec3f HUEToRGB(float h) {
-    float r = MCLAMP01(Absf(h * 6.0f - 3.0f) - 1.0f);
-    float g = MCLAMP01(2.0f - Absf(h * 6.0f - 2.0f));
-    float b = MCLAMP01(2.0f - Absf(h * 6.0f - 4.0f));
+    float r = Clamp01f(Absf(h * 6.0f - 3.0f) - 1.0f);
+    float g = Clamp01f(2.0f - Absf(h * 6.0f - 2.0f));
+    float b = Clamp01f(2.0f - Absf(h * 6.0f - 4.0f));
     return (Vec3f){ r, g, b };
 }
 

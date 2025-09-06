@@ -61,15 +61,32 @@ typedef struct {
 } vertex_t;
 
 static Camera camera;
+static SceneBundle* sceneBundle;
+static Matrix4* nodeTransforms;
+static int characterRootIndex;
+static AnimationController animationController;
 
 static void _sapp_setup_wave_icon(void);
 
-void Init(void) 
+void Prefab_UpdateGlobalNodeTransforms(SceneBundle* bundle, int nodeIndex, Matrix4 parentMat)
+{
+    ANode* node = &bundle->nodes[nodeIndex];
+    nodeTransforms[nodeIndex] = Matrix4Multiply(parentMat, PositionRotationScalePtr(node->translation, node->rotation, node->scale));
+
+    for (int i = 0; i < node->numChildren; i++)
+    {
+        Prefab_UpdateGlobalNodeTransforms(bundle, node->children[i], nodeTransforms[nodeIndex]);
+    }
+}
+
+
+void Init(void)
 {
     _sapp_setup_wave_icon();
     PlatformInit();
     rInit();
     stm_setup();
+
     PlatformCtx.StartupTime = stm_now();
     MemsetZero(&camera, sizeof(camera));
     camera.pitch = 0.0f;
@@ -83,109 +100,97 @@ void Init(void)
 
     CameraInit(&camera);
 
-    sg_setup(&(sg_desc){
+    sg_setup(&(sg_desc) {
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
 
+    sceneBundle = rpmalloc(sizeof(SceneBundle));
+    if (!LoadSceneBundleBinary("Assets/Meshes/Paladin/Paladin.abm", sceneBundle))
+    {
+        AX_ERROR("gltf scene load failed2");
+        return;
+    }
+
+    nodeTransforms = rpmalloc(sizeof(Matrix4) * sceneBundle->numNodes);
+    characterRootIndex = Prefab_FindAnimRootNodeIndex(sceneBundle);
+    Prefab_UpdateGlobalNodeTransforms(sceneBundle, characterRootIndex, Matrix4Identity());
+
+    AnimationController* ac = &animationController;
+    AnimationController_Create(sceneBundle, &animationController, true, 58);
+    AnimationController_SampleAnimationPose(ac, ac->mAnimPoseA, 0.0f, 0.0f);
+    AnimationController_UploadPose(ac, ac->mAnimPoseA);
+
+    Texture textures[8];
+    LoadSceneImagesGeneric("Assets/Meshes/Paladin/Paladin.dxt", textures, sceneBundle->numImages);
 
     Texture img = rImportTexture("Test.jpg", TexFlags_MipMap, "Test Tex");
 
-    vertex_t vertices[] = {
-        /* pos                  color       uvs */
-        { -1.0f, -1.0f, -1.0f,  0xFF0000FF,     0,     0 },
-        {  1.0f, -1.0f, -1.0f,  0xFF0000FF, 32767,     0 },
-        {  1.0f,  1.0f, -1.0f,  0xFF0000FF, 32767, 32767 },
-        { -1.0f,  1.0f, -1.0f,  0xFF0000FF,     0, 32767 },
-
-        { -1.0f, -1.0f,  1.0f,  0xFF00FF00,     0,     0 },
-        {  1.0f, -1.0f,  1.0f,  0xFF00FF00, 32767,     0 },
-        {  1.0f,  1.0f,  1.0f,  0xFF00FF00, 32767, 32767 },
-        { -1.0f,  1.0f,  1.0f,  0xFF00FF00,     0, 32767 },
-
-        { -1.0f, -1.0f, -1.0f,  0xFFFF0000,     0,     0 },
-        { -1.0f,  1.0f, -1.0f,  0xFFFF0000,     0, 32767 },
-        { -1.0f,  1.0f,  1.0f,  0xFFFF0000, 32767, 32767 },
-        { -1.0f, -1.0f,  1.0f,  0xFFFF0000, 32767, 0},
-
-        {  1.0f, -1.0f, -1.0f,  0xFFFF007F,     0,     0 },
-        {  1.0f,  1.0f, -1.0f,  0xFFFF007F,     0, 32767 },
-        {  1.0f,  1.0f,  1.0f,  0xFFFF007F, 32767, 32767 },
-        {  1.0f, -1.0f,  1.0f,  0xFFFF007F, 32767, 0     },
-
-        { -1.0f, -1.0f, -1.0f,  0xFFFF7F00,     0,     0 },
-        { -1.0f, -1.0f,  1.0f,  0xFFFF7F00, 32767,     0 },
-        {  1.0f, -1.0f,  1.0f,  0xFFFF7F00, 32767, 0    },
-        {  1.0f, -1.0f, -1.0f,  0xFFFF7F00,     0, 0   },
-
-        { -1.0f,  1.0f, -1.0f,  0xFF007FFF, 0    , 32767 },
-        { -1.0f,  1.0f,  1.0f,  0xFF007FFF, 0    ,32767},
-        {  1.0f,  1.0f,  1.0f,  0xFF007FFF, 32767, 32767 },
-        {  1.0f,  1.0f, -1.0f,  0xFF007FFF,     0, 32767 },
-    };
-
     sg_buffer vbuf = sg_make_buffer(&(sg_buffer_desc){
-        .data = SG_RANGE(vertices),
-        .label = "cube-vertices"
+        .data = (sg_range){sceneBundle->allVertices, sceneBundle->totalVertices * sizeof(ASkinedVertex)},
+        .label = "vertices"
     });
 
-    /* create an index buffer for the cube */
-    uint16_t indices[] = {
-        0, 1, 2,  0, 2, 3,
-        6, 5, 4,  7, 6, 4,
-        8, 9, 10,  8, 10, 11,
-        14, 13, 12,  15, 14, 12,
-        16, 17, 18,  16, 18, 19,
-        22, 21, 20,  23, 22, 20
-    };
     sg_buffer ibuf = sg_make_buffer(&(sg_buffer_desc){
         .usage.index_buffer = true,
-        .data = SG_RANGE(indices),
-        .label = "cube-indices"
+        .data = (sg_range){sceneBundle->allIndices, sceneBundle->totalIndices * sizeof(uint32_t)},
+        .label = "indices"
     });
 
     // the first 4 samplers are just different min-filters
     sg_sampler_desc smp_desc = { .mag_filter = SG_FILTER_LINEAR, };
-
     smp_desc.min_lod = 0.0f;
     smp_desc.max_lod = 8;
     smp_desc.min_filter = SG_FILTER_LINEAR;
     smp_desc.mag_filter = SG_FILTER_LINEAR;
     smp_desc.mipmap_filter = SG_FILTER_LINEAR;
     smp_desc.max_anisotropy = 8;
-
     sg_sampler sampler = sg_make_sampler(&smp_desc);
     
-    /* create shader */
-    sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
+    sg_sampler_desc animSmpDesc = { };
+    animSmpDesc.min_filter = SG_FILTER_NEAREST;
+    animSmpDesc.mag_filter = SG_FILTER_NEAREST;
+    animSmpDesc.wrap_u = SG_WRAP_CLAMP_TO_EDGE;
+    animSmpDesc.wrap_v = SG_WRAP_CLAMP_TO_EDGE;
+    animSmpDesc.label = "joint-texture-sampler";
+    sg_sampler  jointSampler = sg_make_sampler(&animSmpDesc);
 
-    /* create pipeline object */
+    /* create shader */
+    sg_shader shader = sg_make_shader(cube_shader_desc(sg_query_backend()));
+
     state.pip = sg_make_pipeline(&(sg_pipeline_desc){
         .layout = {
             .attrs = {
                 [0].format = SG_VERTEXFORMAT_FLOAT3,
-                [1].format = SG_VERTEXFORMAT_UBYTE4N,
-                [2].format = SG_VERTEXFORMAT_SHORT2N
+                [1].format = SG_VERTEXFORMAT_UINT10_N2,
+                [2].format = SG_VERTEXFORMAT_UINT10_N2,
+                [3].format = SG_VERTEXFORMAT_HALF2,
+                [4].format = SG_VERTEXFORMAT_UBYTE4,
+                [5].format = SG_VERTEXFORMAT_UBYTE4N,
             }
         },
-        .shader = shd,
-        .index_type = SG_INDEXTYPE_UINT16,
-        .cull_mode = SG_CULLMODE_BACK,
+        .shader = shader,
+        .index_type = SG_INDEXTYPE_UINT32,
+        .cull_mode = SG_CULLMODE_FRONT,
         .depth = {
             .compare = SG_COMPAREFUNC_LESS_EQUAL,
             .write_enabled = true
         },
-        .label = "texcube-pipeline"
+        .label = "pipeline"
     });
 
+    
     /* setup resource bindings */
     state.bind = (sg_bindings) {
         .vertex_buffers[0] = vbuf,
         .samplers[0] = sampler,
-        .images[0] = img.handle,
+        .samplers[1] = jointSampler,
+        .images[0] = textures[sceneBundle->materials[0].baseColorTexture.index].handle,
+        .images[1] = animationController.mMatrixTex.handle,
         .index_buffer = ibuf
     };
 }
+
 
 void Frame(void)
 {
@@ -195,10 +200,10 @@ void Frame(void)
     const float h = sapp_heightf();
     const double dt = sapp_frame_duration();
     PlatformCtx.DeltaTime = dt;
-    Matrix4 proj = PerspectiveFovRH(60.0f * (MATH_PI / 180.0f), w, h, 0.01f, 10.0f);
-    Matrix4 view = LookAtRH((Vec3f){0.0f, 1.5f, 6.0f}, (Vec3f){0.0f, 0.0f, -1.0f}, (Vec3f){0.0f, 1.0f, 0.0f});
+    Matrix4 proj = PerspectiveFovRH(60.0f * (MATH_PI / 180.0f), w, h, 0.01f, camera.farClip);
+    Matrix4 view = LookAtRH((Vec3f) { 0.0f, 1.5f, 6.0f }, (Vec3f) { 0.0f, 0.0f, -1.0f }, (Vec3f) { 0.0f, 1.0f, 0.0f });
     Matrix4 view_proj = Matrix4Multiply(proj, view);
-    state.rx += (float)dt; 
+    state.rx += (float)dt;
     state.ry += (float)dt;
 
     PlatformCtx.SecondsSinceLastClick += (float)dt;
@@ -209,8 +214,11 @@ void Frame(void)
 
     view_proj = Matrix4Multiply(camera.view, camera.projection);
     vs_params.mvp = Matrix4Multiply(model, view_proj);
+    vs_params.uModel = model;
+    // vs_params.uLightMatrix;
+    vs_params.uViewProj = view_proj;
 
-    sg_begin_pass(&(sg_pass){
+    sg_begin_pass(&(sg_pass) {
         .action = {
             .colors[0] = {
                 .load_action = SG_LOADACTION_CLEAR,
@@ -222,7 +230,45 @@ void Frame(void)
     sg_apply_pipeline(state.pip);
     sg_apply_bindings(&state.bind);
     sg_apply_uniforms(UB_vs_params, &SG_RANGE(vs_params));
-    sg_draw(0, 36, 1);
+    
+
+    int numNodes  = sceneBundle->numNodes;
+    bool hasScene = sceneBundle->numScenes > 0;
+    AScene defaultScene;
+    if (hasScene)
+    {
+        defaultScene = sceneBundle->scenes[sceneBundle->defaultSceneIndex];
+        numNodes = defaultScene.numNodes;
+    }
+
+    int stackLen = 1;
+    int nodeStack[256];
+    nodeStack[0] = hasScene ? defaultScene.nodes[0] : 0;
+    int x = 0;
+
+    while (stackLen > 0)
+    {
+        int nodeIndex = nodeStack[--stackLen];
+        ANode* node = &sceneBundle->nodes[nodeIndex];
+        AMesh* mesh = sceneBundle->meshes + node->index;
+        Matrix4 model = nodeTransforms[nodeIndex];
+
+        if (node->type == 0 && node->index != -1)
+        for (int j = 0; j < mesh->numPrimitives; ++j)
+        {
+            APrimitive* primitive = &mesh->primitives[j];
+            bool hasMaterial = sceneBundle->materials && primitive->material != UINT16_MAX;
+            AMaterial material = sceneBundle->materials[primitive->material];
+            
+            sg_draw(primitive->indexOffset, primitive->numIndices, 1);
+        }
+
+        for (int i = 0; i < node->numChildren; i++)
+        {
+            nodeStack[stackLen++] = node->children[i];
+        }
+    }
+
     sg_end_pass();
     sg_commit();
 }
@@ -230,6 +276,7 @@ void Frame(void)
 void Cleanup(void) {
     sg_shutdown();
     rDestroy();
+    rpfree(nodeTransforms);
     rpmalloc_finalize();
 }
 
@@ -250,6 +297,8 @@ void free_fn(void* ptr, void* user_data)
 sapp_desc sokol_main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+    rpmalloc_initialize(NULL);
+    
     return (sapp_desc){
         .init_cb = Init,
         .frame_cb = Frame,

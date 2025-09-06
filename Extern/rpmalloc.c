@@ -11,6 +11,19 @@
  *
  */
 
+#ifndef STATIC_ASSERT
+    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+        #define STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)
+    #else
+        #ifdef __COUNTER__
+            #define STATIC_ASSERT(cond, msg) typedef char static_assert_##__COUNTER__[(cond) ? 1 : -1]
+        #else
+            #define STATIC_ASSERT(cond, msg) typedef char static_assert_##__LINE__[(cond) ? 1 : -1]
+        #endif
+    #endif
+#endif
+
+
 #include "rpmalloc.h"
 
 #include <errno.h>
@@ -470,9 +483,9 @@ struct heap_t {
 	size_t mapped_size;
 };
 
-_Static_assert(sizeof(page_t) <= PAGE_HEADER_SIZE, "Invalid page header size");
-_Static_assert(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
-_Static_assert(sizeof(heap_t) <= 4096, "Invalid heap size");
+STATIC_ASSERT(sizeof(page_t) <= PAGE_HEADER_SIZE, "Invalid page header size");
+STATIC_ASSERT(sizeof(span_t) <= SPAN_HEADER_SIZE, "Invalid span header size");
+STATIC_ASSERT(sizeof(heap_t) <= 4096, "Invalid heap size");
 
 ////////////
 ///

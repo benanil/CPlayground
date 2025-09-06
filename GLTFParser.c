@@ -26,6 +26,7 @@
 #define __private static
 #define __public 
 
+STATIC_ASSERT(sizeof(ASampler) == sizeof(int), "size must be 4");
 
 typedef struct GLTFAccessor_
 {
@@ -71,7 +72,7 @@ __private const char* CopyStringInQuotes(char** str, const char** curr, FixedPow
     alloc += len;
     *curr  += len;
     *alloc = '\0'; // null terminate
-    return ++*curr;// skip quote
+    return ++(*curr);// skip quote
 }
 
 __private const char* GetStringInQuotes(char* str, const char* curr)

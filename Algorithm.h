@@ -350,25 +350,40 @@ static inline void aCopyInt32(int* dst, const int* src, int n)
 
 #define StrCMP16(_str, _otr) StrCmp16(_str, _otr, sizeof(_otr)) 
  
-static inline bool StrCmp8(const char* RESTRICT a, const char* b, uint64_t n)
+#if defined(AX_SUPPORT_SSE)
+static inline bool StrCmp16(const char* a, const char* b, uint64_t n)
 {
-    uint64_t al, bl;
-    uint64_t mask = ~0ull >> (64 - ((n-1) * 8));
-    al = UnalignedLoad64(a);
-    bl = UnalignedLoad64(b);
-    return ((al ^ bl) & mask) == 0;
+    __m128i va = _mm_loadu_si128((const __m128i*)a);
+    __m128i vb = _mm_loadu_si128((const __m128i*)b);
+    __m128i diff = _mm_xor_si128(va, vb);
+    int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(diff, _mm_setzero_si128()));
+    int expect = (1 << n) - 1;
+    return (mask & expect) == expect;
 }
-
-static inline  bool StrCmp16(const char* RESTRICT a, const char* b, uint64_t bSize)
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+static inline bool StrCmp16(const char* a, const char* b, uint64_t n)
 {
-    bool equal = StrCmp8(a, b, 9);
-    equal &= StrCmp8(a + 8, b + 8, bSize - 8);
-    return equal;
+    uint8x16_t va = vld1q_u8((const uint8_t*)a);
+    uint8x16_t vb = vld1q_u8((const uint8_t*)b);
+    uint8x16_t cmp = vceqq_u8(va, vb);
+    uint8x16_t shifted = vshrq_n_u8(cmp, 7);   // keep only LSB of each byte
+    uint64x2_t pair64  = vreinterpretq_u64_u8(shifted);
+    uint64_t mask0 = vgetq_lane_u64(pair64, 0);
+    uint64_t mask1 = vgetq_lane_u64(pair64, 1);
+    uint32_t mask = (uint32_t)mask0 | ((uint32_t)mask1 << 8);
+    uint32_t expect = (1u << n) - 1u;
+    return (mask & expect) == expect;
 }
+#endif
 
-static inline  bool StringEqual(const char *a, const char *b, int n) 
+static inline bool StringEqual(const char *a, const char *b, int n) 
 {
-    for (int i = 0; i < n; i++)
+    int i = 0;
+    for (; i < n-16; i += 16)
+        if (StrCmp16(a, b, 16) == false)
+            return false;
+   
+    for (; i < n; i++)
         if (a[i] != b[i])
             return false;
     return true;

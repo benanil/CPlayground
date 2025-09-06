@@ -155,7 +155,6 @@
 #endif
 
 // https://nullprogram.com/blog/2022/06/26/
-// https://nullprogram.com/blog/2022/06/26/
 #if defined(_DEBUG) || defined(Debug)
     #if __GNUC__
         #define ASSERT(c) if (!(c)) { __builtin_trap(); }
@@ -180,6 +179,17 @@
     #define ASSERTR(c, r) if (!(c)) { r; }
 #endif
 
+#ifndef STATIC_ASSERT
+    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+        #define STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)
+    #else
+        #ifdef __COUNTER__
+            #define STATIC_ASSERT(cond, msg) typedef char static_assert_##__COUNTER__[(cond) ? 1 : -1]
+        #else
+            #define STATIC_ASSERT(cond, msg) typedef char static_assert_##__LINE__[(cond) ? 1 : -1]
+        #endif
+    #endif
+#endif
 
 #if AX_COMPILER_HAS_BUILTIN(__builtin_prefetch)
     #define AX_PREFETCH(x) __builtin_prefetch(x)
@@ -329,6 +339,7 @@ purefn uint64_t ByteSwap(uint64_t x) {
 
 #if defined(__ARM_NEON__)
     #define PopCount32(x) vcnt_u8((int8x8_t)x)
+    #define PopCount64(x) vcnt_u8((int8x8_t)x)
 #elif defined(AX_SUPPORT_SSE)
     #define PopCount32(x) _mm_popcnt_u32(x)
     #define PopCount64(x) _mm_popcnt_u64(x)
@@ -428,7 +439,9 @@ purefn int64_t NextPowerOf2_64(int64_t x) {
 
 #define MCLAMP01(x) (MMIN((1.0f), MMAX((x), (0.0f))))
 
-purefn float Clamp01f(float x) { return MMIN((1.0f), MMAX((x), (0.0f))); }
+purefn float Clamp01f(float x) { return MMIN(1.0f, MMAX(x, 0.0f)); }
+
+purefn float Clampf(float x, float min, float max) { return MMIN(max, MMAX(x, min)); }
 
 purefn float Minf(float a, float b) { return a < b ? a : b; }
 
@@ -472,6 +485,15 @@ purefn bool InRange(float x, float start, float length)
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define PointerDistance(begin, end) ((uint)((char*)(end) - (char*)(begin)) / sizeof(T))
+
+purefn bool IsAndroid()
+{
+    #ifdef __ANDROID__
+    return true;
+    #else
+    return false;
+    #endif
+}
 
 purefn int CalculateArrayGrowth(int _size)
 {

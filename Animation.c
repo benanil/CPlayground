@@ -70,13 +70,13 @@ int Prefab_FindNodeFromName(SceneBundle* prefab, const char* name)
 void StartAnimationSystem()
 { }
 
-static void SetBoneNode(Prefab* prefab, ANode** node, int* index, const char* name)
+static void SetBoneNode(SceneBundle* prefab, ANode** node, int* index, const char* name)
 {
-    *index = Prefab_FindNodeFromName(&prefab->sceneBundle, name);
+    *index = Prefab_FindNodeFromName(prefab, name);
     *node = &prefab->nodes[*index];
 }
 
-void CreateAnimationController(Prefab* prefab, AnimationController* result, bool humanoid, int lowerBodyStart)
+void AnimationController_Create(SceneBundle* prefab, AnimationController* result, bool humanoid, int lowerBodyStart)
 {
     ASkin* skin = &prefab->skins[0];
     if (skin == NULL) {
@@ -86,8 +86,8 @@ void CreateAnimationController(Prefab* prefab, AnimationController* result, bool
         AX_WARN("number of joints is greater than max capacity %s", prefab->path); 
         return; 
     }
-    result->mMatrixTex = rCreateTexture(skin->numJoints*3, 1, result->mOutMatrices, SG_PIXELFORMAT_RGBA16F, TexFlags_RawData, "AnimationMatrixTex");
-    result->mRootNodeIndex = Prefab_FindAnimRootNodeIndex(&prefab->sceneBundle);
+    result->mMatrixTex = rCreateTexture(skin->numJoints * 3, 1, NULL, SG_PIXELFORMAT_RGBA16F, TexFlags_StreamUpdate, "AnimationMatrixTex");
+    result->mRootNodeIndex = Prefab_FindAnimRootNodeIndex(prefab);
     result->mPrefab = prefab;
     result->mState = AnimState_Update;
     result->mNumNodes = prefab->numNodes;
@@ -200,7 +200,7 @@ void AnimationController_SampleAnimationPose(AnimationController* ac, Pose* pose
         
         if (reverse) XSWAP(float, beginTime, endTime);
         
-        float t = MCLAMP01(beginTime / endTime);
+        float t = Clamp01f(beginTime / endTime);
 
         switch (channel->targetPath)
         {
@@ -293,8 +293,8 @@ bool AnimationController_TriggerAnim(AnimationController* ac, int index, float t
 
 bool AnimationController_TriggerTransition(AnimationController* ac, float deltaTime, int targetAnim)
 {
-    float newNorm   = MCLAMP01((ac->mTransitionTime - ac->mCurTransitionTime) / ac->mTransitionTime);
-    float animDelta = MCLAMP01(deltaTime * (1.0f / MMAX(1.0f - newNorm, MATH_Epsilon)));
+    float newNorm   = Clamp01f((ac->mTransitionTime - ac->mCurTransitionTime) / ac->mTransitionTime);
+    float animDelta = Clamp01f(deltaTime * (1.0f / MMAX(1.0f - newNorm, MATH_Epsilon)));
     AnimationController_SampleAnimationPose(ac, ac->mAnimPoseD, targetAnim, ac->mAnimTime.y);
     MergeAnims(ac->mAnimPoseC, ac->mAnimPoseD, animDelta, ac->mNumNodes);
     ac->mCurTransitionTime -= deltaTime;
@@ -384,7 +384,7 @@ void AnimationController_EvaluateLocomotion(AnimationController* ac, float x, fl
     }
 }
 
-void ClearAnimationController(AnimationController* animSystem)
+void AnimationController_Clear(AnimationController* animSystem)
 {
     rDeleteTexture(animSystem->mMatrixTex);
 }

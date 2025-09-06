@@ -99,61 +99,7 @@ typedef struct Texture_
     void* buffer;
 } Texture;
 
-typedef struct Prefab_
-{
-    /* Union to contain all scene data directly in the struct */
-    union {
-        SceneBundle sceneBundle;
-        struct {
-            unsigned short numMeshes;
-            unsigned short numNodes;
-            unsigned short numMaterials;
-            unsigned short numTextures;
-            unsigned short numImages;
-            unsigned short numSamplers;
-            unsigned short numCameras;
-            unsigned short numScenes;
-            unsigned short defaultSceneIndex;
-            unsigned short numBuffers;
-            unsigned short numAnimations;
-            unsigned short numSkins;
-            AErrorType error;
-            void* stringAllocator;
-            void* intAllocator;
-            void* allVertices;
-            void* allIndices;
-            int totalVertices;
-            int totalIndices;
-            float scale;
-            GLTFBuffer* buffers;
-            AMesh*      meshes;
-            ANode*      nodes;
-            AMaterial*  materials;
-            ATexture*   textures;
-            AImage*     images;
-            ASampler*   samplers;
-            ACamera*    cameras;
-            AScene*     scenes;
-            AAnimation* animations;
-            ASkin*      skins;
-        };
-    };
-    
-    /* Prefab-specific members */
-    Texture* gpuTextures;
-    GPUMesh  bigMesh;           /* contains all of the vertices and indices of an prefab */
-    Matrix4* globalNodeTransforms; /* pre calculated global transforms, accumulated with parents */
-    // struct TLAS* tlas;
-    int firstTimeRender;        /* starts with 4 and decreases until its 0 we draw first time and set this to-1 */
-    char path[256];             /* relative path */
-} Prefab;
-
-Texture GetGPUTexture(Prefab* prefab, int index)
-{
-    return prefab->gpuTextures[prefab->textures[index].source];
-}
-
-ANode* GetNodePtr(Prefab* prefab, int index)
+ANode* GetNodePtr(SceneBundle* prefab, int index)
 {
     return &prefab->nodes[index];
 }
@@ -178,7 +124,7 @@ static inline uint32_t Pack_INT_2_10_10_10_REV(Vec3f v) {
 
 static inline uint32_t Pack_INT_2_10_10_10_REV_VEC(Vector4x32f v)
 {
-	float x = VecGetX(v), y = VecGetY(v), z = VecGetZ(v), w = VecGetW(v); 
+    float x = VecGetX(v), y = VecGetY(v), z = VecGetZ(v), w = VecGetW(v); 
 
     const uint32_t xs = x < 0.0f, ys = y < 0.0f, zs = z < 0.0f, ws = w < 0.0f;
     return ws << 31 | ((uint32_t)(w       + (ws << 1)) & 1) << 30 |
@@ -194,36 +140,6 @@ static inline Vec3f Unpack_INT_2_10_10_10_REV(uint32_t p)
     result.x = 255.0f / ((p >>  0) & tenMask);
     result.y = 255.0f / ((p >> 10) & tenMask);
     result.z = 255.0f / ((p >> 20) & tenMask);
-    return result;
-}
-
-// w value is undefined, it could be anything or trash data
-static inline Vector4x32f GetPosition(GPUMesh* gpu, int index)
-{
-    const char* bytePtr = (const char*)gpu->vertices;
-    bytePtr += gpu->stride * index;
-    return VecLoad((const float*)bytePtr);
-}
-
-// todo GPUMesh GetNormal
-static inline Vector4x32f GetNormal(GPUMesh* gpu, int index)
-{
-    const char* bytePtr = (const char*)gpu->vertices;
-    bytePtr += gpu->stride * index + sizeof(Vec3f); // skip position
-    uint32_t normalPacked = *(uint32_t *)bytePtr;
-    typedef union S_ { Vector4x32f v; Vec3f s; } S;
-    S s = (S){ .s = Unpack_INT_2_10_10_10_REV(normalPacked) };
-    return s.v; // VecLoad(bytePtr);
-}
-
-// todo GPUMesh GetNormal
-static inline Vec2f GetUV(GPUMesh* gpu, int index)
-{
-    const char* bytePtr = (const char*)gpu->vertices;
-    bytePtr += gpu->stride * index + sizeof(Vec3f) + sizeof(int) + sizeof(int); // skip normal and tangent
-    uint32_t uvPacked = *(uint32_t *)bytePtr;
-    Vec2f result;
-    ConvertHalf2ToFloat2(&result.x, uvPacked); // VecLoad(bytePtr);
     return result;
 }
 
@@ -243,5 +159,36 @@ void rDeleteMipData(sg_image_data* img_data, int numMips);
 Texture rCreateTexture(int width, int height, void* data, sg_pixel_format format, TexFlags flags, const char* label);
 
 void rDeleteTexture(Texture texture);
+
+
+// // w value is undefined, it could be anything or trash data
+// static inline Vector4x32f GetPosition(GPUMesh* gpu, int index)
+// {
+//     const char* bytePtr = (const char*)gpu->vertices;
+//     bytePtr += gpu->stride * index;
+//     return VecLoad((const float*)bytePtr);
+// }
+// 
+// // todo GPUMesh GetNormal
+// static inline Vector4x32f GetNormal(GPUMesh* gpu, int index)
+// {
+//     const char* bytePtr = (const char*)gpu->vertices;
+//     bytePtr += gpu->stride * index + sizeof(Vec3f); // skip position
+//     uint32_t normalPacked = *(uint32_t *)bytePtr;
+//     typedef union S_ { Vector4x32f v; Vec3f s; } S;
+//     S s = (S){ .s = Unpack_INT_2_10_10_10_REV(normalPacked) };
+//     return s.v; // VecLoad(bytePtr);
+// }
+// 
+// // todo GPUMesh GetNormal
+// static inline Vec2f GetUV(GPUMesh* gpu, int index)
+// {
+//     const char* bytePtr = (const char*)gpu->vertices;
+//     bytePtr += gpu->stride * index + sizeof(Vec3f) + sizeof(int) + sizeof(int); // skip normal and tangent
+//     uint32_t uvPacked = *(uint32_t *)bytePtr;
+//     Vec2f result;
+//     ConvertHalf2ToFloat2(&result.x, uvPacked); // VecLoad(bytePtr);
+//     return result;
+// }
 
 #endif
