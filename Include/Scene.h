@@ -8,6 +8,7 @@
 #include <SDL3/SDL_atomic.h>
 #include <box3d/id.h>
 #include <box3d/math_functions.h>
+#include <box3d/types.h>
 
 #define MAX_SCENE_BUNDLES 1024u
 #define MAX_SCENE_LIGHTS  256u
@@ -45,13 +46,6 @@ typedef struct BundleCacheEntry
     int          numBvhTris;
 } BundleCacheEntry;
 
-typedef struct ScenePhysicsBody_
-{
-    u64       scale;
-    b3BodyId  body;
-    b3ShapeId shape;
-} ScenePhysicsBody;
-
 // a scene owns one render set for skinned meshes, one for static geometry, their gpu
 // buffers, its own texture system and animation system. all gpu resources stay resident,
 // activating and deactivating scenes only changes the active list
@@ -85,8 +79,8 @@ typedef struct Scene_
 	// reference these (box3d does not copy mesh data), so they must outlive the world.
 	struct b3MeshData*   surfacePhysicsMeshes[MAX_GROUP];
 	struct b3MeshData*   transparentPhysicsMeshes[MAX_GROUP];
-	ScenePhysicsBody*    surfacePhysicsBodies;
-	ScenePhysicsBody*    transparentPhysicsBodies;
+	b3BodyId* surfacePhysicsBodies;
+	b3BodyId* transparentPhysicsBodies;
 } Scene;
 
 typedef enum SceneAsyncOp_
@@ -149,7 +143,10 @@ void Scene_PhysicsUpdate(Scene* scene, float deltaTime);
 void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback);
 void Scene_BuildStaticColliders(Scene* scene);
 void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity);
-ScenePhysicsBody* Scene_PhysicsBodySlot(Scene* scene, bool transparent, u32 sparseIdx);
+// Swaps the collider shape of the entity's body in place. b3_meshShape restores the
+// original triangle collider; sphere/capsule/hull are derived from the primitive
+// bounds. Compound/height are unsupported and return false. Runtime-only.
+bool Scene_PhysicsSetEntityShape(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity, b3ShapeType type);
 b3Vec3 ToB3Vec3(v128f v);
 b3Quat ToB3Quat(v128f q);
 v128f SceneB3PosToVec3(b3Pos p);

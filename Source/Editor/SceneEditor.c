@@ -4,6 +4,7 @@
 #include "Include/Random.h"
 #include "Include/Algorithm.h"
 #include "Include/Scene.h"
+#include <box3d/box3d.h>
 #include "Include/FileSystem.h"
 #include "Include/AssetManager.h"
 #include "Include/GLTFParser.h"
@@ -51,6 +52,8 @@ static s32  sceneSelectedNode   = -1;
 static bool sceneInfoOpen       = true;
 static bool sceneLightsOpen     = true;
 static bool sceneInspectorOpen  = true;
+static bool scenePhysicsOpen    = true;
+static bool scenePhysicsLocksOpen = false;
 static s32  sceneSelectedLight  = -1;
 static u32  sceneTreeRowBudget;
 static bool sceneLightGizmoDragging;
@@ -1106,84 +1109,292 @@ static void SceneInspectorValidateCache(const Entity* entity)
         SceneInspectorRefreshCache(entity);
 }
 
+// A dimmed "label  value" row for physics properties that are simulation output
+// (mass, velocities, center of mass) and cannot be edited from the inspector.
+static void UIPhysicsReadonlyRow(Clay_ElementId id, const char* label, const char* value)
+{
+	CLAY(id, {
+		.layout = {
+			.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24.0f) },
+			.childGap = 8,
+			.layoutDirection = CLAY_LEFT_TO_RIGHT,
+			.childAlignment = { .y = CLAY_ALIGN_Y_CENTER }
+		}
+	}) {
+		CLAY_TEXT(UIStr(label), CLAY_TEXT_CONFIG({ .fontSize = 14, .textColor = UIGetClayColor(UIColor_Text) }));
+		// element spacer, never a whitespace-only CLAY_TEXT (that corrupts the text batch)
+		CLAY(CLAY_ID_LOCAL("Spacer"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1.0f) } } }) {}
+		CLAY_TEXT(UIStr(value), CLAY_TEXT_CONFIG({ .fontSize = 14, .textColor = UIGetClayColor(UIColor_SubText) }));
+	}
+}
+
+// A per-axis lock row: a leading label followed by three checkboxes (X/Y/Z)
+// laid out horizontally rather than stacked. Returns true when any axis toggled.
+static bool UIPhysicsLockRow(Clay_ElementId rowId, Clay_String label,
+                             Clay_ElementId idX, bool* x,
+                             Clay_ElementId idY, bool* y,
+                             Clay_ElementId idZ, bool* z)
+{
+	bool changed = false;
+	CLAY(rowId, {
+		.layout = {
+			.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28.0f) },
+			.childGap = 6,
+			.layoutDirection = CLAY_LEFT_TO_RIGHT,
+			.childAlignment = { .y = CLAY_ALIGN_Y_CENTER }
+		}
+	}) {
+		CLAY(CLAY_ID_LOCAL("Label"), {
+			.layout = {
+				.sizing = { CLAY_SIZING_FIXED(84.0f), CLAY_SIZING_GROW(0) },
+				.childAlignment = { .y = CLAY_ALIGN_Y_CENTER }
+			}
+		}) {
+			CLAY_TEXT(label, CLAY_TEXT_CONFIG({ .fontSize = 14, .textColor = UIGetClayColor(UIColor_SubText) }));
+		}
+		changed |= UICheckbox(idX, CLAY_STRING("X"), x);
+		changed |= UICheckbox(idY, CLAY_STRING("Y"), y);
+		changed |= UICheckbox(idZ, CLAY_STRING("Z"), z);
+	}
+	return changed;
+}
+
+// formats into a per-frame string; safe to pass straight to UIPhysicsReadonlyRow
+static const char* UIPhysicsFmtF(f32 v, int decimals)
+{
+	char* s = UIFrameStringAlloc(32u);
+	if (!s) return "";
+	SDL_snprintf(s, 32u, "%.*f", decimals, v);
+	return s;
+}
+
+static const char* UIPhysicsFmtV3(f32 x, f32 y, f32 z, int decimals)
+{
+	char* s = UIFrameStringAlloc(96u);
+	if (!s) return "";
+	SDL_snprintf(s, 96u, "%.*f, %.*f, %.*f", decimals, x, decimals, y, decimals, z);
+	return s;
+}
+
+// A mesh (triangle-soup) shape computes zero mass, so a body switched to dynamic
+// would keep invMass 0 and never respond to gravity. Give it a default box mass
+// derived from the collider AABB so the "Dynamic" type actually simulates. The
+// center of mass is left at the body origin (a rough but stable approximation).
+static void PhysicsApplyDefaultDynamicMass(b3BodyId body, b3ShapeId shape)
+{
+	b3AABB aabb = b3Shape_GetAABB(shape);
+	f32 w = Maxf32(aabb.upperBound.x - aabb.lowerBound.x, 0.01f);
+	f32 h = Maxf32(aabb.upperBound.y - aabb.lowerBound.y, 0.01f);
+	f32 d = Maxf32(aabb.upperBound.z - aabb.lowerBound.z, 0.01f);
+
+	f32 mass = 1.0f;
+	f32 k = mass / 12.0f;
+	b3MassData md = {
+		.mass = mass,
+		.center = { 0.0f, 0.0f, 0.0f },
+		.inertia = {
+			.cx = { k * (h * h + d * d), 0.0f, 0.0f },
+			.cy = { 0.0f, k * (w * w + d * d), 0.0f },
+			.cz = { 0.0f, 0.0f, k * (w * w + h * h) }
+		}
+	};
+	b3Body_SetMassData(body, md);
+}
+
+// Visualizes and edits the box3d body attached to the selected entity.
+// Simulation-output values (mass, velocities, center of mass) are read-only;
+// body type / dynamics / material / lock widgets push their changes back through
+// the box3d setters. Note the underlying collider is a static mesh, so a body
+// type change is runtime-only and is reset to static on the next collider build.
+static void SceneInspectorPhysicsUI(Scene* scene, const Entity* entity)
+{
+	if (sceneObjectSelection.skinned) return;
+	if (!scene->surfacePhysicsBodies || entity->sparseIdx >= scene->surfaceSet.maxEntities) return;
+
+	b3BodyId body = scene->surfacePhysicsBodies[entity->sparseIdx];
+	if (B3_IS_NULL(body)) return;
+
+	UIDivider(CLAY_ID("InspectorPhysicsDivider"));
+	scenePhysicsOpen ^= UICollapsingHeader(CLAY_ID("InspectorPhysicsHeader"), CLAY_STRING("Physics Body"), scenePhysicsOpen);
+	if (!scenePhysicsOpen) return;
+
+	b3ShapeId shapeId;
+	bool hasShape = b3Body_GetShapes(body, &shapeId, 1) > 0;
+
+	// Body type is editable. Order matches b3BodyType (static, kinematic, dynamic).
+	static const char* bodyTypes[] = { "Static", "Kinematic", "Dynamic" };
+	u32 bodyType = (u32)b3Body_GetType(body);
+	if (bodyType >= ARRAY_SIZE(bodyTypes)) bodyType = 0u;
+	if (UIDropdown(CLAY_ID("InspectorPhysicsBodyType"), CLAY_STRING("Body Type"),
+	               bodyTypes, ARRAY_SIZE(bodyTypes), &bodyType))
+	{
+		b3Body_SetType(body, (b3BodyType)bodyType);
+		if (bodyType == (u32)b3_dynamicBody && hasShape && b3Body_GetMass(body) <= 0.0f)
+			PhysicsApplyDefaultDynamicMass(body, shapeId);
+	}
+
+	// Shape type is editable. Order matches b3ShapeType so the index maps directly.
+	// Mesh restores the original triangle collider; compound/height are no-ops.
+	if (hasShape)
+	{
+		static const char* shapeTypes[] = { "Capsule", "Compound", "Height", "Hull", "Mesh", "Sphere" };
+		u32 shapeType = (u32)b3Shape_GetType(shapeId);
+		if (shapeType >= ARRAY_SIZE(shapeTypes)) shapeType = 0u;
+		if (UIDropdown(CLAY_ID("InspectorPhysicsShape"), CLAY_STRING("Shape"),
+		               shapeTypes, ARRAY_SIZE(shapeTypes), &shapeType))
+			Scene_PhysicsSetEntityShape(scene, false, sceneObjectSelection.groupIdx, entity, (b3ShapeType)shapeType);
+	}
+
+	// Mass properties and velocities are simulation output -> read-only.
+	UISectionHeader("State");
+	UIPhysicsReadonlyRow(CLAY_ID("InspectorPhysicsMass"), "Mass", UIPhysicsFmtF(b3Body_GetMass(body), 3));
+
+	b3Pos com = b3Body_GetWorldCenterOfMass(body);
+	UIPhysicsReadonlyRow(CLAY_ID("InspectorPhysicsCom"), "Center of Mass",
+	                     UIPhysicsFmtV3((f32)com.x, (f32)com.y, (f32)com.z, 3));
+
+	b3Vec3 linVel = b3Body_GetLinearVelocity(body);
+	UIPhysicsReadonlyRow(CLAY_ID("InspectorPhysicsLinVel"), "Linear Velocity",
+	                     UIPhysicsFmtV3(linVel.x, linVel.y, linVel.z, 3));
+
+	b3Vec3 angVel = b3Body_GetAngularVelocity(body);
+	UIPhysicsReadonlyRow(CLAY_ID("InspectorPhysicsAngVel"), "Angular Velocity",
+	                     UIPhysicsFmtV3(angVel.x, angVel.y, angVel.z, 3));
+
+	// Integration scalars: each edit is pushed straight to the body.
+	UISectionHeader("Dynamics");
+	f32 linearDamping = b3Body_GetLinearDamping(body);
+	if (UIEditFloat(CLAY_ID("InspectorPhysicsLinDamp"), CLAY_STRING("Linear Damping"), &linearDamping, 0.0f, 100.0f, 0.01f, 3))
+		b3Body_SetLinearDamping(body, linearDamping);
+
+	f32 angularDamping = b3Body_GetAngularDamping(body);
+	if (UIEditFloat(CLAY_ID("InspectorPhysicsAngDamp"), CLAY_STRING("Angular Damping"), &angularDamping, 0.0f, 100.0f, 0.01f, 3))
+		b3Body_SetAngularDamping(body, angularDamping);
+
+	f32 gravityScale = b3Body_GetGravityScale(body);
+	if (UIEditFloat(CLAY_ID("InspectorPhysicsGravity"), CLAY_STRING("Gravity Scale"), &gravityScale, -10.0f, 10.0f, 0.1f, 3))
+		b3Body_SetGravityScale(body, gravityScale);
+
+	f32 sleepThreshold = b3Body_GetSleepThreshold(body);
+	if (UIEditFloat(CLAY_ID("InspectorPhysicsSleep"), CLAY_STRING("Sleep Threshold"), &sleepThreshold, 0.0f, 100.0f, 0.01f, 3))
+		b3Body_SetSleepThreshold(body, sleepThreshold);
+
+	// Surface material of the primary shape.
+	if (hasShape)
+	{
+		UISectionHeader("Material");
+		f32 friction = b3Shape_GetFriction(shapeId);
+		if (UIEditFloat(CLAY_ID("InspectorPhysicsFriction"), CLAY_STRING("Friction"), &friction, 0.0f, 1.0f, 0.01f, 3))
+			b3Shape_SetFriction(shapeId, friction);
+
+		f32 restitution = b3Shape_GetRestitution(shapeId);
+		if (UIEditFloat(CLAY_ID("InspectorPhysicsRestitution"), CLAY_STRING("Restitution"), &restitution, 0.0f, 1.0f, 0.01f, 3))
+			b3Shape_SetRestitution(shapeId, restitution);
+
+		f32 density = b3Shape_GetDensity(shapeId);
+		// updateBodyMass = true so mass properties recompute (matters once bodies are dynamic).
+		if (UIEditFloat(CLAY_ID("InspectorPhysicsDensity"), CLAY_STRING("Density"), &density, 0.0f, 100000.0f, 0.1f, 3))
+			b3Shape_SetDensity(shapeId, density, true);
+	}
+
+	// Motion locks, collapsible; each axis triple is laid out horizontally.
+	scenePhysicsLocksOpen ^= UICollapsingHeader(CLAY_ID("InspectorPhysicsLocksHeader"), CLAY_STRING("Motion Locks"), scenePhysicsLocksOpen);
+	if (scenePhysicsLocksOpen)
+	{
+		b3MotionLocks locks = b3Body_GetMotionLocks(body);
+		bool locksChanged = UIPhysicsLockRow(CLAY_ID("InspectorPhysLockLinRow"), CLAY_STRING("Position"),
+		                 CLAY_ID("InspectorPhysLockLinX"), &locks.linearX,
+		                 CLAY_ID("InspectorPhysLockLinY"), &locks.linearY,
+		                 CLAY_ID("InspectorPhysLockLinZ"), &locks.linearZ);
+		locksChanged |= UIPhysicsLockRow(CLAY_ID("InspectorPhysLockAngRow"), CLAY_STRING("Rotation"),
+		                 CLAY_ID("InspectorPhysLockAngX"), &locks.angularX,
+		                 CLAY_ID("InspectorPhysLockAngY"), &locks.angularY,
+		                 CLAY_ID("InspectorPhysLockAngZ"), &locks.angularZ);
+		if (locksChanged)
+			b3Body_SetMotionLocks(body, locks);
+	}
+}
+
 static void SceneInspectorUI(Scene* scene)
 {
-    sceneInspectorOpen ^= UICollapsingHeader(CLAY_ID("SceneInspectorHeader"), CLAY_STRING("Inspector"), sceneInspectorOpen);
-    if (!sceneInspectorOpen) return;
+	sceneInspectorOpen ^= UICollapsingHeader(CLAY_ID("SceneInspectorHeader"), CLAY_STRING("Inspector"), sceneInspectorOpen);
+	if (!sceneInspectorOpen) return;
 
-    RenderSet* set;
-    PrimitiveGroup* group;
-    Entity* entity;
-    if (!SceneResolveSelectedObject(scene, &set, &group, &entity))
-    {
-        sceneObjectSelection.valid = false;
-        sceneInspectorCache.valid = false;
-        CLAY_TEXT(CLAY_STRING("No object selected."), CLAY_TEXT_CONFIG({
-            .fontSize = 13,
-            .textColor = UIGetClayColor(UIColor_SubText)
-        }));
-        return;
-    }
+	RenderSet* set;
+	PrimitiveGroup* group;
+	Entity* entity;
+	if (!SceneResolveSelectedObject(scene, &set, &group, &entity))
+	{
+		sceneObjectSelection.valid = false;
+		sceneInspectorCache.valid = false;
+		CLAY_TEXT(CLAY_STRING("No object selected."), CLAY_TEXT_CONFIG( {
+			.fontSize = 13,
+			.textColor = UIGetClayColor(UIColor_SubText)
+		}));
+		return;
+	}
 
-    char* idText = UIFrameStringAlloc(96u);
-    if (idText)
-    {
-        s32 len = SDL_snprintf(idText, 96u, "Bundle %u Group %u Entity %u", sceneObjectSelection.bundleIdx, sceneObjectSelection.groupIdx, sceneObjectSelection.entityIdx);
-        if (len < 0) len = 0;
-        CLAY_TEXT(((Clay_String){ .isStaticallyAllocated = false, .length = len, .chars = idText }), CLAY_TEXT_CONFIG({
-            .fontSize = 13,
-            .textColor = UIGetClayColor(UIColor_SubText)
-        }));
-    }
+	char* idText = UIFrameStringAlloc(96u);
+	if (idText)
+	{
+		s32 len = SDL_snprintf(idText, 96u, "Bundle %u Group %u Entity %u", sceneObjectSelection.bundleIdx, sceneObjectSelection.groupIdx, sceneObjectSelection.entityIdx);
+		if (len < 0) len = 0;
+		CLAY_TEXT(((Clay_String) { .isStaticallyAllocated = false, .length = len, .chars = idText }), CLAY_TEXT_CONFIG( {
+			.fontSize = 13,
+			.textColor = UIGetClayColor(UIColor_SubText)
+		}));
+	}
 
-    SceneInspectorValidateCache(entity);
+	SceneInspectorValidateCache(entity);
 
-    if (UIEditFloatN(CLAY_ID("InspectorPosition"), CLAY_STRING("Position"), sceneInspectorCache.positionUi, 3u, -100000.0f, 100000.0f, 3))
-    {
-        entity->position = VecSetR(sceneInspectorCache.positionUi[0], sceneInspectorCache.positionUi[1], sceneInspectorCache.positionUi[2], 0.0f);
-        sceneInspectorCache.position = entity->position;
-        if (!sceneObjectSelection.skinned)
-            Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
-        scene->renderDataDirty = 1;
-    }
+	if (UIEditFloatN(CLAY_ID("InspectorPosition"), CLAY_STRING("Position"), sceneInspectorCache.positionUi, 3u, -100000.0f, 100000.0f, 3))
+	{
+		entity->position = VecSetR(sceneInspectorCache.positionUi[0], sceneInspectorCache.positionUi[1], sceneInspectorCache.positionUi[2], 0.0f);
+		sceneInspectorCache.position = entity->position;
+		if (!sceneObjectSelection.skinned)
+			Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
+		scene->renderDataDirty = 1;
+	}
 
-    if (UIEditIntN(CLAY_ID("InspectorRotation"), CLAY_STRING("Rotation"), sceneInspectorCache.rotationUi, 3u, -180, 180))
-    {
-        v128f oldRot = VecNorm(UnpackQuaternionS16Norm1(entity->rotation));
-        v128f oldScale = SceneEntityWorldScale(entity);
-        v128f center = RenderSet_EntityBoundsCenter(group, entity, oldRot, oldScale);
-        v128f q = VecNorm(QFromEuler((f32)sceneInspectorCache.rotationUi[0] * MATH_DegToRad,
-                                     (f32)sceneInspectorCache.rotationUi[1] * MATH_DegToRad,
-                                     (f32)sceneInspectorCache.rotationUi[2] * MATH_DegToRad));
-        PackQuaternionS16Norm(q, &entity->rotation);
-        entity->position = VecSub(center, QMulVec3V(VecMul(RenderSet_GroupLocalCenter(group), oldScale), q));
-        sceneInspectorCache.position = entity->position;
-        sceneInspectorCache.positionUi[0] = VecGetX(entity->position);
-        sceneInspectorCache.positionUi[1] = VecGetY(entity->position);
-        sceneInspectorCache.positionUi[2] = VecGetZ(entity->position);
-        sceneInspectorCache.rotation = entity->rotation;
-        if (!sceneObjectSelection.skinned)
-            Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
-        scene->renderDataDirty = 1;
-    }
+	if (UIEditIntN(CLAY_ID("InspectorRotation"), CLAY_STRING("Rotation"), sceneInspectorCache.rotationUi, 3u, -180, 180))
+	{
+		v128f oldRot = VecNorm(UnpackQuaternionS16Norm1(entity->rotation));
+		v128f oldScale = SceneEntityWorldScale(entity);
+		v128f center = RenderSet_EntityBoundsCenter(group, entity, oldRot, oldScale);
+		v128f q = VecNorm(QFromEuler((f32)sceneInspectorCache.rotationUi[0] * MATH_DegToRad,
+									 (f32)sceneInspectorCache.rotationUi[1] * MATH_DegToRad,
+									 (f32)sceneInspectorCache.rotationUi[2] * MATH_DegToRad));
+		PackQuaternionS16Norm(q, &entity->rotation);
+		entity->position = VecSub(center, QMulVec3V(VecMul(RenderSet_GroupLocalCenter(group), oldScale), q));
+		sceneInspectorCache.position = entity->position;
+		sceneInspectorCache.positionUi[0] = VecGetX(entity->position);
+		sceneInspectorCache.positionUi[1] = VecGetY(entity->position);
+		sceneInspectorCache.positionUi[2] = VecGetZ(entity->position);
+		sceneInspectorCache.rotation = entity->rotation;
+		if (!sceneObjectSelection.skinned)
+			Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
+		scene->renderDataDirty = 1;
+	}
 
-    if (UIEditFloatN(CLAY_ID("InspectorScale"), CLAY_STRING("Scale"), sceneInspectorCache.scaleUi, 3u, 0.001f, 10.0f, 3))
-    {
-        v128f rotation = VecNorm(UnpackQuaternionS16Norm1(entity->rotation));
-        v128f oldScale = SceneEntityWorldScale(entity);
-        v128f center   = RenderSet_EntityBoundsCenter(group, entity, rotation, oldScale);
-        entity->scale  = EntityPackWorldScale(Vec3Load(sceneInspectorCache.scaleUi));
-        v128f newScale = SceneEntityWorldScale(entity);
-        entity->position = VecSub(center, QMulVec3V(VecMul(RenderSet_GroupLocalCenter(group), newScale), rotation));
-        sceneInspectorCache.position = entity->position;
-        sceneInspectorCache.positionUi[0] = VecGetX(entity->position);
-        sceneInspectorCache.positionUi[1] = VecGetY(entity->position);
-        sceneInspectorCache.positionUi[2] = VecGetZ(entity->position);
-        sceneInspectorCache.scalePacked = entity->scale;
-        if (!sceneObjectSelection.skinned)
-            Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
-        scene->renderDataDirty = 1;
-    }
+	if (UIEditFloatN(CLAY_ID("InspectorScale"), CLAY_STRING("Scale"), sceneInspectorCache.scaleUi, 3u, 0.001f, 10.0f, 3))
+	{
+		v128f rotation = VecNorm(UnpackQuaternionS16Norm1(entity->rotation));
+		v128f oldScale = SceneEntityWorldScale(entity);
+		v128f center = RenderSet_EntityBoundsCenter(group, entity, rotation, oldScale);
+		entity->scale = EntityPackWorldScale(Vec3Load(sceneInspectorCache.scaleUi));
+		v128f newScale = SceneEntityWorldScale(entity);
+		entity->position = VecSub(center, QMulVec3V(VecMul(RenderSet_GroupLocalCenter(group), newScale), rotation));
+		sceneInspectorCache.position = entity->position;
+		sceneInspectorCache.positionUi[0] = VecGetX(entity->position);
+		sceneInspectorCache.positionUi[1] = VecGetY(entity->position);
+		sceneInspectorCache.positionUi[2] = VecGetZ(entity->position);
+		sceneInspectorCache.scalePacked = entity->scale;
+		if (!sceneObjectSelection.skinned)
+			Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
+		scene->renderDataDirty = 1;
+	}
+
+	SceneInspectorPhysicsUI(scene, entity);
 
     if (!sceneObjectSelection.skinned) return;
     if (sceneObjectSelection.bundleIdx >= scene->numBundles) return;
