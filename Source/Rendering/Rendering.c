@@ -19,9 +19,6 @@ typedef struct FrameTextureSet_
     SDL_GPUTexture* tex_color;
     SDL_GPUTexture* tex_color_msaa;
     SDL_GPUTexture* tex_depth_msaa;
-    SDL_GPUTexture* tex_gbuffer_tangent;
-    SDL_GPUTexture* tex_gbuffer_albedo_metallic;
-    SDL_GPUTexture* tex_gbuffer_shadow_roughness;
     SDL_GPUTexture* tex_post;
     SDL_GPUTexture* tex_hiz;
     SDL_GPUTexture* tex_hbao;
@@ -129,9 +126,6 @@ static void ReleaseFrameTextureSet(FrameTextureSet* set)
     if (set->tex_color)                    SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_color);
     if (set->tex_color_msaa)               SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_color_msaa);
     if (set->tex_depth_msaa)               SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_depth_msaa);
-    if (set->tex_gbuffer_tangent)          SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_gbuffer_tangent);
-    if (set->tex_gbuffer_albedo_metallic)  SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_gbuffer_albedo_metallic);
-    if (set->tex_gbuffer_shadow_roughness) SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_gbuffer_shadow_roughness);
     if (set->tex_post)                     SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_post);
     if (set->tex_hiz)                      SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_hiz);
     if (set->tex_hbao)                     SDL_ReleaseGPUTexture(g_GPUDevice, set->tex_hbao);
@@ -157,9 +151,6 @@ static void QueueWindowFrameTexturesForRelease(WindowState* winstate)
         .tex_color                    = winstate->tex_color,
         .tex_color_msaa               = winstate->tex_color_msaa,
         .tex_depth_msaa               = winstate->tex_depth_msaa,
-        .tex_gbuffer_tangent          = winstate->tex_gbuffer_tangent,
-        .tex_gbuffer_albedo_metallic  = winstate->tex_gbuffer_albedo_metallic,
-        .tex_gbuffer_shadow_roughness = winstate->tex_gbuffer_shadow_roughness,
         .tex_post                     = winstate->tex_post,
         .tex_hiz                      = winstate->tex_hiz,
         .tex_hbao                     = winstate->tex_hbao,
@@ -179,9 +170,7 @@ static void QueueWindowFrameTexturesForRelease(WindowState* winstate)
         winstate->tex_bloom_upsample[i] = NULL;
     }
     winstate->tex_depth = winstate->tex_hiz_depth = winstate->tex_color = winstate->tex_color_msaa
-                        = winstate->tex_depth_msaa = winstate->tex_gbuffer_tangent
-                        = winstate->tex_gbuffer_albedo_metallic = winstate->tex_gbuffer_shadow_roughness 
-                        = winstate->tex_post = winstate->tex_hiz = winstate->tex_hbao 
+                        = winstate->tex_depth_msaa = winstate->tex_post = winstate->tex_hiz = winstate->tex_hbao 
                         = winstate->tex_hbao_blur = winstate->tex_hbao_normal = winstate->tex_bloom_ping
                         = winstate->tex_contact_shadow = winstate->tex_bloom_pong = winstate->tex_mlaa_edge_mask 
                         = winstate->tex_mlaa_edge_count = winstate->tex_mlaa_output = NULL;
@@ -438,23 +427,6 @@ static SDL_GPUColorTargetInfo MakeLoadedTextureTarget(SDL_GPUTexture* texture)
     return target;
 }
 
-static void MakeGBufferTargets(WindowState* winstate, SDL_GPUColorTargetInfo targets[3])
-{
-    for (u32 i = 0; i < 3u; i++)
-    {
-        SDL_zero(targets[i]);
-        targets[i].load_op = SDL_GPU_LOADOP_CLEAR;
-        targets[i].store_op = SDL_GPU_STOREOP_STORE;
-        targets[i].cycle = true;
-    }
-    targets[0].texture = winstate->tex_gbuffer_tangent;
-    targets[1].texture = winstate->tex_gbuffer_albedo_metallic;
-    targets[2].texture = winstate->tex_gbuffer_shadow_roughness;
-    targets[1].clear_color.a = 0.0f;
-    targets[2].clear_color.r = 1.0f;
-    targets[2].clear_color.g = 1.0f;
-}
-
 SDL_GPUDepthStencilTargetInfo MakeDepthTarget(SDL_GPUTexture* texture, SDL_GPULoadOp loadOp, bool cycle)
 {
     SDL_GPUDepthStencilTargetInfo target;
@@ -614,8 +586,6 @@ void Render(void)
     SDL_GPUDepthStencilTargetInfo main_depth_target = MakeDepthTarget(winstate->tex_depth, SDL_GPU_LOADOP_LOAD, false);
     SDL_GPUDepthStencilTargetInfo forward_depth_target = MakeForwardDepthTarget(winstate);
     SDL_GPUColorTargetInfo        hiz_depth_target  = MakeHiZDepthTarget(winstate);
-    SDL_GPUColorTargetInfo        gbuffer_targets[3];
-    MakeGBufferTargets(winstate, gbuffer_targets);
     UploadDirtyGeometry();
     Terrain_GPUFlush(cmd);
     
@@ -709,7 +679,7 @@ void Render(void)
         }
 
         DispatchReconstructNormalCompute(cmd, viewProj, renderW, renderH);
-        DispatchHBAOCompute(cmd, g_RenderSettings.enableHBAO, renderW, renderH, false);
+        DispatchHBAOCompute(cmd, g_RenderSettings.enableHBAO, renderW, renderH);
         DispatchContactShadowsCompute(cmd, g_RenderSettings.enableContactShadows, viewProj, renderW, renderH);
         if (forwardLocalLights)
             DispatchBuildLightGridCompute(cmd, renderW, renderH, tilesX, tilesY);
@@ -723,9 +693,8 @@ void Render(void)
         DispatchHiZBuildCompute(cmd);
 
         // Per-light visibility readback (one frame of latency) for shadow assignment.
-        // Both paths fill lightVisibilityBuffer: the forward grid build and the deferred
-        // light cull. Only issue when the previous readback has been consumed to avoid
-        // overwriting an in-flight transfer buffer.
+        // The forward light-grid pass fills lightVisibilityBuffer. Only issue when the
+        // previous readback has been consumed to avoid overwriting an in-flight transfer buffer.
         if (g_RenderSettings.enableLocalLights && !g_LightVisPending &&
             g_RenderState.numLights > 0u && g_RenderState.lightVisibilityBuffer)
         {

@@ -7,6 +7,7 @@
 // grid so neighboring chunks never differ by more than one lod level. the finer chunk
 // owns the transition cells on faces toward a coarser neighbor.
 #include "Include/Terrain.h"
+#include "Include/JobSystem.h"
 #include "TerrainInternal.h"
 #include "Source/Rendering/RenderingInternal.h"
 #include "Include/Memory.h"
@@ -18,20 +19,20 @@
 #include "Extern/stb/stb_image_resize2.h"
 
 #if defined(PLATFORM_MACOSX)
-#include "Shaders/msl/TerrainVert.msl.h"
-#include "Shaders/msl/TerrainFrag.msl.h"
+#include "Shaders/msl/TerrainForwardVert.msl.h"
+#include "Shaders/msl/TerrainForwardFrag.msl.h"
 #include "Shaders/msl/TerrainDepthOnlyVert.msl.h"
 #include "Shaders/msl/TerrainDepthOnlyFrag.msl.h"
 #include "Shaders/msl/TerrainWireFrag.msl.h"
 
-#define Shaders_TerrainVert_spv Shaders_TerrainVert_msl
-#define Shaders_TerrainFrag_spv Shaders_TerrainFrag_msl
+#define Shaders_TerrainForwardVert_spv Shaders_TerrainForwardVert_msl
+#define Shaders_TerrainForwardFrag_spv Shaders_TerrainForwardFrag_msl
 #define Shaders_TerrainDepthOnlyVert_spv Shaders_TerrainDepthOnlyVert_msl
 #define Shaders_TerrainDepthOnlyFrag_spv Shaders_TerrainDepthOnlyFrag_msl
 #define Shaders_TerrainWireFrag_spv Shaders_TerrainWireFrag_msl
 #elif defined(PLATFORM_WINDOWS)
-#include "Shaders/spv/TerrainVert.spv.h"
-#include "Shaders/spv/TerrainFrag.spv.h"
+#include "Shaders/spv/TerrainForwardVert.spv.h"
+#include "Shaders/spv/TerrainForwardFrag.spv.h"
 #include "Shaders/spv/TerrainDepthOnlyVert.spv.h"
 #include "Shaders/spv/TerrainDepthOnlyFrag.spv.h"
 #include "Shaders/spv/TerrainWireFrag.spv.h"
@@ -39,10 +40,17 @@
 
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_timer.h>
+#include <box3d/math_functions.h>
+
+typedef struct Scene_ Scene;
+Scene* Scene_GetActive(void);
+bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
+                                       const b3Vec3* vertices, u32 vertexCount,
+                                       const s32* indices, u32 indexCount);
+void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot);
 
 #define TERRAIN_MAX_CHUNKS      2048u
 #define TERRAIN_MAX_JOBS        16u
-#define TERRAIN_MAX_WORKERS     8u
 #define TERRAIN_RING_RADIUS     2
 #define TERRAIN_TRANSFER_BYTES  (8u * 1024u * 1024u)
 #define TERRAIN_PENDING_CAP     4096u
@@ -53,6 +61,10 @@
 // out there, so by default only the near lod 0/1 rings are raycastable. the debug
 // hole probe compares the whole drawn set against the density field, it needs all lods
 #define TERRAIN_RAYCAST_KEEP_LOD 1u
+// Physics uses resident visual chunks up to this lod. Exact lod 1 would leave the
+// near lod 0 child box without colliders because the streamer does not create
+// overlapping lod 1 chunks there.
+#define TERRAIN_PHYSICS_MAX_LOD  1u
 #define TERRAIN_ALBEDO_SIZE     2048
 #define TERRAIN_DETAIL_SIZE     1024                   // normal + arm layers
 
@@ -144,10 +156,7 @@ typedef struct TerrainState_
     float3 brushPos;
     f32   brushRadius;            // 0 while inactive
 
-    SDL_Thread*    workers[TERRAIN_MAX_WORKERS];
-    u32            numWorkers;
-    SDL_Semaphore* jobSemaphore;
-    SDL_AtomicInt  workersQuit;
+    JobSystem* jobSystem;
 
     u32 numDrawable;          // live chunks with indices
     u32 drawnLastFrame;
@@ -155,7 +164,7 @@ typedef struct TerrainState_
     SDL_GPUBuffer*           vertexBuffer;
     SDL_GPUBuffer*           indexBuffer;
     SDL_GPUTransferBuffer*   transferBuffer;
-    SDL_GPUGraphicsPipeline* gbufferPipeline;
+    SDL_GPUGraphicsPipeline* forwardPipeline;
     SDL_GPUGraphicsPipeline* depthPipeline;
     SDL_GPUGraphicsPipeline* wirePipeline;
     Texture albedoLayers;
@@ -165,7 +174,10 @@ typedef struct TerrainState_
 
 static TerrainState g_Terrain;
 
-// matches the vs_params cbuffer in Terrain.hlsl / TerrainDepthOnly.hlsl
+static void TerrainChunkSyncPhysics(u32 slot);
+static void TerrainChunkDestroyPhysics(u32 slot);
+
+// matches the vs_params cbuffer in TerrainForward.hlsl / TerrainDepthOnly.hlsl
 typedef struct TerrainVSParams_
 {
     mat4x4 viewProj;
@@ -173,6 +185,15 @@ typedef struct TerrainVSParams_
     f32 cameraPosition[4];
     f32 cameraForward[4];
 } TerrainVSParams;
+
+typedef struct TerrainForwardFragmentParams_
+{
+    f32 sunDirection[4];
+    f32 brushPosRadius[4];
+    f32 cameraPosition[4];
+    u32 outputSize[2];
+    u32 pad0[2];
+} TerrainForwardFragmentParams;
 
 static f32 TerrainChunkWorldSize(u32 lod)
 {
@@ -211,8 +232,10 @@ static void TerrainChunkRelease(u32 slot)
     g_Terrain.freeSlots[g_Terrain.numFreeSlots++] = slot;
 }
 
-static void TerrainChunkFreeMesh(TerrainChunk* chunk)
+static void TerrainChunkFreeMeshEx(u32 slot, bool destroyPhysics)
 {
+    TerrainChunk* chunk = &g_Terrain.chunks[slot];
+    if (destroyPhysics) TerrainChunkDestroyPhysics(slot);
     if (chunk->vertexHeapPtr) GeometryHeapFree(GeometryBuffer_TerrainVertex, chunk->vertexHeapPtr);
     if (chunk->indexHeapPtr)  GeometryHeapFree(GeometryBuffer_TerrainIndex, chunk->indexHeapPtr);
     if (chunk->numVertices) g_Terrain.numAllocatedVertices -= chunk->numVertices;
@@ -221,6 +244,11 @@ static void TerrainChunkFreeMesh(TerrainChunk* chunk)
     chunk->numVertices = chunk->numIndices = 0u;
     chunk->vertexHeapPtr = NULL;
     chunk->indexHeapPtr = NULL;
+}
+
+static void TerrainChunkFreeMesh(u32 slot)
+{
+    TerrainChunkFreeMeshEx(slot, true);
 }
 
 static void TerrainPendingPush(u32 slot)
@@ -237,7 +265,7 @@ static void TerrainChunkEvict(u32 slot)
 {
     TerrainChunk* chunk = &g_Terrain.chunks[slot];
     HMErase(&g_Terrain.chunkMap, TerrainChunkKey(chunk->x, chunk->y, chunk->z, chunk->lod));
-    TerrainChunkFreeMesh(chunk);
+    TerrainChunkFreeMesh(slot);
     if (chunk->jobSlot >= 0)
     {
         SDL_SetAtomicInt(&g_Terrain.jobs[chunk->jobSlot].cancel, 1);
@@ -478,7 +506,10 @@ static void TerrainResolveRetiring(void)
         TerrainChunk* chunk = &g_Terrain.chunks[i];
         if (!chunk->used || !chunk->hidden) continue;
         if (!TerrainCoveredByRetiring(chunk))
+        {
             chunk->hidden = 0;
+            TerrainChunkSyncPhysics(i);
+        }
     }
 }
 
@@ -518,24 +549,9 @@ static void TerrainJobRun(TerrainJob* job)
     SDL_SetAtomicInt(&job->state, JobState_Done);
 }
 
-// persistent pool workers: wake on the semaphore, grab a queued job slot with a CAS
-static int TerrainWorkerMain(void* data)
+static void TerrainJobRunTask(void* data)
 {
-    (void)data;
-    for (;;)
-    {
-        SDL_WaitSemaphore(g_Terrain.jobSemaphore);
-        if (SDL_GetAtomicInt(&g_Terrain.workersQuit)) return 0;
-        for (u32 i = 0; i < TERRAIN_MAX_JOBS; i++)
-        {
-            TerrainJob* job = &g_Terrain.jobs[i];
-            if (SDL_CompareAndSwapAtomicInt(&job->state, JobState_Queued, JobState_Running))
-            {
-                TerrainJobRun(job);
-                break;
-            }
-        }
-    }
+    TerrainJobRun((TerrainJob*)data);
 }
 
 static void TerrainDispatchJobs(const Camera* camera)
@@ -594,8 +610,17 @@ static void TerrainDispatchJobs(const Camera* camera)
         chunk->jobSlot = (s32)slot;
         if (chunk->state == ChunkState_Queued) chunk->state = ChunkState_Generating;
 
-        SDL_SetAtomicInt(&job->state, JobState_Queued);
-        SDL_SignalSemaphore(g_Terrain.jobSemaphore);
+        SDL_SetAtomicInt(&job->state, JobState_Running);
+        if (JobSystem_Execute(g_Terrain.jobSystem, TerrainJobRunTask, job) == 0)
+        {
+            AX_WARN("terrain job dispatch failed, chunk requeued");
+            chunk->jobSlot = -1;
+            chunk->state = ChunkState_Queued;
+            chunk->needRemesh = 0;
+            TerrainPendingPush(chunkSlot);
+            SDL_SetAtomicInt(&job->state, JobState_Free);
+            return;
+        }
     }
 }
 
@@ -653,7 +678,7 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         if (job->empty || job->mesh.numVertices == 0u || job->mesh.numIndices == 0u)
         {
             chunk->jobSlot = -1;
-            TerrainChunkFreeMesh(chunk);
+            TerrainChunkFreeMesh(job->chunkSlot);
             chunk->empty = 1;
             chunk->hidden = 0;
             chunk->appliedMask = job->transitionMask;
@@ -714,7 +739,7 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         // swap the resident mesh, the freed range can be reused immediately: the copy
         // pass lands before this frame's draws and the draws use the new offsets
         bool wasVisible = chunk->numIndices > 0u;
-        TerrainChunkFreeMesh(chunk);
+        TerrainChunkFreeMeshEx(job->chunkSlot, false);
         chunk->vertexHeapPtr = vertexRaw;
         chunk->indexHeapPtr  = indexRaw;
         chunk->vertexOffset = vertexOffset;
@@ -736,6 +761,7 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         float3 origin = { (f32)chunk->x * size, (f32)chunk->y * size, (f32)chunk->z * size };
         chunk->aabbMin = F3Add(origin, job->mesh.aabbMin);
         chunk->aabbMax = F3Add(origin, job->mesh.aabbMax);
+        TerrainChunkSyncPhysics(job->chunkSlot);
 
         // the desired mask moved on or a brush edit landed while the worker was
         // running: remesh with fresh data
@@ -772,6 +798,86 @@ static v128f TerrainDecodePosition(const TerrainVertex* v, v128f chunkOrigin, f3
     u32 qz = (v->posB >> 10) & 0x1FFFFFu;
     v128f local = VecSetR((f32)qx, (f32)qy, (f32)qz, 0.0f);
     return VecAdd(chunkOrigin, VecMulf(local, metersPerStep));
+}
+
+static f32 TerrainPhysicsTriangleAreaSq(const b3Vec3* vertices, u32 a, u32 b, u32 c)
+{
+    v128f v0 = Vec3Load(&vertices[a].x);
+    v128f v1 = Vec3Load(&vertices[b].x);
+    v128f v2 = Vec3Load(&vertices[c].x);
+    v128f cross = Vec3Cross(VecSub(v1, v0), VecSub(v2, v0));
+    return Vec3DotfV(cross, cross);
+}
+
+static void TerrainChunkDestroyPhysics(u32 slot)
+{
+    Scene* scene = Scene_GetActive();
+    if (!scene) return;
+    Scene_PhysicsDestroyTerrainChunk(scene, slot);
+}
+
+static void TerrainChunkSyncPhysics(u32 slot)
+{
+    Scene* scene = Scene_GetActive();
+    if (!scene) return;
+    if (slot >= TERRAIN_MAX_CHUNKS) return;
+
+    TerrainChunk* chunk = &g_Terrain.chunks[slot];
+    if (!chunk->used || chunk->state != ChunkState_Live || chunk->numIndices < 3u ||
+        chunk->numVertices == 0u || chunk->hidden || chunk->lod > TERRAIN_PHYSICS_MAX_LOD)
+    {
+        Scene_PhysicsDestroyTerrainChunk(scene, slot);
+        return;
+    }
+
+    ArenaMark mark = ArenaSave(&GlobalArena);
+    b3Vec3* vertices = (b3Vec3*)ArenaAllocGlobal(chunk->numVertices * sizeof(b3Vec3));
+    s32* indices = (s32*)ArenaAllocGlobal(chunk->numIndices * sizeof(s32));
+    if (!vertices || !indices)
+    {
+        ArenaRestore(&GlobalArena, mark);
+        AX_WARN("terrain physics: scratch allocation failed for chunk slot %u", slot);
+        Scene_PhysicsDestroyTerrainChunk(scene, slot);
+        return;
+    }
+
+    f32 size = TerrainChunkWorldSize(chunk->lod);
+    v128f chunkOrigin = VecSetR((f32)chunk->x * size, (f32)chunk->y * size, (f32)chunk->z * size, 0.0f);
+    f32 metersPerStep = size / (f32)TERRAIN_POS_MAX;
+    TerrainVertex* srcVertices = (TerrainVertex*)gGFX.TerrainVertexBuffer + chunk->vertexOffset;
+    for (u32 v = 0; v < chunk->numVertices; v++)
+    {
+        v128f p = TerrainDecodePosition(&srcVertices[v], chunkOrigin, metersPerStep);
+        vertices[v] = (b3Vec3){ VecGetX(p), VecGetY(p), VecGetZ(p) };
+    }
+
+    u32 outIndexCount = 0u;
+    const u32* srcIndices = gGFX.TerrainIndexBuffer + chunk->indexOffset;
+    for (u32 t = 0; t + 2u < chunk->numIndices; t += 3u)
+    {
+        u32 i0 = srcIndices[t + 0u];
+        u32 i1 = srcIndices[t + 1u];
+        u32 i2 = srcIndices[t + 2u];
+        if (i0 >= chunk->numVertices || i1 >= chunk->numVertices || i2 >= chunk->numVertices)
+            continue;
+        if (TerrainPhysicsTriangleAreaSq(vertices, i0, i1, i2) <= 1.0e-10f)
+            continue;
+
+        indices[outIndexCount++] = (s32)i0;
+        indices[outIndexCount++] = (s32)i1;
+        indices[outIndexCount++] = (s32)i2;
+    }
+
+    if (outIndexCount < 3u)
+    {
+        ArenaRestore(&GlobalArena, mark);
+        Scene_PhysicsDestroyTerrainChunk(scene, slot);
+        return;
+    }
+
+    if (!Scene_PhysicsSyncTerrainChunkMesh(scene, slot, vertices, chunk->numVertices, indices, outIndexCount))
+        Scene_PhysicsDestroyTerrainChunk(scene, slot);
+    ArenaRestore(&GlobalArena, mark);
 }
 
 s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit)
@@ -873,10 +979,31 @@ static u32 TerrainDrawChunks(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
     return drawn;
 }
 
+static void TerrainSetRenderViewport(SDL_GPURenderPass* pass, u32 width, u32 height)
+{
+    SDL_GPUViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .w = (f32)Maxu32(width, 1u),
+        .h = (f32)Maxu32(height, 1u),
+        .min_depth = 0.0f,
+        .max_depth = 1.0f
+    };
+    SDL_Rect scissor = {
+        .x = 0,
+        .y = 0,
+        .w = (int)Maxu32(width, 1u),
+        .h = (int)Maxu32(height, 1u)
+    };
+    SDL_SetGPUViewport(pass, &viewport);
+    SDL_SetGPUScissor(pass, &scissor);
+}
+
 void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
     if (!Terrain_HasDraws()) return;
 
+    TerrainSetRenderViewport(pass, g_WindowState.render_width, g_WindowState.render_height);
     SDL_BindGPUGraphicsPipeline(pass, g_Terrain.depthPipeline);
     SDL_GPUBufferBinding vertexBinding = { g_Terrain.vertexBuffer, 0 };
     SDL_GPUBufferBinding indexBinding  = { g_Terrain.indexBuffer, 0 };
@@ -885,12 +1012,15 @@ void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat
     TerrainDrawChunks(cmd, pass, viewProj);
 }
 
-void Terrain_RenderGBuffer(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
+void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj, u32 width, u32 height)
 {
     if (!Terrain_HasDraws()) return;
-    if (!g_WindowState.tex_shadow_color || !g_RenderState.shadowCascadeBuffer) return;
+    if (!g_WindowState.tex_shadow_color || !g_RenderState.shadowCascadeBuffer ||
+        !g_WindowState.tex_hbao_blur || !g_WindowState.tex_contact_shadow)
+        return;
 
-    SDL_BindGPUGraphicsPipeline(pass, g_Terrain.gbufferPipeline);
+    TerrainSetRenderViewport(pass, width, height);
+    SDL_BindGPUGraphicsPipeline(pass, g_Terrain.forwardPipeline);
     SDL_GPUBufferBinding vertexBinding = { g_Terrain.vertexBuffer, 0 };
     SDL_GPUBufferBinding indexBinding  = { g_Terrain.indexBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
@@ -899,20 +1029,31 @@ void Terrain_RenderGBuffer(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, m
     SDL_GPUBuffer* vertexStorage[1] = { g_RenderState.shadowCascadeBuffer };
     SDL_BindGPUVertexStorageBuffers(pass, 0, vertexStorage, 1);
 
-    SDL_GPUTextureSamplerBinding samplers[4] = {
+    SDL_GPUTextureSamplerBinding samplers[6] = {
         { .texture = g_Terrain.albedoLayers.handle, .sampler = g_RenderState.sampler },
         { .texture = g_Terrain.normalLayers.handle, .sampler = g_RenderState.sampler },
         { .texture = g_Terrain.armLayers.handle,    .sampler = g_RenderState.sampler },
-        { .texture = g_WindowState.tex_shadow_color, .sampler = g_RenderState.shadowSampler }
+        { .texture = g_WindowState.tex_shadow_color, .sampler = g_RenderState.shadowSampler },
+        { .texture = g_WindowState.tex_hbao_blur, .sampler = g_RenderState.sampler },
+        { .texture = g_WindowState.tex_contact_shadow, .sampler = g_RenderState.sampler }
     };
     SDL_BindGPUFragmentSamplers(pass, 0, samplers, SDL_arraysize(samplers));
 
     float3 sunDirection = GetRenderSunDirection();
-    f32 fragmentParams[8] = {
-        sunDirection.x, sunDirection.y, sunDirection.z, 0.0f,
-        g_Terrain.brushPos.x, g_Terrain.brushPos.y, g_Terrain.brushPos.z, g_Terrain.brushRadius
-    };
-    SDL_PushGPUFragmentUniformData(cmd, 0, fragmentParams, sizeof(fragmentParams));
+    TerrainForwardFragmentParams fragmentParams = {0};
+    fragmentParams.sunDirection[0] = sunDirection.x;
+    fragmentParams.sunDirection[1] = sunDirection.y;
+    fragmentParams.sunDirection[2] = sunDirection.z;
+    fragmentParams.brushPosRadius[0] = g_Terrain.brushPos.x;
+    fragmentParams.brushPosRadius[1] = g_Terrain.brushPos.y;
+    fragmentParams.brushPosRadius[2] = g_Terrain.brushPos.z;
+    fragmentParams.brushPosRadius[3] = g_Terrain.brushRadius;
+    fragmentParams.cameraPosition[0] = g_Camera.position.x;
+    fragmentParams.cameraPosition[1] = g_Camera.position.y;
+    fragmentParams.cameraPosition[2] = g_Camera.position.z;
+    fragmentParams.outputSize[0] = width;
+    fragmentParams.outputSize[1] = height;
+    SDL_PushGPUFragmentUniformData(cmd, 0, &fragmentParams, sizeof(fragmentParams));
 
     g_Terrain.drawnLastFrame = TerrainDrawChunks(cmd, pass, viewProj);
 }
@@ -967,36 +1108,31 @@ static void TerrainInitPipelines(void)
         .num_vertex_attributes = 1
     };
 
-    // g-buffer pass, formats and depth state match InitSurfacePipeline
+    // forward pass, formats and depth state match the opaque forward surface pass
     {
-        SDL_GPUShader* vert = TerrainCreateShader(Shaders_TerrainVert_spv, sizeof(Shaders_TerrainVert_spv),
+        SDL_GPUShader* vert = TerrainCreateShader(Shaders_TerrainForwardVert_spv, sizeof(Shaders_TerrainForwardVert_spv),
                                                   SDL_GPU_SHADERSTAGE_VERTEX, "vert", 1, 0, 1);
-        SDL_GPUShader* frag = TerrainCreateShader(Shaders_TerrainFrag_spv, sizeof(Shaders_TerrainFrag_spv),
-                                                  SDL_GPU_SHADERSTAGE_FRAGMENT, "frag", 1, 4, 0);
-        const SDL_GPUColorTargetDescription gbufferTargets[3] = {
-            { .format = SDL_GPU_TEXTUREFORMAT_R32_UINT       },
-            { .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM },
-            { .format = SDL_GPU_TEXTUREFORMAT_R8G8_UNORM     }
-        };
-        g_Terrain.gbufferPipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){
+        SDL_GPUShader* frag = TerrainCreateShader(Shaders_TerrainForwardFrag_spv, sizeof(Shaders_TerrainForwardFrag_spv),
+                                                  SDL_GPU_SHADERSTAGE_FRAGMENT, "frag", 1, 6, 0);
+        g_Terrain.forwardPipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){
             .vertex_shader   = vert,
             .fragment_shader = frag,
             .primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
             .target_info     = (SDL_GPUGraphicsPipelineTargetInfo){
-                .num_color_targets         = 3,
-                .color_target_descriptions = gbufferTargets,
+                .num_color_targets         = 1,
+                .color_target_descriptions = &(SDL_GPUColorTargetDescription){ .format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT },
                 .depth_stencil_format      = SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
                 .has_depth_stencil_target  = true
             },
             .depth_stencil_state = (SDL_GPUDepthStencilState){
                 .enable_depth_test  = true,
-                .enable_depth_write = false,
+                .enable_depth_write = g_RenderState.sceneSampleCount != SDL_GPU_SAMPLECOUNT_1,
                 .compare_op         = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL
             },
-            .multisample_state  = (SDL_GPUMultisampleState){ .sample_count = SDL_GPU_SAMPLECOUNT_1 },
+            .multisample_state  = (SDL_GPUMultisampleState){ .sample_count = g_RenderState.sceneSampleCount },
             .vertex_input_state = vertexInput
         });
-        CHECK_CREATE(g_Terrain.gbufferPipeline, "Terrain GBuffer Pipeline");
+        CHECK_CREATE(g_Terrain.forwardPipeline, "Terrain Forward Pipeline");
         SDL_ReleaseGPUShader(g_GPUDevice, vert);
         SDL_ReleaseGPUShader(g_GPUDevice, frag);
     }
@@ -1150,18 +1286,12 @@ void Terrain_Init(void)
         SDL_SetAtomicInt(&job->state, JobState_Free);
     }
 
-    // persistent worker pool, sized to the machine but capped: terrain meshing should
-    // never starve the rest of the engine
-    SDL_SetAtomicInt(&g_Terrain.workersQuit, 0);
-    g_Terrain.jobSemaphore = SDL_CreateSemaphore(0);
-    CHECK_CREATE(g_Terrain.jobSemaphore, "Terrain Job Semaphore");
+    // persistent job pool, sized below full machine capacity so terrain meshing does
+    // not starve the rest of the engine.
     s32 cores = SDL_GetNumLogicalCPUCores();
-    g_Terrain.numWorkers = (u32)Clamps32(cores - 2, 2, TERRAIN_MAX_WORKERS);
-    for (u32 i = 0; i < g_Terrain.numWorkers; i++)
-    {
-        g_Terrain.workers[i] = SDL_CreateThread(TerrainWorkerMain, "terrain_worker", NULL);
-        CHECK_CREATE(g_Terrain.workers[i], "Terrain Worker Thread");
-    }
+    u32 terrainWorkers = (u32)Clamps32(cores - 2, 2, 8);
+    g_Terrain.jobSystem = JobSystem_Create(terrainWorkers, TERRAIN_MAX_JOBS);
+    CHECK_CREATE(g_Terrain.jobSystem, "Terrain Job System");
 
     g_Terrain.vertexBuffer   = CreateBuffer(NULL, TERRAIN_MAX_VERTICES * sizeof(TerrainVertex), BVertexBit, "TerrainVertexBuffer");
     g_Terrain.indexBuffer    = CreateBuffer(NULL, TERRAIN_MAX_INDICES * sizeof(u32), SDL_GPU_BUFFERUSAGE_INDEX, "TerrainIndexBuffer");
@@ -1182,15 +1312,11 @@ void Terrain_Destroy(void)
 {
     if (!g_Terrain.initialized) return;
 
-    // stop the pool: workers drain their current job, then exit on the quit signal
+    // stop the pool after in-flight jobs observe cancellation and finish
     for (u32 i = 0; i < TERRAIN_MAX_JOBS; i++)
         SDL_SetAtomicInt(&g_Terrain.jobs[i].cancel, 1);
-    SDL_SetAtomicInt(&g_Terrain.workersQuit, 1);
-    for (u32 i = 0; i < g_Terrain.numWorkers; i++)
-        SDL_SignalSemaphore(g_Terrain.jobSemaphore);
-    for (u32 i = 0; i < g_Terrain.numWorkers; i++)
-        SDL_WaitThread(g_Terrain.workers[i], NULL);
-    SDL_DestroySemaphore(g_Terrain.jobSemaphore);
+    JobSystem_Wait(g_Terrain.jobSystem);
+    JobSystem_Destroy(g_Terrain.jobSystem);
 
     for (u32 i = 0; i < TERRAIN_MAX_JOBS; i++)
     {
@@ -1200,7 +1326,7 @@ void Terrain_Destroy(void)
         Transvoxel_MeshOutDestroy(&job->mesh);
     }
 
-    if (g_Terrain.gbufferPipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.gbufferPipeline);
+    if (g_Terrain.forwardPipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.forwardPipeline);
     if (g_Terrain.depthPipeline)   SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.depthPipeline);
     if (g_Terrain.wirePipeline)    SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.wirePipeline);
     if (g_Terrain.vertexBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.vertexBuffer);
@@ -1211,7 +1337,7 @@ void Terrain_Destroy(void)
     ReleaseTexture(&g_Terrain.armLayers);
 
     for (u32 i = 0; i < TERRAIN_MAX_CHUNKS; i++)
-        TerrainChunkFreeMesh(&g_Terrain.chunks[i]);
+        TerrainChunkFreeMesh(i);
 
     HMDestroy(&g_Terrain.chunkMap);
     DeAllocateTLSFGlobal(g_Terrain.chunks);
@@ -1581,7 +1707,7 @@ TerrainStats Terrain_GetStats(void)
     for (u32 i = 0; i < TERRAIN_MAX_JOBS; i++)
     {
         s32 jobState = SDL_GetAtomicInt((SDL_AtomicInt*)&g_Terrain.jobs[i].state);
-        if (jobState == JobState_Queued || jobState == JobState_Running) stats.jobsInFlight++;
+        if (jobState == JobState_Running) stats.jobsInFlight++;
     }
     stats.drawnChunks = g_Terrain.drawnLastFrame;
     stats.numVertices = g_Terrain.numAllocatedVertices;

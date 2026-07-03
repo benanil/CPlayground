@@ -1,0 +1,14 @@
+terrain 1
+fixed_chunk_size 0
+island 1
+seed 1.
+sea_level 0.000
+base_height -8.000
+hill_amplitude 0.499
+hill_frequency 0.699999
+ridge_amplitude 0.450
+ridge_frequency 0.450000
+cave_amplitude 0.500
+cave_frequency 0.045000
+island_radius 250.000
+island_falloff 120.000

@@ -156,7 +156,7 @@ typedef struct AnimatedCharacter_
     // lower body bones are starting from 60th with Brute character and 58 with mixamo Paladin Character
     // used for animating diferrent animations for legs and uper body
     // this value can change from character to character. 
-    // you can detect using 3DVert and GBuffer shader just uncomment lines with vBoneIdx, and it will visualize lower body as white
+    // uncomment lines with vBoneIdx in the vertex debug path to visualize lower body as white
     // Maybe Add: automatic detect.
     s32 lowerBodyIdxStart; 
 

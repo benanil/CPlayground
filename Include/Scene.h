@@ -13,6 +13,7 @@
 #define MAX_SCENE_BUNDLES 1024u
 #define MAX_SCENE_LIGHTS  256u
 #define MAX_THROWN_SPHERES 512u
+#define MAX_TERRAIN_PHYSICS_CHUNKS 2048u
 
 // one bundle registered in a scene
 typedef struct SceneBundleRef_
@@ -106,6 +107,8 @@ typedef struct Scene_
 	struct b3MeshData*   transparentPhysicsMeshes[MAX_GROUP];
 	b3BodyId* surfacePhysicsBodies;
 	b3BodyId* transparentPhysicsBodies;
+	struct b3MeshData* terrainPhysicsMeshes[MAX_TERRAIN_PHYSICS_CHUNKS];
+	b3BodyId           terrainPhysicsBodies[MAX_TERRAIN_PHYSICS_CHUNKS];
 
 	// physics overrides parsed from a .scene file, applied once the async collider
 	// build finishes (bodies do not exist until then). tlsf-owned, freed on apply.
@@ -178,6 +181,10 @@ void Scene_PhysicsApplyWorldSettings(Scene* scene);
 void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback);
 void Scene_BuildStaticColliders(Scene* scene);
 void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity);
+bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
+                                       const b3Vec3* vertices, u32 vertexCount,
+                                       const s32* indices, u32 indexCount);
+void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot);
 // Swaps the collider shape of the entity's body in place. b3_meshShape restores the
 // original triangle collider; sphere/capsule/hull are derived from the primitive
 // bounds. Compound/height are unsupported and return false. Runtime-only.

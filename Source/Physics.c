@@ -126,6 +126,7 @@ void Scene_InitPhysics(Scene* scene)
 }
 
 static void PhysicsDestroyMeshStorage(Scene* scene, bool transparent);
+static void PhysicsDestroyTerrainMeshStorage(Scene* scene);
 
 void Scene_PhysicsDestroy(Scene* scene)
 {
@@ -135,6 +136,7 @@ void Scene_PhysicsDestroy(Scene* scene)
 
 	PhysicsDestroyMeshStorage(scene, false);
 	PhysicsDestroyMeshStorage(scene, true);
+	PhysicsDestroyTerrainMeshStorage(scene);
 	if (scene->surfacePhysicsBodies) DeAllocateTLSFGlobal(scene->surfacePhysicsBodies);
 	if (scene->transparentPhysicsBodies) DeAllocateTLSFGlobal(scene->transparentPhysicsBodies);
 	if (scene->pendingPhysics) DeAllocateTLSFGlobal(scene->pendingPhysics);
@@ -143,6 +145,8 @@ void Scene_PhysicsDestroy(Scene* scene)
 	scene->pendingPhysics = NULL;
 	scene->numPendingPhysics = 0;
 	scene->physicsWorldID = b3_nullWorldId;
+	for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
+		scene->terrainPhysicsBodies[i] = b3_nullBodyId;
 }
 
 b3Vec3 ToB3Vec3(v128f v) { return (b3Vec3){ VecGetX(v), VecGetY(v), VecGetZ(v) }; }
@@ -162,17 +166,17 @@ b3Quat ToB3Quat(v128f q)
 v128f SceneB3PosToVec3(b3Pos p) { return VecSetR((f32)p.x, (f32)p.y, (f32)p.z, 0.0f); }
 u64 SceneB3QuatToEntityRotation(b3Quat q) { return EntityPackRotation(VecSetR(q.v.x, q.v.y, q.v.z, q.s)); }
 
-static RenderSet* PhysicsSet(const Scene* scene, bool transparent)
+static RenderSet* PhysicsSet(Scene* scene, bool transparent)
 {
 	return transparent ? &scene->transparentSurfaceSet : &scene->surfaceSet;
 }
 
-static b3MeshData** PhysicsMeshes(const Scene* scene, bool transparent)
+static b3MeshData** PhysicsMeshes(Scene* scene, bool transparent)
 {
 	return transparent ? scene->transparentPhysicsMeshes : scene->surfacePhysicsMeshes;
 }
 
-static b3BodyId* PhysicsBodies(const Scene* scene, bool transparent)
+static b3BodyId* PhysicsBodies(Scene* scene, bool transparent)
 {
 	return transparent ? scene->transparentPhysicsBodies : scene->surfacePhysicsBodies;
 }
@@ -190,6 +194,21 @@ static b3BodyId* PhysicsEntitySlot(const Scene* scene, bool transparent, const E
 static uintptr_t PhysicsBodyUserData(u32 sparseIdx, bool transparent)
 {
 	return ((uintptr_t)sparseIdx << 1u) | (transparent ? 1u : 0u);
+}
+
+static uintptr_t PhysicsTerrainUserData(u32 chunkSlot)
+{
+	return ((uintptr_t)1u << (sizeof(uintptr_t) * 8u - 1u)) | (uintptr_t)chunkSlot;
+}
+
+static bool PhysicsUserDataIsTerrain(void* userData)
+{
+	return (((uintptr_t)userData) & ((uintptr_t)1u << (sizeof(uintptr_t) * 8u - 1u))) != 0u;
+}
+
+static u32 PhysicsUserDataTerrainChunk(void* userData)
+{
+	return (u32)(((uintptr_t)userData) & ~((uintptr_t)1u << (sizeof(uintptr_t) * 8u - 1u)));
 }
 
 static u32 PhysicsUserDataSparse(void* userData)
@@ -251,6 +270,8 @@ static void PhysicsDestroyLiveStaticColliders(Scene* scene)
 {
 	PhysicsDestroyBodies(scene->surfacePhysicsBodies, scene->surfaceSet.maxEntities);
 	PhysicsDestroyBodies(scene->transparentPhysicsBodies, scene->transparentSurfaceSet.maxEntities);
+	for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
+		Scene_PhysicsDestroyTerrainChunk(scene, i);
 	PhysicsDestroyMeshStorage(scene, false);
 	PhysicsDestroyMeshStorage(scene, true);
 }
@@ -376,6 +397,92 @@ void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, c
 	}
 
 	b3Body_SetTransform(body, ToB3Vec3(entity->position), ToB3Quat(EntityUnpackRotation(entity->rotation)));
+}
+
+void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot)
+{
+	if (!scene || chunkSlot >= MAX_TERRAIN_PHYSICS_CHUNKS) return;
+	if (B3_IS_NON_NULL(scene->terrainPhysicsBodies[chunkSlot]))
+		b3DestroyBody(scene->terrainPhysicsBodies[chunkSlot]);
+	scene->terrainPhysicsBodies[chunkSlot] = b3_nullBodyId;
+	if (scene->terrainPhysicsMeshes[chunkSlot])
+	{
+		b3DestroyMesh(scene->terrainPhysicsMeshes[chunkSlot]);
+		scene->terrainPhysicsMeshes[chunkSlot] = NULL;
+	}
+}
+
+static void PhysicsDestroyTerrainMeshStorage(Scene* scene)
+{
+	for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
+	{
+		if (!scene->terrainPhysicsMeshes[i]) continue;
+		b3DestroyMesh(scene->terrainPhysicsMeshes[i]);
+		scene->terrainPhysicsMeshes[i] = NULL;
+	}
+}
+
+bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
+                                       const b3Vec3* vertices, u32 vertexCount,
+                                       const s32* indices, u32 indexCount)
+{
+	if (!scene || B3_IS_NULL(scene->physicsWorldID)) return false;
+	if (chunkSlot >= MAX_TERRAIN_PHYSICS_CHUNKS) return false;
+	if (!vertices || !indices || vertexCount == 0u || indexCount < 3u) return false;
+
+	b3MeshDef md     = {0};
+	md.vertices      = vertices;
+	md.indices       = indices;
+	md.vertexCount   = (int)vertexCount;
+	md.triangleCount = (int)(indexCount / 3u);
+	md.identifyEdges = true;
+	b3MeshData* mesh = b3CreateMesh(&md, NULL, 0);
+	if (!mesh)
+	{
+		AX_WARN("physics: terrain mesh build failed for chunk slot %u", chunkSlot);
+		return false;
+	}
+
+	b3MeshData* oldMesh = scene->terrainPhysicsMeshes[chunkSlot];
+	b3BodyId body = scene->terrainPhysicsBodies[chunkSlot];
+	if (B3_IS_NULL(body))
+	{
+		b3BodyDef bd = b3DefaultBodyDef();
+		bd.type     = b3_staticBody;
+		bd.userData = (void*)PhysicsTerrainUserData(chunkSlot);
+		body = b3CreateBody(scene->physicsWorldID, &bd);
+
+		b3ShapeDef sd = b3DefaultShapeDef();
+		sd.filter.categoryBits = PHYS_CAT_SURFACE;
+		b3ShapeId shape = b3CreateMeshShape(body, &sd, mesh, b3Vec3_one);
+		if (B3_IS_NULL(shape))
+		{
+			b3DestroyBody(body);
+			b3DestroyMesh(mesh);
+			AX_WARN("physics: terrain shape build failed for chunk slot %u", chunkSlot);
+			return false;
+		}
+
+		scene->terrainPhysicsBodies[chunkSlot] = body;
+	}
+	else
+	{
+		b3ShapeId shape;
+		if (b3Body_GetShapes(body, &shape, 1) <= 0 || b3Shape_GetType(shape) != b3_meshShape)
+		{
+			b3DestroyBody(body);
+			scene->terrainPhysicsBodies[chunkSlot] = b3_nullBodyId;
+			if (oldMesh) b3DestroyMesh(oldMesh);
+			scene->terrainPhysicsMeshes[chunkSlot] = NULL;
+			b3DestroyMesh(mesh);
+			return Scene_PhysicsSyncTerrainChunkMesh(scene, chunkSlot, vertices, vertexCount, indices, indexCount);
+		}
+		b3Shape_SetMesh(shape, mesh, b3Vec3_one);
+	}
+
+	scene->terrainPhysicsMeshes[chunkSlot] = mesh;
+	if (oldMesh) b3DestroyMesh(oldMesh);
+	return true;
 }
 
 bool Scene_PhysicsSetEntityShape(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity, b3ShapeType type)
@@ -573,9 +680,7 @@ static void Scene_PhysicsRemoveGroupMeshes(Scene* scene, bool transparent, u32 f
 	b3MeshData** meshes = PhysicsMeshes(scene, transparent);
 	if (!meshes) return;
 	RenderSet* set = PhysicsSet(scene, transparent);
-	if (firstGroup >= set->maxGroups) return;
-	if (groupCount > set->maxGroups - firstGroup)
-		groupCount = set->maxGroups - firstGroup;
+	groupCount = Minu32(groupCount, set->maxGroups - firstGroup);
 	u32 afterRemoved = firstGroup + groupCount;
 	u32 last = Minu32(afterRemoved, set->maxGroups);
 	for (u32 i = firstGroup; i < last; i++)
@@ -595,12 +700,7 @@ static void Scene_PhysicsRemoveGroupMeshes(Scene* scene, bool transparent, u32 f
 static bool RenderSetPhysicsKind(const RenderSet* set, bool* transparent)
 {
 	if (!set || set->skinned) return false;
-	if (set->materialFilter == RenderSetMaterialFilter_Opaque)
-		*transparent = false;
-	else if (set->materialFilter == RenderSetMaterialFilter_Transparent)
-		*transparent = true;
-	else
-		return false;
+	*transparent = set->materialFilter == RenderSetMaterialFilter_Transparent;
 	return true;
 }
 
@@ -720,6 +820,19 @@ s32 Scene_PhysicsRaycastPick(const Scene* scene, v128f origin, v128f dir, BVHHit
 
 	// body userData packs the sparse id plus the render-set kind; resolve it to (group, local entity)
 	void* userData = b3Body_GetUserData(b3Shape_GetBody(r.shapeId));
+	if (PhysicsUserDataIsTerrain(userData))
+	{
+		hit->hit.t      = t;
+		hit->hit.u      = 0.0f;
+		hit->hit.v      = 0.0f;
+		hit->skinnedSet = 0xFFFFFFFFu;
+		hit->bundleIdx  = 0xFFFFFFFFu;
+		hit->groupIdx   = 0u;
+		hit->entityIdx  = PhysicsUserDataTerrainChunk(userData);
+		hit->triIndex   = (u32)r.triangleIndex;
+		return 1;
+	}
+
 	u32 sparse = PhysicsUserDataSparse(userData);
 	const RenderSet* set = PhysicsUserDataTransparent(userData) ? &scene->transparentSurfaceSet : &scene->surfaceSet;
 	if (sparse >= set->maxEntities) return 0;

@@ -102,7 +102,7 @@ TerrainStats Terrain_GetStats(void);
 // must run before any render pass uses the terrain buffers
 void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd);
 void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj);
-void Terrain_RenderGBuffer(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj);
+void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj, u32 width, u32 height);
 // line overlay over the lit scene, enabled by g_RenderSettings.terrainWireframe
 void Terrain_RenderWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
                              SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj);

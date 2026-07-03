@@ -1,10 +1,8 @@
 #ifndef LOCAL_LIGHTS_HLSL
 #define LOCAL_LIGHTS_HLSL
 
-// Shared Forward+ local-light shading. Unlike DeferredLightVolume.hlsl (which renders
-// one screen-space quad per light and may `discard`), this is meant to be called inside
-// a per-pixel loop over a tile's light list, so the out-of-range path returns 0 instead
-// of discarding the fragment.
+// Shared Forward+ local-light shading. This is meant to be called inside a per-pixel
+// loop over a tile's light list, so the out-of-range path returns 0.
 //
 // The including shader MUST declare these globals (at whatever registers fit its layout)
 // before including this file:

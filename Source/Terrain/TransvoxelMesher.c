@@ -67,7 +67,7 @@ static s32 TVEnsure(void** buf, u32* capacity, u32 needed, u32 stride)
     return 1;
 }
 
-// octahedral encode to 16+16 unorm, matching TerrainDecodeNormal in Terrain.hlsl
+// octahedral encode to 16+16 unorm, matching TerrainDecodeNormal in TerrainForward.hlsl
 static u32 TVOctEncode16(v128f n)
 {
     v128f oct = OctEncode(n);
@@ -90,7 +90,7 @@ static u32 TVEmitVertex(TerrainMeshOut* out, const u32 q[3], v128f normal, f32 v
     // material selection happens here once, the shader only blends what the vertex
     // says: spare = layerA | layerB<<8 | weightA<<16 | weightB<<24 with actual
     // texture array layers. unpainted ground resolves the procedural slope/height
-    // choice (formerly per pixel in Terrain.hlsl) from the vertex normal and height
+    // choice (formerly per pixel in TerrainForward.hlsl) from the vertex normal and height
     f32 metersPerStep = (f32)(1 << out->lod) * (1.0f / (f32)TERRAIN_POS_PER_CELL);
     float3 wpos = {
         (f32)out->worldOrigin[0] + (f32)q[0] * metersPerStep,

@@ -98,7 +98,7 @@ static void DrawRenderBufferScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* 
     SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 
     // skinned meshes bind animated vertices ahead of the shadow cascades, so the cascade
-    // buffer lands one slot later than the surface layout. The GBuffer pass also needs the bone
+    // buffer lands one slot later than the surface layout. The forward pass also needs the bone
     // matrices (t5) because it re-skins the tangent frame (not cached in the position-only buffer).
     SDL_GPUBuffer* storageBuffers[6];
     u32 count = 0;
@@ -227,6 +227,8 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->surfaceSet, &scene->surfaceBuffers,
                             g_RenderState.surface.forwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
                             &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
+
+    Terrain_RenderForward(cmd, pass, ctx->viewProj, width, height);
 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSurfaceSet, &scene->transparentSurfaceBuffers,
                             g_RenderState.surface.transparentForwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,

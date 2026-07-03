@@ -8,9 +8,6 @@
 #include "Shaders/msl/SkinnedForwardVert.msl.h"
 #include "Shaders/msl/ReconstructNormalCompute.msl.h"
 #include "Shaders/msl/PreProcessing/BuildLightGridCompute.msl.h"
-#include "Shaders/msl/DeferredLightVolumeFrag.msl.h"
-#include "Shaders/msl/DeferredLightVolumeVert.msl.h"
-#include "Shaders/msl/DeferredLighting.msl.h"
 #include "Shaders/msl/PreProcessing/CullDrawArgsCompute.msl.h"
 #include "Shaders/msl/Animation/AnimationCompute.msl.h"
 #include "Shaders/msl/Animation/AnimateVertices.msl.h"
@@ -51,9 +48,6 @@
 #include "Shaders/msl/Shadow/SurfaceSpotShadowDepthOnlyVert.msl.h"
 #include "Shaders/msl/Shadow/SkinnedSpotShadowDepthOnlyVert.msl.h"
 
-#define Shaders_DeferredLightVolumeFrag_spv Shaders_DeferredLightVolumeFrag_msl
-#define Shaders_DeferredLightVolumeVert_spv Shaders_DeferredLightVolumeVert_msl
-#define Shaders_DeferredLighting_spv Shaders_DeferredLighting_msl
 #define Shaders_AnimationCompute_spv Shaders_Animation_AnimationCompute_msl
 #define Shaders_AnimateVertices_spv Shaders_Animation_AnimateVertices_msl
 #define Shaders_CullDrawArgsCompute_spv Shaders_PreProcessing_CullDrawArgsCompute_msl
@@ -101,9 +95,6 @@
 #include "Shaders/spv/SkinnedForwardVert.spv.h"
 #include "Shaders/spv/ReconstructNormalCompute.spv.h"
 #include "Shaders/spv/PreProcessing/BuildLightGridCompute.spv.h"
-#include "Shaders/spv/DeferredLightVolumeFrag.spv.h"
-#include "Shaders/spv/DeferredLightVolumeVert.spv.h"
-#include "Shaders/spv/DeferredLighting.spv.h"
 #include "Shaders/spv/PreProcessing/CullDrawArgsCompute.spv.h"
 #include "Shaders/spv/Animation/AnimationCompute.spv.h"
 #include "Shaders/spv/Animation/AnimateVertices.spv.h"
@@ -238,7 +229,6 @@ SDL_GPUComputePipeline* g_HiZDownscaleComputePipeline    = NULL;
 SDL_GPUComputePipeline* g_HBAOComputePipeline            = NULL;
 SDL_GPUComputePipeline* g_HBAOBlurComputePipeline        = NULL;
 SDL_GPUComputePipeline* g_ContactShadowsComputePipeline  = NULL;
-SDL_GPUComputePipeline* g_DeferredLightingComputePipeline= NULL;
 SDL_GPUComputePipeline* g_MLAAEdgeMaskComputePipeline    = NULL;
 SDL_GPUComputePipeline* g_MLAALineLengthComputePipeline  = NULL;
 SDL_GPUComputePipeline* g_MLAABlendComputePipeline       = NULL;
@@ -312,11 +302,6 @@ static void InitComputePipelines(void)
         .num_samplers = 1, .num_readwrite_storage_textures = 1, .num_uniform_buffers = 1,
         THREAD_COUNT_XYZ(64, 1, 1)
     }); CHECK_CREATE(g_ContactShadowsComputePipeline, "Contact Shadows Compute Pipeline");
-
-    g_DeferredLightingComputePipeline = COMPUTE_DEF(Shaders_DeferredLighting_spv),
-        .num_samplers = 5, .num_readwrite_storage_textures = 1, .num_uniform_buffers = 1,
-        THREAD_COUNT_XYZ(8, 8, 1)
-    }); CHECK_CREATE(g_DeferredLightingComputePipeline, "Deferred Lighting Compute Pipeline");
 
     g_MLAAEdgeMaskComputePipeline = COMPUTE_DEF(Shaders_MLAAEdgeMaskCompute_spv),
         .num_samplers = 1, .num_readwrite_storage_textures = 1, .num_uniform_buffers = 1,
@@ -895,7 +880,6 @@ void DestroyRenderPipelines(void)
     if (g_HBAOComputePipeline)             SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HBAOComputePipeline);
     if (g_HBAOBlurComputePipeline)         SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HBAOBlurComputePipeline);
     if (g_ContactShadowsComputePipeline)   SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_ContactShadowsComputePipeline);
-    if (g_DeferredLightingComputePipeline) SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_DeferredLightingComputePipeline);
     if (g_MLAAEdgeMaskComputePipeline)     SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_MLAAEdgeMaskComputePipeline);
     if (g_MLAALineLengthComputePipeline)   SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_MLAALineLengthComputePipeline);
     if (g_MLAABlendComputePipeline)        SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_MLAABlendComputePipeline);

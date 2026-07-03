@@ -26,7 +26,7 @@ GRAPHICS_SHADERS = [
     ("Shadow/SkinnedShadowDepthOnly", "vert", "frag"),
     ("Shadow/SurfacePointShadowDepthOnly", "vert", "frag"),
     ("Shadow/SkinnedPointShadowDepthOnly", "vert", "frag"),
-    ("Terrain", "vert", "frag"),
+    ("TerrainForward", "vert", "frag"),
     ("TerrainDepthOnly", "vert", "frag"),
 ]
 
@@ -63,7 +63,7 @@ MSL_FIXUPS = {
     "SurfaceFrag": [
         ("NormalPages [[texture(0)]]", "NormalPages [[texture(1)]]"),
     ],
-    "TerrainFrag": [
+    "TerrainForwardFrag": [
         ("NormalLayers [[texture(0)]]", "NormalLayers [[texture(1)]]"),
     ],
     "Animation/AnimateVertices": [

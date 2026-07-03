@@ -156,7 +156,7 @@ void DispatchHiZBuildCompute(SDL_GPUCommandBuffer* cmd)
 }
 
 // Forward+ AO: reconstruct half-res world normals from the prepass depth into
-// tex_hbao_normal so the existing HBAO/blur passes can run without a G-buffer.
+// tex_hbao_normal so the existing HBAO/blur passes can run from the depth prepass.
 void DispatchReconstructNormalCompute(SDL_GPUCommandBuffer* cmd, mat4x4 viewProj, u32 width, u32 height)
 {
     WindowState* winstate = &g_WindowState;
@@ -254,11 +254,10 @@ void DispatchBuildLightGridCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 hei
     SDL_EndGPUComputePass(pass);
 }
 
-void DispatchHBAOCompute(SDL_GPUCommandBuffer* cmd, bool enabled, u32 width, u32 height, bool extractFromGBuffer)
+void DispatchHBAOCompute(SDL_GPUCommandBuffer* cmd, bool enabled, u32 width, u32 height)
 {
     WindowState* winstate = &g_WindowState;
-    if (!winstate->tex_hiz_depth || !winstate->tex_gbuffer_tangent || !winstate->tex_hbao ||
-        !winstate->tex_hbao_blur || !winstate->tex_hbao_normal) return;
+    if (!winstate->tex_hiz_depth || !winstate->tex_hbao || !winstate->tex_hbao_blur || !winstate->tex_hbao_normal) return;
     CHECK_CREATE(g_HBAOComputePipeline, "HBAO Compute Pipeline");
     CHECK_CREATE(g_HBAOBlurComputePipeline, "HBAO Blur Compute Pipeline");
 
@@ -295,32 +294,13 @@ void DispatchHBAOCompute(SDL_GPUCommandBuffer* cmd, bool enabled, u32 width, u32
     params.frameIndex = (u32)SDL_GetTicks();
     params.numDirections = (u32)Clampf32(g_RenderSettings.hbaoDirections, 2.0f, 16.0f);
 
-    SDL_GPUComputePass* pass;
-    if (enabled && extractFromGBuffer)
-    {
-        SDL_GPUStorageTextureReadWriteBinding normalOutput = {
-            .texture = winstate->tex_hbao_normal,
-            .mip_level = 0,
-            .layer = 0,
-            .cycle = true
-        };
-        pass = SDL_BeginGPUComputePass(cmd, &normalOutput, 1, NULL, 0);
-        SDL_BindGPUComputePipeline(pass, g_ReconstructNormalComputePipeline);
-        SDL_BindGPUComputeSamplers(pass, 0, &(SDL_GPUTextureSamplerBinding){
-            .texture = winstate->tex_gbuffer_tangent,
-            .sampler = g_RenderState.hiZSampler
-        }, 1);
-        SDL_DispatchGPUCompute(pass, (aoWidth + 7u) / 8u, (aoHeight + 7u) / 8u, 1);
-        SDL_EndGPUComputePass(pass);
-    }
-
     SDL_GPUStorageTextureReadWriteBinding hbaoOutput = {
         .texture = winstate->tex_hbao,
         .mip_level = 0,
         .layer = 0,
         .cycle = true
     };
-    pass = SDL_BeginGPUComputePass(cmd, &hbaoOutput, 1, NULL, 0);
+    SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, &hbaoOutput, 1, NULL, 0);
     SDL_BindGPUComputePipeline(pass, g_HBAOComputePipeline);
     SDL_GPUTextureSamplerBinding hbaoInputs[2] = {
         { .texture = winstate->tex_hiz_depth, .sampler = g_RenderState.hiZSampler },
@@ -431,58 +411,6 @@ void DispatchContactShadowsCompute(SDL_GPUCommandBuffer* cmd, bool enabled, mat4
                                (u32)Maxs32(list.Dispatch[i].WaveCount[1], 1),
                                (u32)Maxs32(list.Dispatch[i].WaveCount[2], 1));
     }
-    SDL_EndGPUComputePass(pass);
-}
-
-void DispatchDeferredLightingCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height, mat4x4 viewProj)
-{
-    WindowState* winstate = &g_WindowState;
-    if (!winstate->tex_gbuffer_tangent || !winstate->tex_gbuffer_albedo_metallic ||
-        !winstate->tex_gbuffer_shadow_roughness || !winstate->tex_hiz_depth ||
-        !winstate->tex_hbao_blur || !winstate->tex_color)
-    {
-        AX_LOG("Deferred lighting is not ready yet");
-        return;
-    }
-    CHECK_CREATE(g_DeferredLightingComputePipeline, "Deferred Lighting Compute Pipeline");
-
-    SDL_GPUStorageTextureReadWriteBinding output = {
-        .texture = winstate->tex_color,
-        .mip_level = 0,
-        .layer = 0,
-        .cycle = true
-    };
-    SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, &output, 1, NULL, 0);
-    SDL_BindGPUComputePipeline(pass, g_DeferredLightingComputePipeline);
-
-    SDL_GPUTextureSamplerBinding inputs[5] = {
-        { .texture = winstate->tex_gbuffer_tangent, .sampler = g_RenderState.hiZSampler },
-        { .texture = winstate->tex_gbuffer_albedo_metallic, .sampler = g_RenderState.hiZSampler },
-        { .texture = winstate->tex_gbuffer_shadow_roughness, .sampler = g_RenderState.hiZSampler },
-        { .texture = winstate->tex_hiz_depth, .sampler = g_RenderState.hiZSampler },
-        { .texture = winstate->tex_hbao_blur, .sampler = g_RenderState.sampler }
-    };
-    SDL_BindGPUComputeSamplers(pass, 0, inputs, SDL_arraysize(inputs));
-
-    float3 sunDirection = GetRenderSunDirection();
-    struct {
-        u32 outputSize[2];
-        f32 padding0[2];
-        mat4x4 invViewProj;
-        f32 cameraPosition[4];
-        f32 sunDirection[4];
-    } params = {0};
-    params.outputSize[0] = width;
-    params.outputSize[1] = height;
-    params.invViewProj = M44Inverse(viewProj);
-    params.cameraPosition[0] = g_Camera.position.x;
-    params.cameraPosition[1] = g_Camera.position.y;
-    params.cameraPosition[2] = g_Camera.position.z;
-    params.sunDirection[0] = sunDirection.x;
-    params.sunDirection[1] = sunDirection.y;
-    params.sunDirection[2] = sunDirection.z;
-    SDL_PushGPUComputeUniformData(cmd, 0, &params, sizeof(params));
-    SDL_DispatchGPUCompute(pass, (width + 7u) / 8u, (height + 7u) / 8u, 1);
     SDL_EndGPUComputePass(pass);
 }
 

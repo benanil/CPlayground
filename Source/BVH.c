@@ -454,7 +454,8 @@ s32 BVH_RaycastScene(const Scene* scene, v128f origin, v128f dir, BVHHit* hit)
 
     // resolve the render group back to the scene bundle for reporting. the group carries its
     // owning render bundle slot and the scene keeps a reverse map, so this is O(1).
-    hit->bundleIdx = Scene_FindBundleForRenderGroup(scene, hit->skinnedSet != 0, hit->groupIdx);
+    if (hit->skinnedSet != 0xFFFFFFFFu || hit->bundleIdx != 0xFFFFFFFFu)
+        hit->bundleIdx = Scene_FindBundleForRenderGroup(scene, hit->skinnedSet != 0, hit->groupIdx);
 
     return 1;
 }
