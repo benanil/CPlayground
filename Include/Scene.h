@@ -59,6 +59,18 @@ typedef struct ScenePhysicsRecord_
     f32 linearDamping, angularDamping, gravityScale, sleepThreshold;
 } ScenePhysicsRecord;
 
+// global (not per-scene) physics world settings, persisted to PhysicsSettings.txt at the
+// working directory root. applied to each scene's world on creation and on edit.
+typedef struct PhysicsSettings_
+{
+    f32  gravity[3];
+    u32  substepCount;
+    bool enableSleep;
+    bool enableContinuous;
+} PhysicsSettings;
+
+extern PhysicsSettings g_PhysicsSettings;
+
 // a scene owns one render set for skinned meshes, one for static geometry, their gpu
 // buffers, its own texture system and animation system. all gpu resources stay resident,
 // activating and deactivating scenes only changes the active list
@@ -155,6 +167,11 @@ void Scene_Deactivate(Scene* scene);
 void Scene_InitPhysics(Scene* scene);
 void Scene_PhysicsDestroy(Scene* scene);
 void Scene_PhysicsUpdate(Scene* scene, float deltaTime);
+// loads/saves g_PhysicsSettings from PhysicsSettings.txt (load is one-shot, cached).
+void PhysicsSettings_Load(void);
+void PhysicsSettings_Save(void);
+// pushes g_PhysicsSettings (gravity/sleep/continuous) onto the scene's live world.
+void Scene_PhysicsApplyWorldSettings(Scene* scene);
 
 // builds a static rigid body with a triangle-mesh collider for every static mesh instance in the
 // scene's surface render sets. call once after a scene finishes loading.

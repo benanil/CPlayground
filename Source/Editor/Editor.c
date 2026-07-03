@@ -8,6 +8,7 @@
 #include "Include/Random.h"
 #include "Include/Rendering.h"
 #include "Include/Algorithm.h"
+#include "Include/Scene.h"
 #include "Math/Color.h"
 #include "EditorInternal.h"
 
@@ -586,6 +587,35 @@ static void DrawSettingsWindow()
                 EditorSettingsSave();
             }
         }
+
+        UIDivider(CLAY_ID("SettingsPhysicsDivider"));
+        CLAY_TEXT(CLAY_STRING("World Physics"), CLAY_TEXT_CONFIG({
+            .fontSize = 18,
+            .textColor = UIGetClayColor(UIColor_Text)
+        }));
+
+        // global (not per-scene); persisted to PhysicsSettings.txt and pushed live onto
+        // the active world so edits take effect without reloading.
+        PhysicsSettings_Load();
+        PhysicsSettings* phys = &g_PhysicsSettings;
+        bool physChanged = UIEditFloatN(CLAY_ID("SettingsGravity"), CLAY_STRING("Gravity"), phys->gravity, 3u, -1000.0f, 1000.0f, 3);
+
+        f32 substeps = (f32)phys->substepCount;
+        if (UIEditInt(CLAY_ID("SettingsSubsteps"), CLAY_STRING("Substep count"), &substeps, 1, 32))
+        {
+            phys->substepCount = (u32)substeps;
+            physChanged = true;
+        }
+
+        physChanged |= UICheckbox(CLAY_ID("SettingsSleep"), CLAY_STRING("Enable sleeping"), &phys->enableSleep);
+        physChanged |= UICheckbox(CLAY_ID("SettingsContinuous"), CLAY_STRING("Enable continuous collision"), &phys->enableContinuous);
+
+        if (physChanged)
+        {
+            Scene_PhysicsApplyWorldSettings(Scene_GetActive());
+            PhysicsSettings_Save();
+        }
+
         UIEndWindow();
     }
 }

@@ -5,6 +5,7 @@
 #include "Include/Memory.h"
 #include "Include/BVH.h"
 #include "Include/Algorithm.h"
+#include "Include/FileSystem.h"
 #include "Math/Bitpack.h"
 
 #include <box3d/box3d.h>
@@ -19,6 +20,64 @@ extern Graphics gGFX; // cpu mega buffers, declared per translation unit as else
 
 // finite segment length for picking rays; the ray dir is unit length so fraction*length is world t
 #define PHYS_PICK_MAX_DIST   1.0e5f
+
+#define PHYSICS_SETTINGS_PATH "PhysicsSettings.txt"
+
+PhysicsSettings g_PhysicsSettings = {
+	.gravity = { 0.0f, -9.81f, 0.0f },
+	.substepCount = 4,
+	.enableSleep = true,
+	.enableContinuous = true
+};
+
+void PhysicsSettings_Save(void)
+{
+	const PhysicsSettings* s = &g_PhysicsSettings;
+	char text[256];
+	int n = SDL_snprintf(text, sizeof(text),
+		"gravity %f %f %f\nsubsteps %u\nsleep %d\ncontinuous %d\n",
+		s->gravity[0], s->gravity[1], s->gravity[2], s->substepCount,
+		s->enableSleep ? 1 : 0, s->enableContinuous ? 1 : 0);
+	if (n > 0) WriteAllBytes(PHYSICS_SETTINGS_PATH, text, (unsigned long)n);
+}
+
+void PhysicsSettings_Load(void)
+{
+	static bool loaded;
+	if (loaded) return;
+	loaded = true;
+	if (!FileExist(PHYSICS_SETTINGS_PATH)) return;
+
+	uint64_t size = 0;
+	char* text = ReadAllTextAlloc(PHYSICS_SETTINGS_PATH, &size, NULL);
+	if (!text) return;
+
+	PhysicsSettings* s = &g_PhysicsSettings;
+	int sleep = s->enableSleep, cont = s->enableContinuous;
+	for (const char* line = text; *line; )
+	{
+		// each sscanf is a no-op unless the line begins with its keyword
+		SDL_sscanf(line, "gravity %f %f %f", &s->gravity[0], &s->gravity[1], &s->gravity[2]);
+		SDL_sscanf(line, "substeps %u", &s->substepCount);
+		SDL_sscanf(line, "sleep %d", &sleep);
+		SDL_sscanf(line, "continuous %d", &cont);
+		while (*line && *line != '\n') line++;
+		while (*line == '\n' || *line == '\r') line++;
+	}
+	s->enableSleep = sleep != 0;
+	s->enableContinuous = cont != 0;
+	s->substepCount = Minu32(Maxu32(s->substepCount, 1u), 32u);
+	FreeAllText(text);
+}
+
+void Scene_PhysicsApplyWorldSettings(Scene* scene)
+{
+	if (!scene || B3_IS_NULL(scene->physicsWorldID)) return;
+	const PhysicsSettings* s = &g_PhysicsSettings;
+	b3World_SetGravity(scene->physicsWorldID, (b3Vec3){ s->gravity[0], s->gravity[1], s->gravity[2] });
+	b3World_EnableSleeping(scene->physicsWorldID, s->enableSleep);
+	b3World_EnableContinuous(scene->physicsWorldID, s->enableContinuous);
+}
 
 // b3EnqueueTaskCallback: box3d's b3TaskCallback (void(void*)) matches JobSystemFn directly, so the
 // task is queued as-is. Returns the job handle as an opaque userTask that box3d hands back to the
@@ -49,15 +108,17 @@ void Scene_InitPhysics(Scene* scene)
 {
 	b3Version version = b3GetVersion();
 	AX_LOG("Box3D version %d.%d.%d\n", version.major, version.minor, version.revision);
-	
+	PhysicsSettings_Load();
+
 	JobSystem* physicsJobSystem = JobSystem_Create(0, 0);
 	b3WorldDef worldDef      = b3DefaultWorldDef();
 	worldDef.workerCount     = JobSystem_GetThreadCount(physicsJobSystem);
 	worldDef.enqueueTask     = PhysicsEnqueueTask;
 	worldDef.finishTask      = PhysicsFinishTask;
 	worldDef.userTaskContext = physicsJobSystem;
-	
+
 	scene->physicsWorldID = b3CreateWorld(&worldDef);
+	Scene_PhysicsApplyWorldSettings(scene);
 	scene->surfacePhysicsBodies = (b3BodyId*)AllocZeroTLSFGlobal(scene->surfaceSet.maxEntities, sizeof(b3BodyId));
 	scene->transparentPhysicsBodies = (b3BodyId*)AllocZeroTLSFGlobal(scene->transparentSurfaceSet.maxEntities, sizeof(b3BodyId));
 	if (!scene->surfacePhysicsBodies || !scene->transparentPhysicsBodies)
@@ -143,8 +204,7 @@ static bool PhysicsUserDataTransparent(void* userData)
 
 void Scene_PhysicsUpdate(Scene* scene, float deltaTime)
 {
-	const int physicsStepCount = 4;
-	b3World_Step(scene->physicsWorldID, deltaTime, physicsStepCount);
+	b3World_Step(scene->physicsWorldID, deltaTime, (int)g_PhysicsSettings.substepCount);
 
 	// Write moved bodies back onto their entities. Move events only report bodies
 	// that actually changed this step (dynamic/kinematic), so we skip the static
