@@ -1176,31 +1176,6 @@ static const char* UIPhysicsFmtV3(f32 x, f32 y, f32 z, int decimals)
 	return s;
 }
 
-// A mesh (triangle-soup) shape computes zero mass, so a body switched to dynamic
-// would keep invMass 0 and never respond to gravity. Give it a default box mass
-// derived from the collider AABB so the "Dynamic" type actually simulates. The
-// center of mass is left at the body origin (a rough but stable approximation).
-static void PhysicsApplyDefaultDynamicMass(b3BodyId body, b3ShapeId shape)
-{
-	b3AABB aabb = b3Shape_GetAABB(shape);
-	f32 w = Maxf32(aabb.upperBound.x - aabb.lowerBound.x, 0.01f);
-	f32 h = Maxf32(aabb.upperBound.y - aabb.lowerBound.y, 0.01f);
-	f32 d = Maxf32(aabb.upperBound.z - aabb.lowerBound.z, 0.01f);
-
-	f32 mass = 1.0f;
-	f32 k = mass / 12.0f;
-	b3MassData md = {
-		.mass = mass,
-		.center = { 0.0f, 0.0f, 0.0f },
-		.inertia = {
-			.cx = { k * (h * h + d * d), 0.0f, 0.0f },
-			.cy = { 0.0f, k * (w * w + d * d), 0.0f },
-			.cz = { 0.0f, 0.0f, k * (w * w + h * h) }
-		}
-	};
-	b3Body_SetMassData(body, md);
-}
-
 // Visualizes and edits the box3d body attached to the selected entity.
 // Simulation-output values (mass, velocities, center of mass) are read-only;
 // body type / dynamics / material / lock widgets push their changes back through
@@ -1230,7 +1205,7 @@ static void SceneInspectorPhysicsUI(Scene* scene, const Entity* entity)
 	{
 		b3Body_SetType(body, (b3BodyType)bodyType);
 		if (bodyType == (u32)b3_dynamicBody && hasShape && b3Body_GetMass(body) <= 0.0f)
-			PhysicsApplyDefaultDynamicMass(body, shapeId);
+			Scene_PhysicsApplyDefaultDynamicMass(body, shapeId);
 	}
 
 	// Shape type is editable. Order matches b3ShapeType so the index maps directly.

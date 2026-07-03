@@ -76,8 +76,11 @@ void Scene_PhysicsDestroy(Scene* scene)
 	PhysicsDestroyMeshStorage(scene, true);
 	if (scene->surfacePhysicsBodies) DeAllocateTLSFGlobal(scene->surfacePhysicsBodies);
 	if (scene->transparentPhysicsBodies) DeAllocateTLSFGlobal(scene->transparentPhysicsBodies);
+	if (scene->pendingPhysics) DeAllocateTLSFGlobal(scene->pendingPhysics);
 	scene->surfacePhysicsBodies = NULL;
 	scene->transparentPhysicsBodies = NULL;
+	scene->pendingPhysics = NULL;
+	scene->numPendingPhysics = 0;
 	scene->physicsWorldID = b3_nullWorldId;
 }
 
@@ -379,6 +382,106 @@ bool Scene_PhysicsSetEntityShape(Scene* scene, bool transparent, u32 groupIdx, c
 		default:
 			return false; // compound / height are not supported from the inspector
 	}
+}
+
+void Scene_PhysicsApplyDefaultDynamicMass(b3BodyId body, b3ShapeId shape)
+{
+	b3AABB aabb = b3Shape_GetAABB(shape);
+	f32 w = Maxf32(aabb.upperBound.x - aabb.lowerBound.x, 0.01f);
+	f32 h = Maxf32(aabb.upperBound.y - aabb.lowerBound.y, 0.01f);
+	f32 d = Maxf32(aabb.upperBound.z - aabb.lowerBound.z, 0.01f);
+	f32 k = 1.0f / 12.0f;
+	b3MassData md = {
+		.mass = 1.0f,
+		.center = { 0.0f, 0.0f, 0.0f },
+		.inertia = {
+			.cx = { k * (h * h + d * d), 0.0f, 0.0f },
+			.cy = { 0.0f, k * (w * w + d * d), 0.0f },
+			.cz = { 0.0f, 0.0f, k * (w * w + h * h) }
+		}
+	};
+	b3Body_SetMassData(body, md);
+}
+
+bool Scene_PhysicsGetEntityOverride(const Scene* scene, u32 sparseIdx, ScenePhysicsRecord* out)
+{
+	if (!scene->surfacePhysicsBodies || sparseIdx >= scene->surfaceSet.maxEntities) return false;
+	b3BodyId body = scene->surfacePhysicsBodies[sparseIdx];
+	if (B3_IS_NULL(body)) return false;
+
+	b3ShapeId shape;
+	bool hasShape = b3Body_GetShapes(body, &shape, 1) > 0;
+	u32 bodyType  = (u32)b3Body_GetType(body);
+	u32 shapeType = hasShape ? (u32)b3Shape_GetType(shape) : (u32)b3_meshShape;
+	// nothing to persist for the default static-mesh collider
+	if (bodyType == (u32)b3_staticBody && shapeType == (u32)b3_meshShape) return false;
+
+	b3MotionLocks locks = b3Body_GetMotionLocks(body);
+	out->sparseIdx = sparseIdx;
+	out->bodyType  = bodyType;
+	out->shapeType = shapeType;
+	out->lockBits  = (u32)locks.linearX | ((u32)locks.linearY << 1) | ((u32)locks.linearZ << 2)
+	               | ((u32)locks.angularX << 3) | ((u32)locks.angularY << 4) | ((u32)locks.angularZ << 5);
+	out->friction       = hasShape ? b3Shape_GetFriction(shape) : 0.0f;
+	out->restitution    = hasShape ? b3Shape_GetRestitution(shape) : 0.0f;
+	out->density        = hasShape ? b3Shape_GetDensity(shape) : 0.0f;
+	out->linearDamping  = b3Body_GetLinearDamping(body);
+	out->angularDamping = b3Body_GetAngularDamping(body);
+	out->gravityScale   = b3Body_GetGravityScale(body);
+	out->sleepThreshold = b3Body_GetSleepThreshold(body);
+	return true;
+}
+
+void Scene_PhysicsApplyPendingOverrides(Scene* scene)
+{
+	RenderSet* set = &scene->surfaceSet;
+	for (u32 i = 0; i < scene->numPendingPhysics; i++)
+	{
+		const ScenePhysicsRecord* rec = &scene->pendingPhysics[i];
+		if (rec->sparseIdx >= set->maxEntities) continue;
+		u32 dense = set->sparseID[rec->sparseIdx];
+		if (dense >= set->numEntities) continue;
+		const Entity* entity = &set->entities[dense];
+		b3BodyId* slot = PhysicsEntitySlot(scene, false, entity);
+		if (!slot || B3_IS_NULL(slot[0])) continue;
+		b3BodyId body = slot[0];
+
+		// swap the shape first so the material/mass below act on the final shape
+		if (rec->shapeType != (u32)b3_meshShape)
+			Scene_PhysicsSetEntityShape(scene, false, entity->primitiveIdx, entity, (b3ShapeType)rec->shapeType);
+
+		b3ShapeId shape;
+		bool hasShape = b3Body_GetShapes(body, &shape, 1) > 0;
+		if (hasShape)
+		{
+			b3Shape_SetFriction(shape, rec->friction);
+			b3Shape_SetRestitution(shape, rec->restitution);
+			b3Shape_SetDensity(shape, rec->density, true);
+		}
+		b3Body_SetLinearDamping(body, rec->linearDamping);
+		b3Body_SetAngularDamping(body, rec->angularDamping);
+		b3Body_SetGravityScale(body, rec->gravityScale);
+		b3Body_SetSleepThreshold(body, rec->sleepThreshold);
+
+		b3MotionLocks locks = {
+			.linearX  = (rec->lockBits >> 0) & 1u, .linearY  = (rec->lockBits >> 1) & 1u,
+			.linearZ  = (rec->lockBits >> 2) & 1u, .angularX = (rec->lockBits >> 3) & 1u,
+			.angularY = (rec->lockBits >> 4) & 1u, .angularZ = (rec->lockBits >> 5) & 1u
+		};
+		b3Body_SetMotionLocks(body, locks);
+
+		// SetType recomputes mass (from density for primitives); a dynamic mesh still
+		// reads zero mass, so give it the same default box mass as the inspector.
+		if (rec->bodyType != (u32)b3_staticBody)
+		{
+			b3Body_SetType(body, (b3BodyType)rec->bodyType);
+			if (rec->bodyType == (u32)b3_dynamicBody && hasShape && b3Body_GetMass(body) <= 0.0f)
+				Scene_PhysicsApplyDefaultDynamicMass(body, shape);
+		}
+	}
+	if (scene->pendingPhysics) DeAllocateTLSFGlobal(scene->pendingPhysics);
+	scene->pendingPhysics = NULL;
+	scene->numPendingPhysics = 0;
 }
 
 static void Scene_PhysicsDestroyEntityBody(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity)

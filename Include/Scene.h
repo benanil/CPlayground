@@ -46,6 +46,19 @@ typedef struct BundleCacheEntry
     int          numBvhTris;
 } BundleCacheEntry;
 
+// persisted physics overrides for a single surface entity. only entities that deviate
+// from the default static-mesh collider are saved; body/shape stored as b3BodyType /
+// b3ShapeType, lockBits packs the six b3MotionLocks (linear xyz then angular xyz).
+typedef struct ScenePhysicsRecord_
+{
+    u32 sparseIdx;
+    u32 bodyType;
+    u32 shapeType;
+    u32 lockBits;
+    f32 friction, restitution, density;
+    f32 linearDamping, angularDamping, gravityScale, sleepThreshold;
+} ScenePhysicsRecord;
+
 // a scene owns one render set for skinned meshes, one for static geometry, their gpu
 // buffers, its own texture system and animation system. all gpu resources stay resident,
 // activating and deactivating scenes only changes the active list
@@ -81,6 +94,11 @@ typedef struct Scene_
 	struct b3MeshData*   transparentPhysicsMeshes[MAX_GROUP];
 	b3BodyId* surfacePhysicsBodies;
 	b3BodyId* transparentPhysicsBodies;
+
+	// physics overrides parsed from a .scene file, applied once the async collider
+	// build finishes (bodies do not exist until then). tlsf-owned, freed on apply.
+	ScenePhysicsRecord* pendingPhysics;
+	u32                 numPendingPhysics;
 } Scene;
 
 typedef enum SceneAsyncOp_
@@ -147,6 +165,14 @@ void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, c
 // original triangle collider; sphere/capsule/hull are derived from the primitive
 // bounds. Compound/height are unsupported and return false. Runtime-only.
 bool Scene_PhysicsSetEntityShape(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity, b3ShapeType type);
+// Gives a dynamic body a default box mass from the shape AABB so it responds to gravity
+// (mesh shapes compute zero mass). Shared by the inspector and the scene loader.
+void Scene_PhysicsApplyDefaultDynamicMass(b3BodyId body, b3ShapeId shape);
+// Reads the surface body at sparseIdx into *out; returns false when it matches the default
+// static-mesh collider (nothing to persist). Used by the serializer to save only overrides.
+bool Scene_PhysicsGetEntityOverride(const Scene* scene, u32 sparseIdx, ScenePhysicsRecord* out);
+// Applies scene->pendingPhysics onto the freshly built bodies, then frees the buffer.
+void Scene_PhysicsApplyPendingOverrides(Scene* scene);
 b3Vec3 ToB3Vec3(v128f v);
 b3Quat ToB3Quat(v128f q);
 v128f SceneB3PosToVec3(b3Pos p);

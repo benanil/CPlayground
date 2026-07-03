@@ -12,7 +12,7 @@
 #include "Include/Bitset.h"
 #include "Math/Bitpack.h"
 
-#define SCENE_FILE_VERSION 3
+#define SCENE_FILE_VERSION 4
 
 // first descriptors of a texture system are the built in defaults (TextureSystem.c)
 enum { SceneSer_DefaultDescriptors = 4 };
@@ -223,6 +223,47 @@ s32 SceneSerializer_Save(Scene* scene, const char* path)
         }
     }
 
+    // physics overrides: only surface entities whose body deviates from the default
+    // static-mesh collider. reapplied on load once the async collider build finishes.
+    const RenderSet* surfaceSet = &scene->surfaceSet;
+    u32 physCount = 0;
+    for (u32 g = 0; g < surfaceSet->numGroups; g++)
+    {
+        const PrimitiveGroup* group = &surfaceSet->primitiveGroups[g];
+        for (u32 e = 0; e < group->numEntities; e++)
+        {
+            ScenePhysicsRecord rec;
+            physCount += Scene_PhysicsGetEntityOverride(scene, surfaceSet->entities[group->entityOffset + e].sparseIdx, &rec);
+        }
+    }
+
+    p = WStr(line, "physics");
+    p = WInt(p, (s64)physCount);
+    WEnd(file, line, p);
+    for (u32 g = 0; g < surfaceSet->numGroups; g++)
+    {
+        const PrimitiveGroup* group = &surfaceSet->primitiveGroups[g];
+        for (u32 e = 0; e < group->numEntities; e++)
+        {
+            ScenePhysicsRecord rec;
+            if (!Scene_PhysicsGetEntityOverride(scene, surfaceSet->entities[group->entityOffset + e].sparseIdx, &rec))
+                continue;
+            p = WStr(line, "phys");
+            p = WInt(p, (s64)rec.sparseIdx);
+            p = WInt(p, (s64)rec.bodyType);
+            p = WInt(p, (s64)rec.shapeType);
+            p = WInt(p, (s64)rec.lockBits);
+            p = WFlt(p, rec.friction);
+            p = WFlt(p, rec.restitution);
+            p = WFlt(p, rec.density);
+            p = WFlt(p, rec.linearDamping);
+            p = WFlt(p, rec.angularDamping);
+            p = WFlt(p, rec.gravityScale);
+            p = WFlt(p, rec.sleepThreshold);
+            WEnd(file, line, p);
+        }
+    }
+
     AFileClose(file);
     RemoveFile(path);
     RenameFile(tmpPath, path);
@@ -268,6 +309,9 @@ typedef struct SceneFileData_
 
     SceneEntRecord* entities[3]; // 0 surface, 1 skinned, 2 transparent surface
     u32 numEntities[3];
+
+    ScenePhysicsRecord* physics; // surface entities that override the default collider
+    u32 numPhysics;
 } SceneFileData;
 
 // reads one line and checks it starts with the expected keyword. the line keeps its
@@ -455,6 +499,31 @@ static s32 ParseSceneFile(const char* path, SceneFileData* data)
         }
     }
 
+    // physics overrides section (version 4+); absent in older files
+    if (version >= 4u)
+    {
+        if (!(p = ReadRecord(file, line, sizeof(line), "physics"))) goto fail;
+        RU32(p, &data->numPhysics);
+        if (data->numPhysics > MAX_ENTITY) goto fail;
+        data->physics = (ScenePhysicsRecord*)ArenaAllocZero(&GlobalArena, Maxu32(data->numPhysics, 1u) * sizeof(ScenePhysicsRecord));
+        for (u32 i = 0; i < data->numPhysics; i++)
+        {
+            ScenePhysicsRecord* rec = &data->physics[i];
+            if (!(p = ReadRecord(file, line, sizeof(line), "phys"))) goto fail;
+            p = RU32(p, &rec->sparseIdx);
+            p = RU32(p, &rec->bodyType);
+            p = RU32(p, &rec->shapeType);
+            p = RU32(p, &rec->lockBits);
+            p = RFlt(p, &rec->friction);
+            p = RFlt(p, &rec->restitution);
+            p = RFlt(p, &rec->density);
+            p = RFlt(p, &rec->linearDamping);
+            p = RFlt(p, &rec->angularDamping);
+            p = RFlt(p, &rec->gravityScale);
+            p = RFlt(p, &rec->sleepThreshold);
+        }
+    }
+
     AFileClose(file);
     return 1;
 fail:
@@ -466,6 +535,7 @@ fail:
 static void BuildColliderEndCallback(void* data, s32 result)
 {
 	Scene* scene = (Scene*)data;
+	Scene_PhysicsApplyPendingOverrides(scene); // no-op when nothing was persisted
 	scene->physicsReady = true;
 }
 
@@ -628,6 +698,20 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
     g_RenderSettings.sunYaw   = data.sunYaw;
     g_RenderSettings.sunPitch = data.sunPitch;
     scene->renderDataDirty = 1;
+
+    // copy physics overrides out of the arena; applied when the collider build finishes
+    if (scene->pendingPhysics) DeAllocateTLSFGlobal(scene->pendingPhysics);
+    scene->pendingPhysics = NULL;
+    scene->numPendingPhysics = 0;
+    if (data.numPhysics > 0)
+    {
+        scene->pendingPhysics = (ScenePhysicsRecord*)AllocateTLSFGlobal(data.numPhysics * sizeof(ScenePhysicsRecord));
+        if (scene->pendingPhysics)
+        {
+            MemCopy(scene->pendingPhysics, data.physics, data.numPhysics * sizeof(ScenePhysicsRecord));
+            scene->numPendingPhysics = data.numPhysics;
+        }
+    }
 
     ArenaRestore(&GlobalArena, mark);
 	scene->physicsReady = false;
