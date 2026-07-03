@@ -624,6 +624,10 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
     scene->renderDataDirty = 1;
 
     ArenaRestore(&GlobalArena, mark);
+
+    // every mesh instance is static for now: give each a static rigid body with a triangle collider
+    Scene_BuildStaticColliders(scene);
+
     AX_LOG("scene loaded: %s bundles=%d entities=%d lights=%d baked=%d %.2fs",
            path, scene->numBundles, scene->surfaceSet.numEntities + scene->skinnedSet.numEntities + scene->transparentSurfaceSet.numEntities,
            scene->numLights, scene->texturesBaked, TimeSinceStartup() - startTime);

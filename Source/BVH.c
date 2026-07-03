@@ -446,7 +446,9 @@ s32 BVH_RaycastScene(const Scene* scene, v128f origin, v128f dir, BVHHit* hit)
     hit->hit.t = BVH_MISS;
 
     s32 anyHit = 0;
-    anyHit |= BVH_RaycastSet(scene, &scene->surfaceSet, false, origin, dir, hit);
+    // static surface geometry has box3d triangle colliders (built at scene load), use the physics
+    // broadphase for it. skinned meshes have no colliders, keep the cpu blas path for those.
+    anyHit |= Scene_PhysicsRaycastPick(scene, origin, dir, hit);
     anyHit |= BVH_RaycastSet(scene, &scene->skinnedSet, true, origin, dir, hit);
     if (!anyHit) return 0;
 

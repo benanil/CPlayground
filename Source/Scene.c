@@ -16,15 +16,102 @@
 #include "Include/Bitset.h"
 #include "Include/GLTFParser.h"
 #include "Include/BVH.h"
+#include "Include/Camera.h"
 #include "Include/DataStructures/HashMap.h"
+#include "Math/Quaternion.h"
 
+#include <box3d/box3d.h>
 #include <SDL3/SDL_stdinc.h>
 
 Scene* g_ActiveScene = NULL;
+extern Camera g_Camera;
 
 static Scene g_OwnedActiveScene;
 static bool  g_OwnedActiveSceneInit;
 static char  g_ActiveScenePath[512];
+
+#define SCENE_THROW_SPHERE_PATH     "Assets/Meshes/Sphere.gltf"
+#define SCENE_THROW_SPHERE_RADIUS   0.35f
+#define SCENE_THROW_SPHERE_SPEED    20.0f
+#define SCENE_THROW_SPHERE_CATEGORY 0x0004ull
+
+static void SceneEnsureThrowSphereBundle(Scene* scene)
+{
+    scene->throwSphereBundleIdx = Scene_AddBundle(scene, SCENE_THROW_SPHERE_PATH, false);
+    scene->throwSpherePrimIdx = INVALID_GROUP;
+	if (scene->throwSphereBundleIdx == INVALID_BUNDLE)
+		return;
+	
+	const SceneBundleRef* ref = &scene->bundleRefs[scene->throwSphereBundleIdx];
+	scene->throwSpherePrimIdx = scene->surfaceSet.bundlePrimitiveRange[ref->renderIdx].start;
+}
+
+static void SceneThrowSphere(Scene* scene)
+{
+    if (!scene || scene->numThrownSpheres >= MAX_THROWN_SPHERES ||
+		scene->throwSphereBundleIdx == INVALID_BUNDLE || scene->throwSpherePrimIdx == INVALID_GROUP) return;
+
+    RenderSet* set = &scene->surfaceSet;
+
+    v128f direction = Vec3NormV(VecLoad(&g_Camera.Front.x));
+    v128f origin = VecLoad(&g_Camera.position.x);
+
+	Entity entity;
+	MemsetZero(&entity, sizeof(entity));
+	entity.position     = origin; 
+	entity.rotation     = EntityPackRotation(QIdentity()); 
+	entity.scale        = EntityPackUniformWorldScale(SCENE_THROW_SPHERE_RADIUS);
+	entity.primitiveIdx = scene->throwSpherePrimIdx;
+	entity.sparseIdx    = RenderSet_AllocateSparseID(set);
+	if (entity.sparseIdx == INVALID_ENTITY) return;
+
+	u32 added = RenderSet_AddEntity(set, scene->throwSpherePrimIdx, &entity);
+    if (added == INVALID_ENTITY) return;
+
+    ScenePhysicsBody* slot = Scene_PhysicsBodySlot(scene, false, entity.sparseIdx);
+	if (!slot) return;
+	b3BodyDef bd = b3DefaultBodyDef();
+	bd.type      = b3_dynamicBody;
+	bd.position  = ToB3Vec3(origin);
+	bd.rotation  = b3Quat_identity;
+	bd.linearVelocity = ToB3Vec3(VecMulf(direction, SCENE_THROW_SPHERE_SPEED));
+	b3BodyId body = b3CreateBody(scene->physicsWorldID, &bd);
+
+	b3ShapeDef sd = b3DefaultShapeDef();
+	sd.density = 1.0f;
+	sd.filter.categoryBits = SCENE_THROW_SPHERE_CATEGORY;
+	sd.filter.maskBits = 0x0001ull | 0x0002ull | SCENE_THROW_SPHERE_CATEGORY;
+	b3Sphere sphere = { .center = { 0.0f, 0.0f, 0.0f }, .radius = SCENE_THROW_SPHERE_RADIUS };
+	b3ShapeId shape = b3CreateSphereShape(body, &sd, &sphere);
+
+    *slot = (ScenePhysicsBody){ entity.scale, body, shape };
+    scene->thrownSpheres[scene->numThrownSpheres++] = entity.sparseIdx;
+
+    scene->renderDataDirty = 1;
+}
+
+static void SceneSyncThrownSpheres(Scene* scene)
+{
+    if (!scene || scene->numThrownSpheres == 0u) return;
+
+    bool dirty = false;
+    RenderSet* set = &scene->surfaceSet;
+    for (u32 i = 0; i < scene->numThrownSpheres; i++)
+    {
+        u32 sparseIdx = scene->thrownSpheres[i];
+        u32 dense = set->sparseID[sparseIdx];
+        if (dense == INVALID_ENTITY || dense >= set->numEntities) continue;
+        
+		ScenePhysicsBody* slot = Scene_PhysicsBodySlot(scene, false, sparseIdx);
+        b3WorldTransform transform = b3Body_GetTransform(slot->body);
+        Entity* entity = &set->entities[dense];
+        entity->position = SceneB3PosToVec3(transform.p);
+        entity->rotation = SceneB3QuatToEntityRotation(transform.q);
+        dirty = true;
+    }
+
+    scene->renderDataDirty = dirty;
+}
 
 static void SceneTerrainPath(const char* scenePath, char* out, u32 outSize)
 {
@@ -83,6 +170,9 @@ void Scene_Init(Scene* scene)
     RenderSet_InitSet(&scene->skinnedSet, MAX_ANIM_INSTANCES, MAX_GROUP, MAX_BUNDLES, true);
     RenderSet_InitSet(&scene->surfaceSet, MAX_ENTITY, MAX_GROUP, MAX_BUNDLES, false);
     RenderSet_InitSet(&scene->transparentSurfaceSet, MAX_ENTITY, MAX_GROUP, MAX_BUNDLES, false);
+    RenderSet_SetHookScene(&scene->skinnedSet, scene);
+    RenderSet_SetHookScene(&scene->surfaceSet, scene);
+    RenderSet_SetHookScene(&scene->transparentSurfaceSet, scene);
     RenderSet_SetMaterialFilter(&scene->surfaceSet, RenderSetMaterialFilter_Opaque);
     RenderSet_SetMaterialFilter(&scene->transparentSurfaceSet, RenderSetMaterialFilter_Transparent);
     CreateRenderSetBuffers(&scene->skinnedBuffers, MAX_ANIM_INSTANCES, MAX_GROUP);
@@ -95,6 +185,7 @@ void Scene_Init(Scene* scene)
     scene->materialSlots = (u64*)AllocZeroTLSFGlobal((MAX_GPU_MATERIALS + 63u) >> 6, sizeof(u64));
     scene->bundleSlots   = (u64*)AllocZeroTLSFGlobal((MAX_SCENE_BUNDLES + 63u) >> 6, sizeof(u64));
     scene->bundleRefs    = (SceneBundleRef*)AllocZeroTLSFGlobal(MAX_SCENE_BUNDLES, sizeof(SceneBundleRef));
+    scene->throwSphereBundleIdx = INVALID_BUNDLE;
 }
 
 void Scene_Destroy(Scene* scene)
@@ -108,15 +199,15 @@ void Scene_Destroy(Scene* scene)
     DestroyRenderSetBuffers(&scene->transparentSurfaceBuffers);
     TextureSystem_Destroy(&scene->textureSystem);
     AnimationSystem_Destroy(&scene->animSystem);
-    if (scene->bundleRefs) DeAllocateTLSFGlobal(scene->bundleRefs);
-    if (scene->lights) DeAllocateTLSFGlobal(scene->lights);
+    if (scene->bundleRefs)    DeAllocateTLSFGlobal(scene->bundleRefs);
+    if (scene->lights)        DeAllocateTLSFGlobal(scene->lights);
     if (scene->materialSlots) DeAllocateTLSFGlobal(scene->materialSlots);
-    if (scene->bundleSlots) DeAllocateTLSFGlobal(scene->bundleSlots);
+    if (scene->bundleSlots)   DeAllocateTLSFGlobal(scene->bundleSlots);
 	Scene_PhysicsDestroy(scene);
-	scene->bundleRefs = NULL;
-    scene->lights = NULL;
+	scene->bundleRefs    = NULL;
+    scene->lights        = NULL;
     scene->materialSlots = NULL;
-    scene->bundleSlots = NULL;
+    scene->bundleSlots   = NULL;
     if (scene == &g_OwnedActiveScene)
     {
         g_OwnedActiveSceneInit = false;
@@ -133,6 +224,7 @@ Scene* Scene_NewActive(void)
     g_OwnedActiveSceneInit = true;
     g_ActiveScenePath[0] = '\0';
     Scene_MakeActive(&g_OwnedActiveScene);
+	SceneEnsureThrowSphereBundle(&g_OwnedActiveScene);
     RendererSetLights(NULL, 0u);
     Terrain_DeleteWorld();
     return &g_OwnedActiveScene;
@@ -144,7 +236,11 @@ void Scene_Update(float deltaTime)
 
 	Scene* activeScene = Scene_GetActive();
 	if (activeScene == NULL) return;
+	
+	return;
+	if (GetMousePressed(MouseButton_Left)) SceneThrowSphere(activeScene);
 	Scene_PhysicsUpdate(activeScene, deltaTime);
+	SceneSyncThrownSpheres(activeScene);
 }
 
 Scene* Scene_OpenActive(const char* path)
@@ -154,7 +250,8 @@ Scene* Scene_OpenActive(const char* path)
 
     Scene* scene = Scene_NewActive();
     if (!scene) return NULL;
-    if (!SceneSerializer_Load(scene, normalized))
+	RenderSet_Clear(&scene->surfaceSet);
+	if (!SceneSerializer_Load(scene, normalized))
     {
         AX_ERROR("scene load failed: %s", normalized);
         return NULL;

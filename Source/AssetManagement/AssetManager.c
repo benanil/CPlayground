@@ -33,7 +33,7 @@
 #define SDEFL_IMPLEMENTATION
 #include "Extern/sdefl.h"
 #include "Extern/sinfl.h"
-#include "Extern/dynarray.h"
+#include "Include/DataStructures/Array.h"
 
 #include "Include/BasisCompressWrapper.h"
 
@@ -287,7 +287,7 @@ s32 LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale)
         AMesh* amesh = &fbxScene->meshes[i];
         ufbx_mesh* umesh = uscene->meshes.data[i];
         amesh->name = GetNameFromFBX(umesh->name, allocator);
-        amesh->primitives = dynarray_create_prealloc(APrimitive, 1);
+        amesh->primitives = ArrayCreatePrealloc(APrimitive, 1);
         amesh->numPrimitives = 1;
 
         APrimitive* primitive = &amesh->primitives[0];
@@ -427,7 +427,7 @@ s32 LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale)
     fbxScene->numTextures = numTextures;
     fbxScene->numSamplers = numTextures;
 
-    AImage* images = dynarray_create_prealloc(AImage, numTextures ? numTextures : 1);
+    AImage* images = ArrayCreatePrealloc(AImage, numTextures ? numTextures : 1);
 
     if (numTextures)
     {
@@ -459,7 +459,7 @@ s32 LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale)
         // Reuse an existing image entry when the same file is referenced again.
         s32 found = -1;
         s32 resolvedLen = StringLength(resolved);
-        for (s32 k = 0; k < (s32)dynarray_length(images); k++)
+        for (s32 k = 0; k < (s32)ArrayLength(images); k++)
             if (images[k].path && StringLength(images[k].path) == resolvedLen &&
                 StringEqual(images[k].path, resolved, resolvedLen))
             {
@@ -471,8 +471,8 @@ s32 LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale)
             atexture->source = found;
         else
         {
-            atexture->source = (s32)dynarray_length(images);
-            dynarray_push(images, (AImage){ resolved });
+            atexture->source = (s32)ArrayLength(images);
+            ArrayPush(images, (AImage){ resolved });
         }
     }
     
@@ -604,7 +604,7 @@ s32 LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale)
             anode->index = (s32)unode->camera->typed_id;
     }
     
-    fbxScene->numImages = dynarray_length(images);
+    fbxScene->numImages = ArrayLength(images);
     fbxScene->images    = images;
     fbxScene->allocator = allocator;
     fbxScene->scale = scale;

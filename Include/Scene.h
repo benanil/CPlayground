@@ -6,9 +6,11 @@
 #include "Animation.h"
 #include <SDL3/SDL_atomic.h>
 #include <box3d/id.h>
+#include <box3d/math_functions.h>
 
 #define MAX_SCENE_BUNDLES 1024u
 #define MAX_SCENE_LIGHTS  256u
+#define MAX_THROWN_SPHERES 512u
 
 // one bundle registered in a scene
 typedef struct SceneBundleRef_
@@ -42,6 +44,13 @@ typedef struct BundleCacheEntry
     int          numBvhTris;
 } BundleCacheEntry;
 
+typedef struct ScenePhysicsBody_
+{
+    u64       scale;
+    b3BodyId  body;
+    b3ShapeId shape;
+} ScenePhysicsBody;
+
 // a scene owns one render set for skinned meshes, one for static geometry, their gpu
 // buffers, its own texture system and animation system. all gpu resources stay resident,
 // activating and deactivating scenes only changes the active list
@@ -70,6 +79,17 @@ typedef struct Scene_
     u32 texturesBaked;   // pages came from a baked atlas, packer state is unusable until a repack
 
 	b3WorldId physicsWorldID;
+	// static collision mesh handles, one per primitive group of each static render set. shapes
+	// reference these (box3d does not copy mesh data), so they must outlive the world.
+	struct b3MeshData*   surfacePhysicsMeshes[MAX_GROUP];
+	struct b3MeshData*   transparentPhysicsMeshes[MAX_GROUP];
+	ScenePhysicsBody*    surfacePhysicsBodies;
+	ScenePhysicsBody*    transparentPhysicsBodies;
+
+	u32               throwSphereBundleIdx;
+	u32               throwSpherePrimIdx;
+	u32               numThrownSpheres;
+	u32               thrownSpheres[MAX_THROWN_SPHERES];
 } Scene;
 
 typedef enum SceneAsyncOp_
@@ -126,6 +146,16 @@ void Scene_Deactivate(Scene* scene);
 void Scene_InitPhysics(Scene* scene);
 void Scene_PhysicsDestroy(Scene* scene);
 void Scene_PhysicsUpdate(Scene* scene, float deltaTime);
+
+// builds a static rigid body with a triangle-mesh collider for every static mesh instance in the
+// scene's surface render sets. call once after a scene finishes loading.
+void Scene_BuildStaticColliders(Scene* scene);
+void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity);
+ScenePhysicsBody* Scene_PhysicsBodySlot(Scene* scene, bool transparent, u32 sparseIdx);
+b3Vec3 ToB3Vec3(v128f v);
+b3Quat ToB3Quat(v128f q);
+v128f SceneB3PosToVec3(b3Pos p);
+u64   SceneB3QuatToEntityRotation(b3Quat q);
 
 // per-frame scene tick: pumps async loads and steps physics for the active scene
 void Scene_Update(float deltaTime);

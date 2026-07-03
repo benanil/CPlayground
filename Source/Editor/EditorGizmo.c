@@ -242,22 +242,23 @@ bool EditorGizmoDeleteSelected(void)
         u32 sparseCount = pass == 0u ? numSurface : numSkinned;
         if (sparseCount == 0u) continue;
 
-        bool passRemoved = false;
-        for (u32 e = 0u; e < set->numEntities; e++)
+        for (s32 g = (s32)set->numGroups - 1; g >= 0; g--)
         {
-            Entity* entity = &set->entities[e];
-            for (u32 i = 0u; i < sparseCount; i++)
+            PrimitiveGroup* group = &set->primitiveGroups[g];
+            for (s32 e = (s32)group->numEntities - 1; e >= 0; e--)
             {
-                if (entity->sparseIdx == sparseList[i])
+                Entity* entity = &set->entities[group->entityOffset + (u32)e];
+                for (u32 i = 0u; i < sparseCount; i++)
                 {
-                    entity->sparseIdx = INVALID_ENTITY;
-                    passRemoved = true;
-                    removed = true;
-                    break;
+                    if (entity->sparseIdx == sparseList[i])
+                    {
+                        RenderSet_RemoveEntity(set, (u32)g, (u32)e);
+                        removed = true;
+                        break;
+                    }
                 }
             }
         }
-        if (passRemoved) RenderSet_CompactEntities(set);
     }
 
     if (!removed) return false;
@@ -554,6 +555,9 @@ static void GizmoApplyMembers(Scene* scene, const v128f axes[3], f32 mouseY)
             v128f worldScale = VecMulf(scale, 10.0f);
             entity->position = VecSub(newCenter, QMulVec3V(VecMul(localCenter, worldScale), startRot));
         }
+
+        if (!member->skinned)
+            Scene_PhysicsSyncEntityBody(scene, false, member->groupIdx, entity);
     }
 }
 

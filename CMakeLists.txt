@@ -97,7 +97,7 @@ set_source_files_properties(
 
 target_sources(${EXECUTABLE_NAME} PRIVATE
     Source/Main.c
-    Extern/dynarray.c
+    Source/DataStructures/Array.c
     Extern/tlsf.c
     Extern/ExternAll.cpp
 

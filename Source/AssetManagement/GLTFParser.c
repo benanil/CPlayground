@@ -1451,7 +1451,7 @@ void FreeGLTFBuffers(SceneBundle* gltf)
         FreeAllText((char*)gltf->buffers[i].uri);
         gltf->buffers[i].uri = NULL;
     }
-    // dynarray_destroy(gltf->buffers);
+    // ArrayDestroy(gltf->buffers);
     gltf->numBuffers = 0;
     gltf->buffers = NULL;
 }

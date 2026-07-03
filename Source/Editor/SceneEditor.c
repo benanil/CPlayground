@@ -1142,6 +1142,8 @@ static void SceneInspectorUI(Scene* scene)
     {
         entity->position = VecSetR(sceneInspectorCache.positionUi[0], sceneInspectorCache.positionUi[1], sceneInspectorCache.positionUi[2], 0.0f);
         sceneInspectorCache.position = entity->position;
+        if (!sceneObjectSelection.skinned)
+            Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
         scene->renderDataDirty = 1;
     }
 
@@ -1160,6 +1162,8 @@ static void SceneInspectorUI(Scene* scene)
         sceneInspectorCache.positionUi[1] = VecGetY(entity->position);
         sceneInspectorCache.positionUi[2] = VecGetZ(entity->position);
         sceneInspectorCache.rotation = entity->rotation;
+        if (!sceneObjectSelection.skinned)
+            Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
         scene->renderDataDirty = 1;
     }
 
@@ -1176,6 +1180,8 @@ static void SceneInspectorUI(Scene* scene)
         sceneInspectorCache.positionUi[1] = VecGetY(entity->position);
         sceneInspectorCache.positionUi[2] = VecGetZ(entity->position);
         sceneInspectorCache.scalePacked = entity->scale;
+        if (!sceneObjectSelection.skinned)
+            Scene_PhysicsSyncEntityBody(scene, false, sceneObjectSelection.groupIdx, entity);
         scene->renderDataDirty = 1;
     }
 

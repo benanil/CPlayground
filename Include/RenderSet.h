@@ -40,6 +40,8 @@ typedef enum RenderSetMaterialFilter_
     RenderSetMaterialFilter_Transparent
 } RenderSetMaterialFilter;
 
+struct Scene_;
+
 typedef struct RenderSet_
 {
     Entity*             entities;
@@ -59,6 +61,7 @@ typedef struct RenderSet_
     u32 numBundles; // watermark: highest used bundle slot + 1, slots below may be empty
     u32 skinned;
     u32 materialFilter;
+    struct Scene_* hookScene;
 } RenderSet;
 
 struct PrimitiveGroup_
@@ -112,6 +115,7 @@ bool  RenderSet_Validate(const RenderSet* set, const char* label);
 
 void  RenderSet_InitSet(RenderSet* set, u32 maxEntities, u32 maxGroups, u32 maxBundles, bool skinned);
 void  RenderSet_SetMaterialFilter(RenderSet* set, RenderSetMaterialFilter filter);
+void  RenderSet_SetHookScene(RenderSet* set, struct Scene_* scene);
 
 // materialOffset is the scene's gpu material slot base of the bundle.
 // out: groupIdx, ~0u outherwise
@@ -136,6 +140,22 @@ u32   RenderSet_RemoveSceneBundle(RenderSet* set, u32 bundleIdx);
 
 // shouldn't be called frequently
 void  RenderSet_CompactEntities(RenderSet* set);
+
+#ifndef RenderSet_AddEntitiesCallback
+void RenderSet_AddEntitiesCallback(RenderSet* set, u32 groupIdx, u32 localStartIdx, u32 count);
+#endif
+
+#ifndef RenderSet_RemoveRangeCallback
+void RenderSet_RemoveRangeCallback(RenderSet* set, u32 groupIdx, u32 localStartIdx, u32 count);
+#endif
+
+#ifndef RenderSet_RemoveGroupsCallback
+void RenderSet_RemoveGroupsCallback(RenderSet* set, u32 firstGroup, u32 groupCount);
+#endif
+
+#ifndef RenderSet_ClearEntitiesCallback
+void RenderSet_ClearEntitiesCallback(RenderSet* set);
+#endif
 
 
 #endif

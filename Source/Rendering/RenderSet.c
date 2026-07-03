@@ -36,6 +36,11 @@ void RenderSet_SetMaterialFilter(RenderSet* set, RenderSetMaterialFilter filter)
     set->materialFilter = (u32)filter;
 }
 
+void RenderSet_SetHookScene(RenderSet* set, struct Scene_* scene)
+{
+    set->hookScene = scene;
+}
+
 static bool PrimitiveMatchesMaterialFilter(const RenderSet* set, const SceneBundle* bundle, const APrimitive* primitive)
 {
     if (set->materialFilter == RenderSetMaterialFilter_All) return true;
@@ -385,6 +390,7 @@ u32 RenderSet_AddEntities(RenderSet* set, u32 primitiveIdx, u32 numAdded, const 
     }
     group->numEntities += numAdded;
     group->capacity = group->numEntities;
+    RenderSet_AddEntitiesCallback(set, primitiveIdx, group->numEntities - numAdded, numAdded);
     return startIdx;
 }
 
@@ -551,9 +557,11 @@ u32 RenderSet_AddScene(RenderSet* set, u32 bundleIdx, v128f position, v128f rota
             added.primitiveIdx = firstGroupIdx + p;
             added.sparseIdx = set->skinned ? nodeSparseIdx : sparseStart + sparseCursor++;
             PrimitiveGroup* group = &set->primitiveGroups[added.primitiveIdx];
-            u32 denseIdx = group->entityOffset + group->numEntities++;
+            u32 localIdx = group->numEntities++;
+            u32 denseIdx = group->entityOffset + localIdx;
             set->entities[denseIdx] = added;
             SetSparseToDense(set, added.sparseIdx, denseIdx);
+            RenderSet_AddEntitiesCallback(set, added.primitiveIdx, localIdx, 1u);
         }
     }
 
@@ -633,6 +641,7 @@ void RenderSet_CompactEntities(RenderSet* set)
 
 void RenderSet_ClearEntities(RenderSet* set)
 {
+    RenderSet_ClearEntitiesCallback(set);
     MemsetZero(set->entities, set->maxEntities * sizeof(Entity));
     MemSet(set->sparseID, 0xFF, set->maxEntities * sizeof(u32));
     MemsetZero(set->sparseSlots, ((set->maxEntities + 63u) >> 6) * sizeof(u64));
@@ -650,6 +659,7 @@ void RenderSet_ClearEntities(RenderSet* set)
 
 void RenderSet_Clear(RenderSet* set)
 {
+    RenderSet_RemoveGroupsCallback(set, 0u, set->numGroups);
     set->numEntities = 0;
     set->numGroups = 0;
     set->numBundles = 0;
@@ -712,6 +722,7 @@ u32 RenderSet_RemoveEntities(RenderSet* set, u32 groupIdx, u32 localStartIdx, u3
     if (localStartIdx + count > group->numEntities)
         count = group->numEntities - localStartIdx;
 
+    RenderSet_RemoveRangeCallback(set, groupIdx, localStartIdx, count);
     u32 firstRemoved = group->entityOffset + localStartIdx;
     ShiftEntitiesLeft(set, firstRemoved, count);
 
@@ -739,6 +750,8 @@ u32 RenderSet_RemoveSceneBundle(RenderSet* set, u32 bundleIdx)
     u32 firstGroup = range.start;
     u32 lastGroup = firstGroup + range.count - 1;
     if (firstGroup >= set->numGroups || lastGroup >= set->numGroups) return 0;
+
+    RenderSet_RemoveGroupsCallback(set, firstGroup, range.count);
 
     u32 firstEntity = set->primitiveGroups[firstGroup].entityOffset;
     PrimitiveGroup* last = &set->primitiveGroups[lastGroup];

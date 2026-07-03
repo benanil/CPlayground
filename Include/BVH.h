@@ -57,6 +57,10 @@ struct Scene_;
 // transformed into entity local space per instance. out: 1 when *hit is filled
 s32 BVH_RaycastScene(const struct Scene_* scene, v128f origin, v128f dir, BVHHit* hit);
 
+// box3d raycast against the static surface colliders, fills *hit in the same BVHHit contract when the
+// physics hit is nearer than hit->hit.t. implemented in Physics.c. out: 1 when *hit is written
+s32 Scene_PhysicsRaycastPick(const struct Scene_* scene, v128f origin, v128f dir, BVHHit* hit);
+
 #if defined(__cplusplus)
 }
 #endif
