@@ -4,39 +4,37 @@
 #include "Math.hlsl"
 #include "Bitpack.hlsl"
 
-// The animated vertex cache (sAnimatedVert) stores ONLY a bounds-normalized skinned position,
-// packed as 16/16/16 unorm in 2x u32 (see PackUnorm16x4 / UnpackUnorm16x4).
+// The animated vertex cache stores ONLY a bounds-normalized skinned position,
+// packed as xy11z10 unorm in one uint.
 //
-// Unlike the old format, neither entity rotation nor scale is baked in: the compute pass writes
-// the skinned position in *model space* (exactly like a static mesh quantizes against its AABB),
-// and every vertex shader applies the entity rotation + scale on read. Keeping the stored value in
-// model space makes the bounds normalization exact (no rotation mixing axes -> no clamping) and
-// lets all depth/shadow passes share one position-only buffer. The tangent frame is no longer
-// cached; the GBuffer pass re-skins it from the source vertex + bones.
-//
-// Everything on the read side stays fp32: the model position is meter-scale, so casting it to fp16
-// would re-introduce ~1-2 mm of frame-to-frame jitter. PackAnimatedCenterRel (compute) and
-// UnpackAnimatedModelPos (consumers) are exact inverses.
+// Neither entity rotation nor scale is baked in: the compute pass writes the skinned position in
+// *model space* (exactly like a static mesh quantizes against its AABB), and every vertex shader
+// applies the entity rotation + scale on read. The tangent frame is not cached; the GBuffer pass
+// re-skins it from the source vertex + bones.
 
 float3 AnimatedBoundsCenter(float3 aabbMin, float3 aabbMax) { return (aabbMin + aabbMax) * 0.5f; }
 
 // guard against a zero-extent axis (planar mesh) so the normalize divide can't produce NaN
 float3 AnimatedBoundsExtent(float3 aabbMin, float3 aabbMax) { return max((aabbMax - aabbMin) * 0.5f, 1.0e-4f); }
 
-// Compute pass: centerRel = skinnedModelPos - boundsCenter (the skinning accumulates in this
-// bounds-local frame so values stay near 0). extent is the AABB half-size. Maps
-// [-extent, extent] -> [0, 1] and packs to 16/16/16. Kept in fp32 so the quantization is the only
-// precision loss.
-uint2 PackAnimatedCenterRel(float3 centerRel, float3 extent)
+// Compute pass: centerRel = skinnedModelPos - boundsCenter. extent is derived from the group AABB,
+// not stored per vertex. Maps [-extent, extent] -> [0, 1] and packs to 11/11/10 unorm.
+uint PackAnimatedCenterRel(float3 centerRel, float3 extent)
 {
-    float3 norm01 = centerRel / (2.0f * extent) + 0.5f;
-    return PackUnorm16x4(float4(norm01, 0.0f));
+    float3 norm01 = saturate(centerRel / (2.0f * extent) + 0.5f);
+    uint x = uint(round(norm01.x * 2047.0f)) & 0x7FFu;
+    uint y = uint(round(norm01.y * 2047.0f)) & 0x7FFu;
+    uint z = uint(round(norm01.z * 1023.0f)) & 0x3FFu;
+    return x | (y << 11u) | (z << 22u);
 }
 
 // Vertex shaders: rebuild the model-space skinned position from the packed unorm (fp32).
-float3 UnpackAnimatedModelPos(uint2 packed, float3 aabbMin, float3 aabbMax)
+float3 UnpackAnimatedModelPos(uint packed, float3 aabbMin, float3 aabbMax)
 {
-    float3 norm01 = UnpackUnorm16x4(packed).xyz;
+    float3 norm01 = float3(
+        float( packed        & 0x7FFu) * (1.0f / 2047.0f),
+        float((packed >> 11u) & 0x7FFu) * (1.0f / 2047.0f),
+        float( packed >> 22u          ) * (1.0f / 1023.0f));
     return aabbMin + norm01 * (aabbMax - aabbMin);
 }
 

@@ -29,7 +29,7 @@ cbuffer ps_params : register(b0, space3)
 StructuredBuffer<Entity>         sEntities            : register(t0);
 StructuredBuffer<PrimitiveGroup> sPrimitiveGroups     : register(t1);
 StructuredBuffer<uint>           sDrawSparseIndices   : register(t2);
-StructuredBuffer<AnimatedVert>   sAnimatedVert        : register(t3);
+StructuredBuffer<uint>           sAnimatedPosition    : register(t3);
 StructuredBuffer<ShadowCascadeBuffer> sShadowCascades : register(t4);
 StructuredBuffer<uint>           sBoneMtx             : register(t5);
 
@@ -91,11 +91,11 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID, [[vk::builtin("Dra
     uint localVertex = vertexID - group.lodVertexOffset[lod];
     uint sparse = sEntities[denseIdx].sparse;
     uint animatedVertex = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + group.lodAnimatedVertexOffset[lod] + localVertex;
-    AnimatedVert animated = sAnimatedVert[animatedVertex];
+    uint animatedPos = sAnimatedPosition[animatedVertex];
     Entity entity = sEntities[denseIdx];
     f16_4 insRot = normalize(UnpackRGBA16Snorm(entity.rotation[0], entity.rotation[1]));
     f16_3 insScale = UnpackRGBA16Unorm(entity.scale).xyz * f16(10.0);
-    float3 modelPos = UnpackAnimatedModelPos(uint2(animated.packed0, animated.packed1), group.aabbMin.xyz, group.aabbMax.xyz);
+    float3 modelPos = UnpackAnimatedModelPos(animatedPos, group.aabbMin.xyz, group.aabbMax.xyz);
     float3 finalWorldPos = AnimatedWorldPos(modelPos, float4(insRot), float3(insScale), entity.position.xyz);
 
     uint boneStart = sparse * MAX_BONES;
