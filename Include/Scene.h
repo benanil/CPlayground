@@ -4,6 +4,7 @@
 #include "RenderSet.h"
 #include "TextureSystem.h"
 #include "Animation.h"
+#include "Async.h"
 #include <SDL3/SDL_atomic.h>
 #include <box3d/id.h>
 #include <box3d/math_functions.h>
@@ -79,17 +80,13 @@ typedef struct Scene_
     u32 texturesBaked;   // pages came from a baked atlas, packer state is unusable until a repack
 
 	b3WorldId physicsWorldID;
+	bool physicsReady;
 	// static collision mesh handles, one per primitive group of each static render set. shapes
 	// reference these (box3d does not copy mesh data), so they must outlive the world.
 	struct b3MeshData*   surfacePhysicsMeshes[MAX_GROUP];
 	struct b3MeshData*   transparentPhysicsMeshes[MAX_GROUP];
 	ScenePhysicsBody*    surfacePhysicsBodies;
 	ScenePhysicsBody*    transparentPhysicsBodies;
-
-	u32               throwSphereBundleIdx;
-	u32               throwSpherePrimIdx;
-	u32               numThrownSpheres;
-	u32               thrownSpheres[MAX_THROWN_SPHERES];
 } Scene;
 
 typedef enum SceneAsyncOp_
@@ -149,6 +146,7 @@ void Scene_PhysicsUpdate(Scene* scene, float deltaTime);
 
 // builds a static rigid body with a triangle-mesh collider for every static mesh instance in the
 // scene's surface render sets. call once after a scene finishes loading.
+void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback);
 void Scene_BuildStaticColliders(Scene* scene);
 void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity);
 ScenePhysicsBody* Scene_PhysicsBodySlot(Scene* scene, bool transparent, u32 sparseIdx);

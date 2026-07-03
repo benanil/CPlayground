@@ -226,12 +226,6 @@ static b3MeshData* Scene_PhysicsEnsureGroupMesh(Scene* scene, bool transparent, 
 	const u32* ib = gGFX.IndexBuffer + indexOffset;
 	for (u32 k = 0; k < numIndices; k++)
 	{
-		if (ib[k] < vertexOffset || ib[k] >= vertexOffset + numVertices)
-		{
-			AX_WARN("physics: invalid mesh index group=%u index=%u vertexRange=%u..%u", groupIdx, ib[k], vertexOffset, vertexOffset + numVertices);
-			ArenaRestore(&GlobalArena, mark);
-			return NULL;
-		}
 		idx[k] = (int32_t)(ib[k] - vertexOffset); // mega-absolute -> group-local
 	}
 
@@ -457,6 +451,20 @@ void Scene_BuildStaticColliders(Scene* scene)
 	BuildCollidersForSet(scene, &scene->surfaceSet, PHYS_CAT_SURFACE);
 	BuildCollidersForSet(scene, &scene->transparentSurfaceSet, PHYS_CAT_TRANSPARENT);
 	AX_LOG("physics: built %u static collider meshes\n", PhysicsCountMeshes(scene, false) + PhysicsCountMeshes(scene, true));
+}
+
+static s32 BuildStaticCollidersTask(void* data)
+{
+	Scene_BuildStaticColliders((Scene*)data);
+	return 1;
+}
+
+void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback)
+{
+	if (!AsyncRun("craete static colliders task", BuildStaticCollidersTask, callback, scene))
+	{
+		BuildStaticCollidersTask(scene);
+	}
 }
 
 // box3d picking against the static surface colliders. mirrors the BVHHit contract of the cpu-BVH

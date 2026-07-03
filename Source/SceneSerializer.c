@@ -463,6 +463,12 @@ fail:
     return 0;
 }
 
+static void BuildColliderEndCallback(void* data, s32 result)
+{
+	Scene* scene = (Scene*)data;
+	scene->physicsReady = true;
+}
+
 s32 SceneSerializer_Load(Scene* scene, const char* path)
 {
     double startTime = TimeSinceStartup();
@@ -615,7 +621,7 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
         RenderSet_Validate(set, isSkinned ? "load skinned" : (s == 2u ? "load transparent surface" : "load surface"));
     }
 
-    if (data.numLights > 0)
+  if (data.numLights > 0)
         MemCopy(scene->lights, data.lights, data.numLights * sizeof(LightGPU));
     scene->numLights = data.numLights;
 
@@ -624,9 +630,9 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
     scene->renderDataDirty = 1;
 
     ArenaRestore(&GlobalArena, mark);
-
+	scene->physicsReady = false;
     // every mesh instance is static for now: give each a static rigid body with a triangle collider
-    Scene_BuildStaticColliders(scene);
+    Scene_BuildStaticCollidersAsync(scene, BuildColliderEndCallback);
 
     AX_LOG("scene loaded: %s bundles=%d entities=%d lights=%d baked=%d %.2fs",
            path, scene->numBundles, scene->surfaceSet.numEntities + scene->skinnedSet.numEntities + scene->transparentSurfaceSet.numEntities,
