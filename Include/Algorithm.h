@@ -90,6 +90,12 @@ bool StringContains(const char* name, const char* search);
 
 bool StringEqual(const char* RESTRICT a, const char* RESTRICT b, int n);
 
+static inline void CopyString(char* dst, u32 dstSize, const char* src)
+{
+    u32 len = Minu32((u32)StringLength(src), dstSize - 1u);
+    MemCopy(dst, src, len);
+    dst[len] = '\0';
+}
 
 #if defined(__cplusplus)
 }

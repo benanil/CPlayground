@@ -29,6 +29,33 @@ typedef struct TerrainGenParams_
     bool fixedArea;      // freeze the chunk rings where they were created, no streaming
 } TerrainGenParams;
 
+#define TERRAIN_MAX_LAYERS 8u
+
+typedef struct TerrainLayerDesc_
+{
+    bool enabled;
+    char albedo[256];
+    char normal[256];
+    char metallicRoughness[256];
+} TerrainLayerDesc;
+
+// authoring metadata persisted in the .terrain file alongside the gen params. the
+// runtime does not consume the paint layers or grass yet (the terrain textures are
+// still the hardcoded set loaded in Terrain.c), but the editor edits these and
+// Terrain_SaveWorld/Terrain_LoadWorld round-trip them so nothing is lost on reload.
+typedef struct TerrainAuthoring_
+{
+    TerrainLayerDesc layers[TERRAIN_MAX_LAYERS];
+    f32  grassDensity;
+    f32  grassScaleMin;
+    f32  grassScaleMax;
+    char grassColorHex[9]; // AABBGGRR
+} TerrainAuthoring;
+
+// mutable authoring settings owned by the terrain; the editor UI binds directly to
+// this and Terrain_SaveWorld/LoadWorld are the single owners of its serialization
+TerrainAuthoring* Terrain_GetAuthoring(void);
+
 TerrainGenParams Terrain_DefaultGenParams(void);
 // rebuilds the whole terrain with new generation settings: all chunks evict and
 // regenerate. in flight worker jobs are discarded safely. cheap params reads

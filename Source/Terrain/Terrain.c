@@ -149,6 +149,7 @@ typedef struct TerrainState_
     f32 lodFactor;               // snapshot of g_RenderSettings.terrainLodFactor
 
     TerrainGenParams genParams;
+    TerrainAuthoring authoring;  // name/paint-layers/grass, persisted in the .terrain file
     bool fixedCenterValid;       // fixedArea captures the camera once, then never moves
     f32  fixedCenter[2];         // world x/z the rings stay centered on
 
@@ -979,31 +980,10 @@ static u32 TerrainDrawChunks(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
     return drawn;
 }
 
-static void TerrainSetRenderViewport(SDL_GPURenderPass* pass, u32 width, u32 height)
-{
-    SDL_GPUViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .w = (f32)Maxu32(width, 1u),
-        .h = (f32)Maxu32(height, 1u),
-        .min_depth = 0.0f,
-        .max_depth = 1.0f
-    };
-    SDL_Rect scissor = {
-        .x = 0,
-        .y = 0,
-        .w = (int)Maxu32(width, 1u),
-        .h = (int)Maxu32(height, 1u)
-    };
-    SDL_SetGPUViewport(pass, &viewport);
-    SDL_SetGPUScissor(pass, &scissor);
-}
-
 void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
     if (!Terrain_HasDraws()) return;
 
-    TerrainSetRenderViewport(pass, g_WindowState.render_width, g_WindowState.render_height);
     SDL_BindGPUGraphicsPipeline(pass, g_Terrain.depthPipeline);
     SDL_GPUBufferBinding vertexBinding = { g_Terrain.vertexBuffer, 0 };
     SDL_GPUBufferBinding indexBinding  = { g_Terrain.indexBuffer, 0 };
@@ -1018,9 +998,8 @@ void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, m
     if (!g_WindowState.tex_shadow_color || !g_RenderState.shadowCascadeBuffer ||
         !g_WindowState.tex_hbao_blur || !g_WindowState.tex_contact_shadow)
         return;
-
-    TerrainSetRenderViewport(pass, width, height);
-    SDL_BindGPUGraphicsPipeline(pass, g_Terrain.forwardPipeline);
+    
+	SDL_BindGPUGraphicsPipeline(pass, g_Terrain.forwardPipeline);
     SDL_GPUBufferBinding vertexBinding = { g_Terrain.vertexBuffer, 0 };
     SDL_GPUBufferBinding indexBinding  = { g_Terrain.indexBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
@@ -1236,29 +1215,54 @@ static Texture TerrainLoadLayerArray(const char* const paths[3], s32 size, bool 
     return tex;
 }
 
+static const char* const albedoPaths[3] = {
+	"Assets/Textures/Terrain/brown_mud_leaves_01_diff_2k.png",
+	"Assets/Textures/Terrain/rocky_terrain_02_diff_2k.png",
+	"Assets/Textures/Terrain/rocky_terrain_diff_2k.png"
+};
+static const char* const normalPaths[3] = {
+	"Assets/Textures/Terrain/brown_mud_leaves_01_nor_dx_1k.png",
+	"Assets/Textures/Terrain/rocky_terrain_02_nor_dx_1k.png",
+	"Assets/Textures/Terrain/rocky_terrain_nor_dx_1k.png"
+};
+static const char* const metallicRoughnessPaths[3] = {
+	"Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png",
+	"Assets/Textures/Terrain/rocky_terrain_02_arm_1k.png",
+	"Assets/Textures/Terrain/rocky_terrain_arm_1k.png"
+};
+
 static void TerrainInitTextures(void)
 {
-    static const char* const albedoPaths[3] = {
-        "Assets/Textures/Terrain/brown_mud_leaves_01_diff_2k.png",
-        "Assets/Textures/Terrain/rocky_terrain_02_diff_2k.png",
-        "Assets/Textures/Terrain/rocky_terrain_diff_2k.png"
-    };
-    static const char* const normalPaths[3] = {
-        "Assets/Textures/Terrain/brown_mud_leaves_01_nor_dx_1k.png",
-        "Assets/Textures/Terrain/rocky_terrain_02_nor_dx_1k.png",
-        "Assets/Textures/Terrain/rocky_terrain_nor_dx_1k.png"
-    };
-    static const char* const armPaths[3] = {
-        "Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png",
-        "Assets/Textures/Terrain/rocky_terrain_02_arm_1k.png",
-        "Assets/Textures/Terrain/rocky_terrain_arm_1k.png"
-    };
-
     u64 start = SDL_GetTicks();
     g_Terrain.albedoLayers = TerrainLoadLayerArray(albedoPaths, TERRAIN_ALBEDO_SIZE, true, "TerrainAlbedo");
     g_Terrain.normalLayers = TerrainLoadLayerArray(normalPaths, TERRAIN_DETAIL_SIZE, false, "TerrainNormal");
-    g_Terrain.armLayers    = TerrainLoadLayerArray(armPaths, TERRAIN_DETAIL_SIZE, false, "TerrainARM");
+    g_Terrain.armLayers    = TerrainLoadLayerArray(metallicRoughnessPaths, TERRAIN_DETAIL_SIZE, false, "TerrainARM");
     AX_LOG("terrain textures loaded in %llu ms (png decode, consider baking)", (unsigned long long)(SDL_GetTicks() - start));
+}
+
+// the three layers the engine loads into the terrain texture arrays, see
+// TerrainInitTextures. extra slots stay disabled until custom layer loading lands
+static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
+{
+    SDL_memset(authoring, 0, sizeof(*authoring));
+
+    for (u32 i = 0; i < 3u; i++)
+    {
+        authoring->layers[i].enabled = true;
+        CopyString(authoring->layers[i].albedo, sizeof(authoring->layers[i].albedo), albedoPaths[i]);
+        CopyString(authoring->layers[i].normal, sizeof(authoring->layers[i].normal), normalPaths[i]);
+		CopyString(authoring->layers[i].metallicRoughness, sizeof(authoring->layers[i].metallicRoughness), metallicRoughnessPaths[i]);
+	}
+
+    authoring->grassDensity  = 1.0f;
+    authoring->grassScaleMin = 0.6f;
+    authoring->grassScaleMax = 1.2f;
+    CopyString(authoring->grassColorHex, sizeof(authoring->grassColorHex), "77AA55FF");
+}
+
+TerrainAuthoring* Terrain_GetAuthoring(void)
+{
+    return &g_Terrain.authoring;
 }
 
 void Terrain_Init(void)
@@ -1266,6 +1270,7 @@ void Terrain_Init(void)
     if (g_Terrain.initialized) return;
     SDL_memset(&g_Terrain, 0, sizeof(g_Terrain));
     g_Terrain.genParams = Terrain_DefaultGenParams();
+    TerrainAuthoringDefaults(&g_Terrain.authoring);
     TerrainDensity_SetParams(&g_Terrain.genParams);
     TerrainEdit_Init();
     // Transvoxel_SelfTest();
@@ -1603,15 +1608,7 @@ static bool TerrainChunksPathFromWorld(const char* terrainPath, char* dst, u32 d
     u32 len = Minu32((u32)StringLength(terrainPath), dstSize - 1u);
     MemCopy(dst, terrainPath, len);
     dst[len] = '\0';
-
-    u32 dot = len;
-    while (dot > 0u && dst[dot - 1u] != '.' && dst[dot - 1u] != '/' && dst[dot - 1u] != '\\') dot--;
-    if (dot > 0u && dst[dot - 1u] == '.') len = dot - 1u;
-
-    static const char ext[] = ".chunks";
-    u32 extLen = (u32)sizeof(ext);
-    if (len + extLen > dstSize) return false;
-    MemCopy(dst + len, ext, extLen);
+	ChangeExtension(dst, len, "chunks");
     return true;
 }
 
@@ -1624,6 +1621,7 @@ bool Terrain_SaveWorld(const char* path)
     if (!text) return false;
 
     TerrainGenParams* params = &g_Terrain.genParams;
+    TerrainAuthoring* authoring = &g_Terrain.authoring;
     char* p = text;
     p = TerrainWriteString(p, "terrain 1\n");
     p = TerrainWriteBool(p, "fixed_chunk_size", params->fixedArea);
@@ -1659,6 +1657,8 @@ bool Terrain_LoadWorld(const char* path)
     if (!text) return false;
 
     TerrainGenParams params = Terrain_DefaultGenParams();
+    TerrainAuthoring* authoring = &g_Terrain.authoring;
+    TerrainAuthoringDefaults(authoring);
     const char* value;
     char* line = text;
     while (line && *line)
