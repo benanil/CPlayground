@@ -145,8 +145,8 @@ void Scene_PhysicsDestroy(Scene* scene)
 	scene->pendingPhysics = NULL;
 	scene->numPendingPhysics = 0;
 	scene->physicsWorldID = b3_nullWorldId;
-	for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
-		scene->terrainPhysicsBodies[i] = b3_nullBodyId;
+	MemSet(scene->terrainPhysicsBodies, 0, sizeof(b3BodyId) * MAX_TERRAIN_PHYSICS_CHUNKS);
+	MemSet(scene->terrainPhysicsMeshes, 0, sizeof(b3MeshData*) * MAX_TERRAIN_PHYSICS_CHUNKS);
 }
 
 b3Vec3 ToB3Vec3(v128f v) { return (b3Vec3){ VecGetX(v), VecGetY(v), VecGetZ(v) }; }
@@ -422,6 +422,11 @@ static void PhysicsDestroyTerrainMeshStorage(Scene* scene)
 	}
 }
 
+const b3MeshData* Scene_GetTerrainMeshData(Scene* scene, s32 slot)
+{
+	return scene->terrainPhysicsMeshes[slot];
+}
+
 bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
                                        const b3Vec3* vertices, u32 vertexCount,
                                        const s32* indices, u32 indexCount)
@@ -468,15 +473,7 @@ bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
 	else
 	{
 		b3ShapeId shape;
-		if (b3Body_GetShapes(body, &shape, 1) <= 0 || b3Shape_GetType(shape) != b3_meshShape)
-		{
-			b3DestroyBody(body);
-			scene->terrainPhysicsBodies[chunkSlot] = b3_nullBodyId;
-			if (oldMesh) b3DestroyMesh(oldMesh);
-			scene->terrainPhysicsMeshes[chunkSlot] = NULL;
-			b3DestroyMesh(mesh);
-			return Scene_PhysicsSyncTerrainChunkMesh(scene, chunkSlot, vertices, vertexCount, indices, indexCount);
-		}
+		int numShapes = b3Body_GetShapes(body, &shape, 1);
 		b3Shape_SetMesh(shape, mesh, b3Vec3_one);
 	}
 
@@ -797,10 +794,7 @@ static s32 BuildStaticCollidersTask(void* data)
 
 void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback)
 {
-	if (!AsyncRun("craete static colliders task", BuildStaticCollidersTask, callback, scene))
-	{
-		BuildStaticCollidersTask(scene);
-	}
+	AsyncRun("craete static colliders task", BuildStaticCollidersTask, callback, scene);
 }
 
 // box3d picking against the static surface colliders. mirrors the BVHHit contract of the cpu-BVH

@@ -56,7 +56,14 @@ purefn f32 F3Len  (float3 a)           { return Vec3LenfV(Vec3Load(&a.x)); }
 purefn f32 I2Len  (int2 a)             { return Sqrtf(a.x * a.x + a.y * a.y); }
 purefn f32 I3Len  (int3 a)             { return Sqrtf(a.x * a.x + a.y * a.y + a.z * a.z); }
 purefn f32 I2LenSq(int2 a)             { return (a.x * a.x + a.y * a.y); }
+purefn float2 F2Frac (float2 a)        { return (float2){ Fractf32(a.x)   , Fractf32(a.y)    }; }
+purefn float2 F2Floor(float2 a)        { return (float2){ Floorf32(a.x), Floorf32(a.y) }; }
+purefn float2 F2Sin  (float2 a)        { return (float2){ Sin(a.x)     , Sin(a.y)      }; }
+purefn float3 F3Frac (float3 a)        { return (float3){ Fractf32(a.x)   , Fractf32(a.y)    , Fractf32(a.z) }; }
+purefn float3 F3Floor(float3 a)        { return (float3){ Floorf32(a.x), Floorf32(a.y) , Floorf32(a.z) }; }
+purefn float3 F3Sin  (float3 a)        { return (float3){ Sin(a.x)     , Sin(a.y)      , Sin(a.z)   }; }
 purefn f32 F2LenSq(float2 a)           { return (a.x * a.x + a.y * a.y); }
+purefn f32 F2Dot (float2 a, float2 b)  { return (a.x * b.x + a.y * b.y); }
 purefn f32 F2Dist(float2 a, float2 b)  { return F2Len(F2Sub(a, b)); }
 purefn f32 I2Dist(int2 a, int2 b)      { return I2Len(I2Sub(a, b)); }
 purefn f32 I3Dist(int3 a, int3 b)      { return I3Len(I3Sub(a, b)); }
@@ -156,5 +163,7 @@ static inline f16_4 VecCombine(float2 a, float2 b)
 {
     return VecSetR(a.x, a.y, b.x, b.y);
 }
+
+// procedural noise (cellular / value / gradient) lives in Math/Noise.h
 
 #endif //Vector.h

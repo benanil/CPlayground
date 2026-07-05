@@ -10,6 +10,14 @@
 #define TD_WEIGHT       0.5f
 #define TD_MULT         0.45f
 
+// world y of the solid bedrock floor. nothing below this is ever air: the base field is
+// clamped solid and the sample path re-forces it after sculpt overlay, so a dug hole can
+// never break through into the unstreamed void below and drop the player out of the world.
+#define TD_BEDROCK_Y   (-64.0f)
+// extra mountain height toward the island center (island mode only). elevation above the
+// base is scaled by up to (1 + this) at the center, tapering to 1 at the coast.
+#define TD_CENTER_GAIN  0.75f
+
 static TerrainGenParams td_Params = {
     .seed = 0,
     .seaLevel = 0.0f,
@@ -275,34 +283,44 @@ const TerrainGenParams* TerrainDensity_GetParams(void)
     return &td_Params;
 }
 
-static f32 TerrainDensity_Height(f32 x, f32 z)
+f32 TerrainDensity_IslandMask(f32 x, f32 z)
+{
+    return TerrainDensity_IslandFade(x, z);
+}
+
+f32 TerrainDensity_Height(f32 x, f32 z)
 {
     f32 density = TerrainNoiseDensity01(x, z);
     f32 heightScale = Clampf32(td_Params.ridgeAmplitude, 0.25f, 2.0f);
-    f32 height = td_Params.baseHeight + ((density * 255.0f - 7.0f) * 0.3333333f + 9.666667f) * heightScale;
+    f32 elev = ((density * 255.0f - 7.0f) * 0.3333333f + 9.666667f) * heightScale;
 
     if (td_Params.island)
     {
+        f32 t = TerrainDensity_IslandFade(x, z);
+        // taller mountains toward the center (fade 0), tapering to normal at the coast
+        elev *= 1.0f + (1.0f - t) * TD_CENTER_GAIN;
+        f32 height = td_Params.baseHeight + elev;
         // far from the island keep streaming, but generate a flat sea-level plane
         // instead of sinking the whole field below the water line
-        f32 t = TerrainDensity_IslandFade(x, z);
-        height = height * (1.0f - t) + td_Params.seaLevel * t;
+        return height * (1.0f - t) + td_Params.seaLevel * t;
     }
-    return height;
+    return td_Params.baseHeight + elev;
 }
 
 static v128f TerrainDensity_HeightV(v128f x, v128f z)
 {
     v128f density = TerrainNoiseDensity01V(x, z);
     f32 heightScale = Clampf32(td_Params.ridgeAmplitude, 0.25f, 2.0f);
-    v128f height = VecAddf(VecMulf(VecAddf(VecMulf(VecSubf(VecMulf(density, 255.0f), 7.0f), 0.3333333f), 9.666667f), heightScale), td_Params.baseHeight);
+    v128f elev = VecMulf(VecAddf(VecMulf(VecSubf(VecMulf(density, 255.0f), 7.0f), 0.3333333f), 9.666667f), heightScale);
 
     if (td_Params.island)
     {
         v128f t = TerrainDensity_IslandFadeV(x, z);
-        height = VecFmadd(VecSub(VecSet1(td_Params.seaLevel), height), t, height);
+        elev = VecMul(elev, VecAddf(VecMulf(VecSub(VecOne(), t), TD_CENTER_GAIN), 1.0f));
+        v128f height = VecAddf(elev, td_Params.baseHeight);
+        return VecFmadd(VecSub(VecSet1(td_Params.seaLevel), height), t, height);
     }
-    return height;
+    return VecAddf(elev, td_Params.baseHeight);
 }
 
 static f32 TerrainDensity_Carve(f32 x, f32 y, f32 z)
@@ -325,15 +343,55 @@ f32 TerrainDensity_SDF(f32 x, f32 y, f32 z)
 {
     f32 islandFade = TerrainDensity_IslandFade(x, z);
     f32 carve = TerrainDensity_Carve(x, y, z) * (1.0f - islandFade);
-    return (y - TerrainDensity_Height(x, z)) + carve;
+    f32 sdf = (y - TerrainDensity_Height(x, z)) + carve;
+    // solid bedrock floor: min with (y - floor) forces everything at/below TD_BEDROCK_Y
+    // negative (solid), so the world has no bottom to fall through
+    return Minf32(sdf, y - TD_BEDROCK_Y);
+}
+
+f32 TerrainDensity_At(f32 x, f32 y, f32 z)
+{
+    f32 sdf = TerrainDensity_SDF(x, y, z);
+    // add sculpt edits so grass follows painted/sculpted terrain; the overlay is applied
+    // the same way in TerrainDensity_SampleChunk. skip the map probe when nothing is edited.
+    if (TerrainEdit_NumChunks() != 0u)
+        sdf += TerrainEdit_DeltaAt((s32)Floorf32(x + 0.5f), (s32)Floorf32(y + 0.5f), (s32)Floorf32(z + 0.5f));
+    return sdf;
+}
+
+f32 TerrainDensity_SurfaceY(f32 x, f32 z, f32 startY, float3* outNormal)
+{
+    // the sdf is ~signed distance in meters and d(sdf)/dy is ~1, so y -= sdf is a Newton
+    // step that converges in a couple of iterations from the analytic height seed
+    f32 y = startY;
+    for (s32 i = 0; i < 6; i++)
+        y -= TerrainDensity_At(x, y, z);
+
+    if (outNormal)
+    {
+        const f32 e = 0.5f;
+        float3 grad = {
+            TerrainDensity_At(x + e, y, z) - TerrainDensity_At(x - e, y, z),
+            TerrainDensity_At(x, y + e, z) - TerrainDensity_At(x, y - e, z),
+            TerrainDensity_At(x, y, z + e) - TerrainDensity_At(x, y, z - e)
+        };
+        // the sdf increases toward air, so its gradient is the outward (up-facing) normal
+        *outNormal = F3NormSafe(grad);
+    }
+    return y;
 }
 
 void TerrainDensity_GetYRange(f32* outMin, f32* outMax)
 {
     // Ported algorithm maps density 0.04..1.0 through the original y formula.
     f32 heightScale = Clampf32(td_Params.ridgeAmplitude, 0.25f, 2.0f);
-    f32 lo = td_Params.baseHeight + ((0.04f * 255.0f - 7.0f) * 0.3333333f + 9.666667f) * heightScale - td_Params.carveAmplitude - 2.0f;
-    f32 hi = td_Params.baseHeight + ((1.00f * 255.0f - 7.0f) * 0.3333333f + 9.666667f) * heightScale + td_Params.carveAmplitude + 2.0f;
+    f32 minElev = ((0.04f * 255.0f - 7.0f) * 0.3333333f + 9.666667f) * heightScale;
+    f32 maxElev = ((1.00f * 255.0f - 7.0f) * 0.3333333f + 9.666667f) * heightScale;
+    if (td_Params.island) maxElev *= 1.0f + TD_CENTER_GAIN; // center peaks are the tallest
+    f32 lo = td_Params.baseHeight + minElev - td_Params.carveAmplitude - 2.0f;
+    f32 hi = td_Params.baseHeight + maxElev + td_Params.carveAmplitude + 2.0f;
+    // stream a chunk past the bedrock floor so the solid floor itself always meshes
+    lo = Minf32(lo, TD_BEDROCK_Y - (f32)TERRAIN_CHUNK_CELLS);
     if (td_Params.island)
     {
         lo = Minf32(lo, td_Params.seaLevel - td_Params.carveAmplitude - 2.0f);
@@ -394,6 +452,8 @@ void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
             v128f carve = VecMul(TerrainDensity_CarveV(wx, wy, wz), VecSub(VecOne(), TerrainDensity_IslandFadeV(wx, wz)));
             sdf = VecAdd(sdf, VecSelect(VecZero(), carve, carveMask));
         }
+        // solid bedrock floor (matches TerrainDensity_SDF)
+        sdf = VecMin(sdf, VecSubf(wy, TD_BEDROCK_Y));
         f32 s[4];
         VecStore(s, sdf);
         for (u32 i = 0; i < n; i++) *dst++ = TerrainDensity_Quantize(s[i]);
@@ -402,4 +462,14 @@ void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
     // sparse sculpt edits overlay on top, world fixed like the base field so every
     // lod sees identical values at shared sample positions
     TerrainEdit_OverlayChunk(cx, cy, cz, lod, out);
+
+    // re-force the bedrock floor after the sculpt overlay: any sample at or below the
+    // floor is hard solid, so a dug hole can never punch through the bottom of the world
+    for (s32 y = 0; y < TERRAIN_SAMPLES_AXIS; y++)
+    {
+        if (oy + (f32)(y - 1) * voxel > TD_BEDROCK_Y) continue;
+        for (s32 z = 0; z < TERRAIN_SAMPLES_AXIS; z++)
+        for (s32 x = 0; x < TERRAIN_SAMPLES_AXIS; x++)
+            out[(z * TERRAIN_SAMPLES_AXIS + y) * TERRAIN_SAMPLES_AXIS + x] = -127;
+    }
 }

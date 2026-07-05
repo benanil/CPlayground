@@ -16,6 +16,14 @@
 #define TERRAIN_MAX_VERTICES   (1u << 20) // 16 MB of TerrainVertex
 #define TERRAIN_MAX_INDICES    (4u << 20) // 16 MB of u32
 
+#define TERRAIN_MAX_CHUNKS     2048u
+#define GRASS_PER_METER        4
+#define GRASS_PER_ROW          (GRASS_PER_METER * TERRAIN_CHUNK_CELLS)     // 64 blades per chunk axis
+#define GRASS_PER_CHUNK        (GRASS_PER_ROW * GRASS_PER_ROW)            // 4096, per grass column cap
+// element COUNT (not bytes) of the shared grass instance heap. only near lod0 chunks
+// grow grass, so a fraction of MAX_CHUNKS * GRASS_PER_CHUNK is plenty. ~1M * 8B = 8 MB
+#define TERRAIN_MAX_GRASS      (1u << 20)
+
 // densities are clamped signed distance in meters, negative inside the solid, scaled so
 // that +-TERRAIN_SDF_CLAMP maps to +-127. the scale is world fixed (NOT per lod): the
 // transvoxel transition cells are only crack free when a coarse sample equals the fine
@@ -42,6 +50,16 @@ typedef struct TerrainVertex_
     u32 octNormal; // octahedral x:16 | y:16 unorm
     u32 spare;     // future material weights / ao
 } TerrainVertex;
+
+// one camera-facing grass blade, 8 bytes, fed to the grass draw as an instance-rate
+// vertex attribute. positions are chunk-relative meters so a 16 m lod0 chunk keeps full
+// fp16 precision; the shader adds chunks[chunkIndex].origin. per-blade scale/phase is
+// derived procedurally from the world position, so no random needs storing.
+typedef struct GrassInstance_
+{
+	u32 positionXY;         // fp16 x | fp16 y  (chunk-relative)
+	u32 positionZChunkIndex; // fp16 z (low 16) | u16 terrain chunk slot index (high 16)
+} GrassInstance;
 
 typedef struct TerrainMeshOut_
 {
@@ -84,6 +102,19 @@ f32  TerrainDensity_SDF(f32 x, f32 y, f32 z);
 void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out /*19^3*/);
 // world vertical band that can contain surface, chunks outside it are never created
 void TerrainDensity_GetYRange(f32* outMin, f32* outMax);
+
+// analytic column surface height (heightfield term, before the 3D carve). a good seed
+// for the vertical surface march below.
+f32  TerrainDensity_Height(f32 x, f32 z);
+// island falloff mask 0..1: 0 on the island proper, ramping to 1 out on the open sea
+// plane (always 0 when island mode is off). lets grass stay on the island, off the beach.
+f32  TerrainDensity_IslandMask(f32 x, f32 z);
+// signed field at a world point, sculpt edits included: > 0 air, < 0 solid, 0 = surface.
+f32  TerrainDensity_At(f32 x, f32 y, f32 z);
+// nearest surface world Y at column (x,z), marched from startY (Newton on the sdf, whose
+// d/dy is ~1). outNormal, when non-null, gets the up-facing surface normal. lets grass and
+// anything else sample the surface directly from the density field without a meshed chunk.
+f32  TerrainDensity_SurfaceY(f32 x, f32 z, f32 startY, float3* outNormal);
 
 struct TerrainGenParams_;
 void TerrainDensity_SetParams(const struct TerrainGenParams_* params);

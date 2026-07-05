@@ -184,6 +184,7 @@ void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, c
 bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
                                        const b3Vec3* vertices, u32 vertexCount,
                                        const s32* indices, u32 indexCount);
+const b3MeshData* Scene_GetTerrainMeshData(Scene* scene, s32 slot);
 void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot);
 // Swaps the collider shape of the entity's body in place. b3_meshShape restores the
 // original triangle collider; sphere/capsule/hull are derived from the primitive

@@ -34,7 +34,6 @@ static int AsyncThreadMain(void* param)
 static AsyncTask* AsyncCreateTask(AsyncCallback callback, void* userData)
 {
     AsyncTask* task = (AsyncTask*)SDL_calloc(1, sizeof(AsyncTask));
-    if (!task) return NULL;
     task->callback = callback;
     task->userData = userData;
     return task;
@@ -76,7 +75,6 @@ s32 WriteAllBytesAsync(const char* path, const void* data, u64 size, AsyncCallba
     }
 
     AsyncTask* task = AsyncCreateTask(callback, userData);
-    if (!task) return 0;
     task->run = AsyncRunWriteFile;
     task->data = data;
     task->size = size;
@@ -86,7 +84,6 @@ s32 WriteAllBytesAsync(const char* path, const void* data, u64 size, AsyncCallba
 
 s32 WriteAllTextAsync(const char* path, const char* text, AsyncCallback callback, void* userData)
 {
-    if (!text) return 0;
     return WriteAllBytesAsync(path, text, (u64)StringLength(text), callback, userData);
 }
 
@@ -95,12 +92,14 @@ static s32 AsyncRunUserFn(AsyncTask* task)
     return task->userFn(task->userData);
 }
 
-s32 AsyncRun(const char* name, AsyncTaskFn fn, AsyncCallback callback, void* userData)
+void AsyncRun(const char* name, AsyncTaskFn fn, AsyncCallback callback, void* userData)
 {
-    if (!fn) return 0;
     AsyncTask* task = AsyncCreateTask(callback, userData);
-    if (!task) return 0;
     task->run = AsyncRunUserFn;
     task->userFn = fn;
-    return AsyncStart(task, name ? name : "AsyncTask");
+	if (!AsyncStart(task, name ? name : "AsyncTask"))
+	{
+		callback(userData, fn(userData));
+		AX_WARN("running on another thread failed! %s", name);
+	}
 }

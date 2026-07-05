@@ -28,6 +28,7 @@ GRAPHICS_SHADERS = [
     ("Shadow/SkinnedPointShadowDepthOnly", "vert", "frag"),
     ("TerrainForward", "vert", "frag"),
     ("TerrainDepthOnly", "vert", "frag"),
+    ("Grass", "vert", "frag"),
 ]
 
 EXTRA_GRAPHICS_SHADERS = [

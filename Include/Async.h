@@ -24,7 +24,7 @@ s32 WriteAllTextAsync(const char* path, const char* text, AsyncCallback callback
 
 // runs fn(userData) on a detached worker thread, then callback(userData, fn result).
 // out: 0 when the thread could not start
-s32 AsyncRun(const char* name, AsyncTaskFn fn, AsyncCallback callback, void* userData);
+void AsyncRun(const char* name, AsyncTaskFn fn, AsyncCallback callback, void* userData);
 
 #if defined(__cplusplus)
 }

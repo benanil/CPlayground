@@ -804,12 +804,7 @@ void SaveSceneImagesAsync(SceneBundle* scene, const char* path, bool deleteRemai
         .savePath = savePath,
         .deleteRemaining = deleteRemaining
     };
-    if (!AsyncRun("SaveSceneImages", SaveSceneImagesTask, callback, taskData))
-    {
-        SDL_free(savePath);
-        SDL_free(taskData);
-        AX_WARN("Texture compress task start failed");
-    }
+	AsyncRun("SaveSceneImages", SaveSceneImagesTask, callback, taskData);
 }
 
 // result: 1 fine, 2 some file is not exist, 3 not enough images for scene

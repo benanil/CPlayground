@@ -24,23 +24,31 @@
 #include "Shaders/msl/TerrainDepthOnlyVert.msl.h"
 #include "Shaders/msl/TerrainDepthOnlyFrag.msl.h"
 #include "Shaders/msl/TerrainWireFrag.msl.h"
+#include "Shaders/msl/GrassVert.msl.h"
+#include "Shaders/msl/GrassFrag.msl.h"
 
 #define Shaders_TerrainForwardVert_spv Shaders_TerrainForwardVert_msl
 #define Shaders_TerrainForwardFrag_spv Shaders_TerrainForwardFrag_msl
 #define Shaders_TerrainDepthOnlyVert_spv Shaders_TerrainDepthOnlyVert_msl
 #define Shaders_TerrainDepthOnlyFrag_spv Shaders_TerrainDepthOnlyFrag_msl
 #define Shaders_TerrainWireFrag_spv Shaders_TerrainWireFrag_msl
+#define Shaders_GrassVert_spv Shaders_GrassVert_msl
+#define Shaders_GrassFrag_spv Shaders_GrassFrag_msl
 #elif defined(PLATFORM_WINDOWS)
 #include "Shaders/spv/TerrainForwardVert.spv.h"
 #include "Shaders/spv/TerrainForwardFrag.spv.h"
 #include "Shaders/spv/TerrainDepthOnlyVert.spv.h"
 #include "Shaders/spv/TerrainDepthOnlyFrag.spv.h"
 #include "Shaders/spv/TerrainWireFrag.spv.h"
+#include "Shaders/spv/GrassVert.spv.h"
+#include "Shaders/spv/GrassFrag.spv.h"
 #endif
 
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_timer.h>
 #include <box3d/math_functions.h>
+
+#include "Math/Noise.h"
 
 typedef struct Scene_ Scene;
 Scene* Scene_GetActive(void);
@@ -49,10 +57,16 @@ bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
                                        const s32* indices, u32 indexCount);
 void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot);
 
-#define TERRAIN_MAX_CHUNKS      2048u
 #define TERRAIN_MAX_JOBS        16u
+// grass columns are scattered from the density field on worker threads; this many can be
+// in flight at once, consumed (uploaded) on the main thread as they finish
+#define TERRAIN_MAX_GRASS_JOBS  8u
+// grass tiles are keyed by lod0 coord; sized to match the chunk pool so the origin /
+// indirect buffers (TERRAIN_MAX_CHUNKS wide) can be indexed by tile slot directly
+#define TERRAIN_MAX_GRASS_TILES TERRAIN_MAX_CHUNKS
 #define TERRAIN_RING_RADIUS     2
 #define TERRAIN_TRANSFER_BYTES  (8u * 1024u * 1024u)
+#define GRASS_UPLOAD_BYTES      (1u * 1024u * 1024u) // grass staged per frame, ~30 chunks, rest retried next frame
 #define TERRAIN_PENDING_CAP     4096u
 #define TERRAIN_DEBUG_HOLES     0    // 1: log a streaming audit + raycast hole probe every 240 frames
 
@@ -96,14 +110,46 @@ typedef struct TerrainChunk_
     u8  used;
     u8  retiring;       // left the desired set but keeps drawing until replacements are live
     u8  hidden;         // live replacement waiting for the whole split/merge swap to be ready
-    u32 gen;            // desired set generation, stale chunks get evicted
+    u8  padd0;
+    u8  padd1;
+	u32 gen;            // desired set generation, stale chunks get evicted
     s32 jobSlot;        // -1 when no worker owns this chunk
     u32 vertexOffset, numVertices;
-    u32 indexOffset, numIndices;
+    u32 indexOffset , numIndices;
     float3 aabbMin, aabbMax; // world space, tight bounds from the mesher
     void* vertexHeapPtr;
     void* indexHeapPtr;
 } TerrainChunk;
+
+// grass lives in world-anchored tiles keyed by lod0 chunk coord, decoupled from the
+// TerrainChunk lifecycle: a tile is built once from the lod0 mesh and keeps drawing even
+// after the terrain under it merges to a coarser lod, until it drifts out of view distance.
+// one 16 m surface column of grass, generated straight from the density field (no mesh
+// needed), so it loads at any distance regardless of terrain lod. keyed by lod0 column.
+typedef struct GrassTile_
+{
+    s32 cx, cz;          // lod0 column coord (16 m grid); world origin = coord * 16
+    u8  used;
+    u8  dirty;           // density under it changed (edit) / freshly created; (re)build
+    u8  building;        // a worker job is scattering this column right now
+    u8  dying;           // reclaimed mid-build; slot released when the job is consumed
+    u32 grassStart, grassCount;
+    void* grassHeapPtr;
+    float3 aabbMin, aabbMax; // grass world bounds, for distance + frustum cull
+} GrassTile;
+
+// one in-flight grass column scatter, run on a JobSystem worker. the CPU-heavy density
+// marching (TerrainBuildTileGrass) writes into this job's own buffer off the main thread;
+// the main thread only allocates the heap range and uploads once the job is done.
+typedef struct GrassJob_
+{
+    SDL_AtomicInt  state;    // JobState_Free / _Running / _Done
+    s32 cx, cz;              // column being built
+    u32 tileSlot;            // grass tile that dispatched this job
+    u32 count;               // instances the worker produced
+    float3 aabbMin, aabbMax; // grass world bounds the worker computed
+    GrassInstance* out;      // GRASS_PER_CHUNK scratch, allocated once per slot, reused
+} GrassJob;
 
 typedef struct TerrainJob_
 {
@@ -120,7 +166,11 @@ typedef struct TerrainJob_
     TerrainMeshOut mesh;         // capacity persists across jobs
 } TerrainJob;
 
-typedef struct TerrainBox_ { s32 min[3], max[3]; } TerrainBox; // inclusive chunk coords
+typedef struct TerrainBox_ 
+{
+	s32 min[3];
+	s32 max[3];
+} TerrainBox; // inclusive chunk coords
 
 typedef struct TerrainState_
 {
@@ -134,6 +184,15 @@ typedef struct TerrainState_
 
     u32* pending;             // chunk slots waiting for a worker, entries can go stale
     u32  numPending;
+
+    GrassTile* grassTiles;    // TERRAIN_MAX_GRASS_TILES, world-anchored, density-generated
+    u32*       grassTileFree;
+    u32        numGrassTileFree;
+    HashMap    grassTileMap;  // packed (cx,0,cz,0) -> grass tile slot
+    GrassJob   grassJobs[TERRAIN_MAX_GRASS_JOBS]; // column scatter run on the shared pool
+    s32        grassCamCol[2]; // camera lod0 column last frame, to detect ring moves
+    f32        grassLastViewDist;
+    bool       grassScanDirty; // ring needs a (re)scan: camera moved / view dist / edit / truncated
 
     TerrainJob jobs[TERRAIN_MAX_JOBS];
 
@@ -164,19 +223,29 @@ typedef struct TerrainState_
 
     SDL_GPUBuffer*           vertexBuffer;
     SDL_GPUBuffer*           indexBuffer;
+    SDL_GPUBuffer*           grassBuffer;        // GrassInstance heap mirror, bound as instance vertex buffer
+    SDL_GPUBuffer*           grassChunkBuffer;   // GrassChunkInfo per grass tile slot, read as a storage buffer
+    SDL_GPUBuffer*           grassIndirectBuffer;// SDL_GPUIndirectDrawCommand per visible grass tile, rebuilt each frame
     SDL_GPUTransferBuffer*   transferBuffer;
+    SDL_GPUTransferBuffer*   grassUploadTransfer; // stages grass instances + chunk origins, drained per frame
+    SDL_GPUTransferBuffer*   grassIndirectTransfer;
+    u32                      grassDrawCount;     // number of indirect commands staged this frame
     SDL_GPUGraphicsPipeline* forwardPipeline;
     SDL_GPUGraphicsPipeline* depthPipeline;
     SDL_GPUGraphicsPipeline* wirePipeline;
+    SDL_GPUGraphicsPipeline* grassPipeline;
     Texture albedoLayers;
     Texture normalLayers;
     Texture armLayers;
+    Texture grassLayers;     // 2-layer array: Grass0 / Grass1 blade atlases
 } TerrainState;
 
 static TerrainState g_Terrain;
 
 static void TerrainChunkSyncPhysics(u32 slot);
 static void TerrainChunkDestroyPhysics(u32 slot);
+static u32  TerrainBuildTileGrass(u32 tileSlot, s32 cx, s32 cz, GrassInstance* out, float3* outMin, float3* outMax);
+static GrassTile* TerrainGrassTileFind(s32 cx, s32 cz);
 
 // matches the vs_params cbuffer in TerrainForward.hlsl / TerrainDepthOnly.hlsl
 typedef struct TerrainVSParams_
@@ -195,6 +264,29 @@ typedef struct TerrainForwardFragmentParams_
     u32 outputSize[2];
     u32 pad0[2];
 } TerrainForwardFragmentParams;
+
+// matches vs_params in Grass.hlsl. view/proj are kept separate (not premultiplied)
+// so the vertex shader can build the camera-facing billboard in view space. one push
+// covers the whole indirect multidraw; per-chunk origin comes from the chunks buffer.
+typedef struct GrassVSParams_
+{
+    mat4x4 view;
+    mat4x4 proj;
+    f32 cameraTime[4];   // xyz: camera world pos, w: time in seconds (wind phase)
+    f32 grassParams[4];  // x: view distance (meters)
+} GrassVSParams;
+
+// one float4 per terrain chunk slot: world origin of the chunk in meters (w unused).
+// the grass vertex shader adds it to the fp16 chunk-relative instance position.
+typedef struct GrassChunkInfo_ { f32 origin[4]; } GrassChunkInfo;
+
+// matches ps_params in Grass.hlsl
+typedef struct GrassFSParams_
+{
+    f32 sunDirection[4];    // xyz sun direction, w unused
+    f32 grassColor[4];      // rgb tint, a unused
+    f32 grassColorVariant[4];
+} GrassFSParams;
 
 static f32 TerrainChunkWorldSize(u32 lod)
 {
@@ -245,6 +337,7 @@ static void TerrainChunkFreeMeshEx(u32 slot, bool destroyPhysics)
     chunk->numVertices = chunk->numIndices = 0u;
     chunk->vertexHeapPtr = NULL;
     chunk->indexHeapPtr = NULL;
+    // grass is owned by GrassTiles (world-anchored), not by the chunk, so it survives here
 }
 
 static void TerrainChunkFreeMesh(u32 slot)
@@ -637,11 +730,315 @@ typedef struct TerrainCopyRegion_
     u32 size;
 } TerrainCopyRegion;
 
+static bool ShouldSkipGenerate(u32 slot, TerrainChunk* chunk, TerrainJob* job)
+{
+	bool owns = chunk->used && chunk->jobSlot == (s32)slot;
+	if (!owns)
+	{
+		SDL_SetAtomicInt(&job->state, JobState_Free);
+		return true;
+	}
+	if (chunk->dying)
+	{
+		chunk->jobSlot = -1;
+		TerrainChunkRelease(job->chunkSlot);
+		SDL_SetAtomicInt(&job->state, JobState_Free);
+		return true;
+	}
+	if (SDL_GetAtomicInt(&job->cancel) || job->result == 0)
+	{
+		// cancelled but still desired, or mesher out of memory: try again
+		chunk->jobSlot = -1;
+		chunk->state = ChunkState_Queued;
+		TerrainPendingPush(job->chunkSlot);
+		SDL_SetAtomicInt(&job->state, JobState_Free);
+		return true;
+	}
+
+	if (job->empty || job->mesh.numVertices == 0u || job->mesh.numIndices == 0u)
+	{
+		chunk->jobSlot = -1;
+		TerrainChunkFreeMesh(job->chunkSlot);
+		chunk->empty = 1;
+		chunk->hidden = 0;
+		chunk->appliedMask = job->transitionMask;
+		chunk->state = ChunkState_Live;
+		SDL_SetAtomicInt(&job->state, JobState_Free);
+		return true;
+	}
+	return false;
+}
+
+// ---- density-driven grass tiles: one 16 m surface column, generated from the SDF ----
+
+static GrassTile* TerrainGrassTileFind(s32 cx, s32 cz)
+{
+    u32* found = (u32*)HMFind(&g_Terrain.grassTileMap, TerrainChunkKey(cx, 0, cz, 0u));
+    return found ? &g_Terrain.grassTiles[*found] : NULL;
+}
+
+static void TerrainGrassTileFree(u32 slot)
+{
+    GrassTile* t = &g_Terrain.grassTiles[slot];
+    if (!t->used) return;
+    // a worker still owns this column: keep the slot reserved and release it when the job
+    // is consumed, otherwise the slot could be reused while the worker writes stale data
+    if (t->building) { t->dying = 1u; return; }
+    if (t->grassHeapPtr) GeometryHeapFree(GeometryBuffer_GrassInstance, t->grassHeapPtr);
+    HMErase(&g_Terrain.grassTileMap, TerrainChunkKey(t->cx, 0, t->cz, 0u));
+    t->used = 0u; t->dirty = 0u; t->dying = 0u; t->grassHeapPtr = NULL;
+    t->grassStart = t->grassCount = 0u;
+    g_Terrain.grassTileFree[g_Terrain.numGrassTileFree++] = slot;
+}
+
+// horizontal distance from the camera to a column's nearest point (center minus half the
+// 16 m diagonal), the metric both the tile ring build and the reclaim use
+static f32 TerrainGrassColumnDist(float3 cam, s32 cx, s32 cz, f32 size0)
+{
+    f32 ccx = ((f32)cx + 0.5f) * size0, ccz = ((f32)cz + 0.5f) * size0;
+    f32 dx = cam.x - ccx, dz = cam.z - ccz;
+    return Sqrtf(dx * dx + dz * dz) - size0 * 0.70710678f;
+}
+
+// worker body: scatter one column off the main thread. TerrainBuildTileGrass only reads
+// the (thread safe) density field and gen params, writing into the job's own buffer, so
+// this is safe to run on the shared pool alongside the mesher.
+static void TerrainGrassJobRunTask(void* data)
+{
+    GrassJob* job = (GrassJob*)data;
+    job->count = TerrainBuildTileGrass(job->tileSlot, job->cx, job->cz,
+                                       job->out, &job->aabbMin, &job->aabbMax);
+    SDL_SetAtomicInt(&job->state, JobState_Done);
+}
+
+static GrassJob* TerrainGrassJobAcquire(void)
+{
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_JOBS; i++)
+        if (SDL_GetAtomicInt(&g_Terrain.grassJobs[i].state) == JobState_Free)
+            return &g_Terrain.grassJobs[i];
+    return NULL;
+}
+
+// per frame, main thread: reclaim columns that left the view distance, then dispatch scatter
+// jobs for columns inside it, nearest first, bounded by the free worker slots. the actual
+// density marching runs on the pool; results are picked up by TerrainGrassConsume.
+static void TerrainGrassDispatch(void)
+{
+    f32 viewDist = g_Terrain.authoring.grassViewDistance;
+    f32 size0 = TerrainChunkWorldSize(0);
+    float3 cam = g_Camera.position;
+
+    // 1) reclaim columns out of range (or every column, when grass is disabled). building
+    // tiles are marked dying and released by the consume step when their job returns.
+    f32 keepDist = viewDist > 0.0f ? viewDist * 1.15f : -1.0f; // hysteresis so edge tiles don't thrash
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+    {
+        GrassTile* t = &g_Terrain.grassTiles[i];
+        if (!t->used || t->dying) continue;
+        if (keepDist < 0.0f || TerrainGrassColumnDist(cam, t->cx, t->cz, size0) > keepDist)
+        {
+            TerrainGrassTileFree(i);
+            g_Terrain.grassScanDirty = true; // a slot freed up, the ring may build there
+        }
+    }
+    if (viewDist <= 0.0f) return;
+
+    // only rescan the ring when something changed (camera column moved, view distance edited,
+    // a tile was dirtied, or the last scan was truncated); otherwise the columns are all built
+    s32 camCx = (s32)Floorf32(cam.x / size0), camCz = (s32)Floorf32(cam.z / size0);
+    if (camCx != g_Terrain.grassCamCol[0] || camCz != g_Terrain.grassCamCol[1] ||
+        viewDist != g_Terrain.grassLastViewDist)
+    {
+        g_Terrain.grassCamCol[0] = camCx; g_Terrain.grassCamCol[1] = camCz;
+        g_Terrain.grassLastViewDist = viewDist;
+        g_Terrain.grassScanDirty = true;
+    }
+    if (!g_Terrain.grassScanDirty) return;
+
+    // 2) dispatch columns inside the view distance, nearest-first (expanding Chebyshev rings)
+    s32 R = (s32)Ceilf(viewDist / size0);
+    if (R > 64) R = 64; // bound the scan / pool span for extreme view distances
+    bool full = false;  // ran out of worker slots or the tile pool: resume next frame
+    for (s32 r = 0; r <= R && !full; r++)
+    for (s32 dz = -r; dz <= r && !full; dz++)
+    for (s32 dx = -r; dx <= r; dx++)
+    {
+        s32 adx = dx < 0 ? -dx : dx, adz = dz < 0 ? -dz : dz;
+        if (r != 0 && adx != r && adz != r) continue; // only this ring's border cells
+        s32 cx = camCx + dx, cz = camCz + dz;
+        if (TerrainGrassColumnDist(cam, cx, cz, size0) > viewDist) continue;
+
+        GrassTile* tile = TerrainGrassTileFind(cx, cz);
+        if (tile && (tile->building || !tile->dirty)) continue; // in flight or already built
+
+        GrassJob* job = TerrainGrassJobAcquire();
+        if (!job) { full = true; break; } // all workers busy, resume next frame
+
+        u32 tileSlot;
+        if (!tile)
+        {
+            if (g_Terrain.numGrassTileFree == 0u) { full = true; break; } // pool full
+            tileSlot = g_Terrain.grassTileFree[--g_Terrain.numGrassTileFree];
+            tile = &g_Terrain.grassTiles[tileSlot];
+            *tile = (GrassTile){ .used = 1u, .dirty = 1u, .cx = cx, .cz = cz };
+            HMInsert(&g_Terrain.grassTileMap, TerrainChunkKey(cx, 0, cz, 0u), &tileSlot);
+        }
+        else tileSlot = (u32)(tile - g_Terrain.grassTiles);
+
+        tile->building = 1u;
+        tile->dirty = 0u; // an edit landing mid-build re-sets this, triggering a rebuild
+        job->cx = cx; job->cz = cz; job->tileSlot = tileSlot;
+        SDL_SetAtomicInt(&job->state, JobState_Running);
+        if (JobSystem_Execute(g_Terrain.jobSystem, TerrainGrassJobRunTask, job) == 0)
+        {
+            tile->building = 0u; tile->dirty = 1u; // pool queue full, retry next frame
+            SDL_SetAtomicInt(&job->state, JobState_Free);
+            full = true; break;
+        }
+    }
+    // keep scanning next frames until every in-range column has a tile that is built or in
+    // flight; once steady state is reached this drops to false and the ring scan stops
+    g_Terrain.grassScanDirty = full;
+}
+
+// per frame, main thread: pick up finished scatter jobs, allocate their heap range and
+// upload it. bounded by the per-frame staging budget; anything that does not fit stays Done
+// and is retried next frame.
+static void TerrainGrassConsume(SDL_GPUCommandBuffer* cmd)
+{
+    f32 size0 = TerrainChunkWorldSize(0);
+    TerrainCopyRegion regions[TERRAIN_MAX_GRASS_JOBS * 2u]; // grass range + chunk origin each
+    u32 numRegions = 0u, cursor = 0u;
+    u8* mapped = NULL;
+
+    for (u32 s = 0; s < TERRAIN_MAX_GRASS_JOBS; s++)
+    {
+        GrassJob* job = &g_Terrain.grassJobs[s];
+        if (SDL_GetAtomicInt(&job->state) != JobState_Done) continue;
+
+        GrassTile* tile = &g_Terrain.grassTiles[job->tileSlot];
+        // the tile may have been reclaimed or reused for another column while the job ran;
+        // only accept a result that still matches the column we dispatched
+        bool matches = tile->used && tile->building && tile->cx == job->cx && tile->cz == job->cz;
+        if (!matches)
+        {
+            SDL_SetAtomicInt(&job->state, JobState_Free);
+            continue;
+        }
+        if (tile->dying) // column left the view distance mid-build: drop the result, free it
+        {
+            tile->building = 0u;
+            TerrainGrassTileFree(job->tileSlot);
+            SDL_SetAtomicInt(&job->state, JobState_Free);
+            continue;
+        }
+
+        // empty column (all steep / underwater): drop any previous range, keep the tile live
+        if (job->count == 0u)
+        {
+            if (tile->grassHeapPtr) GeometryHeapFree(GeometryBuffer_GrassInstance, tile->grassHeapPtr);
+            tile->grassHeapPtr = NULL; tile->grassStart = tile->grassCount = 0u;
+            tile->aabbMin = job->aabbMin; tile->aabbMax = job->aabbMax;
+            tile->building = 0u;
+            SDL_SetAtomicInt(&job->state, JobState_Free);
+            continue;
+        }
+
+        u32 grassBytes = job->count * (u32)sizeof(GrassInstance);
+        if (cursor + grassBytes + sizeof(GrassChunkInfo) > GRASS_UPLOAD_BYTES)
+            break; // out of staging budget, leave the job Done and retry next frame
+
+        void* grassRaw = NULL;
+        u32 grassOffset = GeometryHeapAlloc(GeometryBuffer_GrassInstance, job->count, &grassRaw);
+        if (grassOffset == TERRAIN_HEAP_FAIL) break; // heap full, retry next frame
+
+        if (!mapped)
+        {
+            mapped = (u8*)SDL_MapGPUTransferBuffer(g_GPUDevice, g_Terrain.grassUploadTransfer, true);
+            if (!mapped) { GeometryHeapFree(GeometryBuffer_GrassInstance, grassRaw); break; }
+        }
+
+        GrassInstance* cpuGrass = (GrassInstance*)gGFX.TerrainGrassBuffer + grassOffset;
+        MemCopy(cpuGrass, job->out, grassBytes);
+        MemCopy(mapped + cursor, cpuGrass, grassBytes);
+        regions[numRegions++] = (TerrainCopyRegion){
+            g_Terrain.grassBuffer, cursor, grassOffset * (u32)sizeof(GrassInstance), grassBytes };
+        cursor += grassBytes;
+
+        // origin.y is 0: the instance stores absolute world Y (fp16 keeps ~cm precision here)
+        GrassChunkInfo info = { { (f32)job->cx * size0, 0.0f, (f32)job->cz * size0, 0.0f } };
+        MemCopy(mapped + cursor, &info, sizeof(info));
+        regions[numRegions++] = (TerrainCopyRegion){
+            g_Terrain.grassChunkBuffer, cursor, job->tileSlot * (u32)sizeof(GrassChunkInfo), (u32)sizeof(info) };
+        cursor += (u32)sizeof(info);
+
+        if (tile->grassHeapPtr) // rebuild: release the old range now the new one is staged
+            GeometryHeapFree(GeometryBuffer_GrassInstance, tile->grassHeapPtr);
+        tile->grassHeapPtr = grassRaw;
+        tile->grassStart   = grassOffset;
+        tile->grassCount   = job->count;
+        tile->aabbMin = job->aabbMin; tile->aabbMax = job->aabbMax;
+        tile->building = 0u;
+        SDL_SetAtomicInt(&job->state, JobState_Free);
+    }
+
+    if (!mapped) return;
+    SDL_UnmapGPUTransferBuffer(g_GPUDevice, g_Terrain.grassUploadTransfer);
+    SDL_GPUCopyPass* pass = SDL_BeginGPUCopyPass(cmd);
+    for (u32 i = 0; i < numRegions; i++)
+    {
+        SDL_GPUTransferBufferLocation src = { g_Terrain.grassUploadTransfer, regions[i].transferOffset };
+        SDL_GPUBufferRegion dst = { regions[i].dst, regions[i].dstOffset, regions[i].size };
+        SDL_UploadToGPUBuffer(pass, &src, &dst, false);
+    }
+    SDL_EndGPUCopyPass(pass);
+}
+
+// rebuilds the grass indirect draw list each frame: one command per grass column inside the
+// view distance and camera frustum. first_instance points the instance-rate vertex fetch at
+// that column's grass range.
+static void TerrainGrassBuildDrawArgs(SDL_GPUCommandBuffer* cmd)
+{
+    g_Terrain.grassDrawCount = 0u;
+    if (!g_Terrain.grassIndirectBuffer) return;
+    f32 viewDist = g_Terrain.authoring.grassViewDistance;
+    f32 size0 = TerrainChunkWorldSize(0);
+    float3 cam = g_Camera.position;
+
+    SDL_GPUIndirectDrawCommand* cmds =
+        (SDL_GPUIndirectDrawCommand*)SDL_MapGPUTransferBuffer(g_GPUDevice, g_Terrain.grassIndirectTransfer, true);
+    if (!cmds) return;
+
+    u32 n = 0u;
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+    {
+        GrassTile* t = &g_Terrain.grassTiles[i];
+        if (!t->used || t->dying || t->grassCount == 0u) continue;
+        if (viewDist > 0.0f && TerrainGrassColumnDist(cam, t->cx, t->cz, size0) > viewDist) continue;
+        if (g_Terrain.frustumValid)
+        {
+            v128f bmin = VecSetR(t->aabbMin.x, t->aabbMin.y, t->aabbMin.z, 0.0f);
+            v128f bmax = VecSetR(t->aabbMax.x, t->aabbMax.y, t->aabbMax.z, 0.0f);
+            if (!CheckAABBCulled(bmin, bmax, g_Terrain.cameraFrustum.planes)) continue;
+        }
+        cmds[n++] = (SDL_GPUIndirectDrawCommand){ 6u, t->grassCount, 0u, t->grassStart };
+    }
+    SDL_UnmapGPUTransferBuffer(g_GPUDevice, g_Terrain.grassIndirectTransfer);
+
+    if (n == 0u) return;
+    SDL_GPUCopyPass* pass = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTransferBufferLocation src = { g_Terrain.grassIndirectTransfer, 0 };
+    SDL_GPUBufferRegion dst = { g_Terrain.grassIndirectBuffer, 0, n * (u32)sizeof(SDL_GPUIndirectDrawCommand) };
+    SDL_UploadToGPUBuffer(pass, &src, &dst, false);
+    SDL_EndGPUCopyPass(pass);
+    g_Terrain.grassDrawCount = n;
+}
+
 void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
 {
     if (!g_Terrain.initialized) return;
 
-    TerrainCopyRegion regions[TERRAIN_MAX_JOBS * 2u];
+    TerrainCopyRegion regions[TERRAIN_MAX_JOBS * 4u]; // vertex+index (+grass+grassInfo for lod0)
     u32 numRegions = 0;
     u32 cursor = 0;
     u8* mapped = NULL;
@@ -652,41 +1049,8 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         if (SDL_GetAtomicInt(&job->state) != JobState_Done) continue;
 
         TerrainChunk* chunk = &g_Terrain.chunks[job->chunkSlot];
-        bool owns = chunk->used && chunk->jobSlot == (s32)slot;
-
-        if (!owns)
-        {
-            SDL_SetAtomicInt(&job->state, JobState_Free);
-            continue;
-        }
-        if (chunk->dying)
-        {
-            chunk->jobSlot = -1;
-            TerrainChunkRelease(job->chunkSlot);
-            SDL_SetAtomicInt(&job->state, JobState_Free);
-            continue;
-        }
-        if (SDL_GetAtomicInt(&job->cancel) || job->result == 0)
-        {
-            // cancelled but still desired, or mesher out of memory: try again
-            chunk->jobSlot = -1;
-            chunk->state = ChunkState_Queued;
-            TerrainPendingPush(job->chunkSlot);
-            SDL_SetAtomicInt(&job->state, JobState_Free);
-            continue;
-        }
-
-        if (job->empty || job->mesh.numVertices == 0u || job->mesh.numIndices == 0u)
-        {
-            chunk->jobSlot = -1;
-            TerrainChunkFreeMesh(job->chunkSlot);
-            chunk->empty = 1;
-            chunk->hidden = 0;
-            chunk->appliedMask = job->transitionMask;
-            chunk->state = ChunkState_Live;
-            SDL_SetAtomicInt(&job->state, JobState_Free);
-            continue;
-        }
+		if (ShouldSkipGenerate(slot, chunk, job))
+			continue;
 
         u32 vertexBytes = job->mesh.numVertices * (u32)sizeof(TerrainVertex);
         u32 indexBytes  = job->mesh.numIndices * (u32)sizeof(u32);
@@ -709,7 +1073,6 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
             SDL_SetAtomicInt(&job->state, JobState_Free);
             continue;
         }
-
         TerrainVertex* cpuVertices = (TerrainVertex*)gGFX.TerrainVertexBuffer + vertexOffset;
         u32* cpuIndices = gGFX.TerrainIndexBuffer + indexOffset;
         MemCopy(cpuVertices, job->mesh.vertices, vertexBytes);
@@ -764,6 +1127,15 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         chunk->aabbMax = F3Add(origin, job->mesh.aabbMax);
         TerrainChunkSyncPhysics(job->chunkSlot);
 
+        // a lod0 remesh means the density under this column may have been sculpted; flag the
+        // grass tile so it rebuilds from the new surface. (grass itself is generated from the
+        // density field, so it does not otherwise depend on the mesh being ready.)
+        if (chunk->lod == 0u)
+        {
+            GrassTile* tile = TerrainGrassTileFind(chunk->x, chunk->z);
+            if (tile) { tile->dirty = 1u; g_Terrain.grassScanDirty = true; }
+        }
+
         // the desired mask moved on or a brush edit landed while the worker was
         // running: remesh with fresh data
         if (chunk->transitionMask != chunk->appliedMask || chunk->needRemesh)
@@ -786,6 +1158,13 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         }
         SDL_EndGPUCopyPass(pass);
     }
+
+    if (g_Terrain.enabled)
+    {
+        TerrainGrassConsume(cmd);   // pick up finished scatter jobs -> upload, frees job slots
+        TerrainGrassDispatch();     // reclaim + ring scan -> dispatch new scatter jobs
+        TerrainGrassBuildDrawArgs(cmd);
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -799,6 +1178,77 @@ static v128f TerrainDecodePosition(const TerrainVertex* v, v128f chunkOrigin, f3
     u32 qz = (v->posB >> 10) & 0x1FFFFFu;
     v128f local = VecSetR((f32)qx, (f32)qy, (f32)qz, 0.0f);
     return VecAdd(chunkOrigin, VecMulf(local, metersPerStep));
+}
+
+// small deterministic hash / rng for grass scatter (PCG-ish), keeps placement stable
+// across remeshes of the same triangle so grass does not swim when a chunk repaints.
+static inline u32 GrassHashU32(u32 x)
+{
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+static inline f32 GrassRand01(u32* state)
+{
+    *state = *state * 747796405u + 2891336453u;
+    u32 r = ((*state >> ((*state >> 28) + 4u)) ^ *state) * 277803737u;
+    r ^= r >> 22;
+    return (f32)(r & 0xFFFFFFu) * (1.0f / 16777216.0f);
+}
+
+// grass placement tuning (see TerrainBuildTileGrass)
+#define GRASS_BEACH_BAND      5.0f  // meters above sea level kept blade-free; matches the terrain
+                                    // grass texture onset (sand->dirt->grass) so blades sit on green
+#define GRASS_ISLAND_MAX      0.02f // island fade above this is off the island proper -> no grass
+#define GRASS_PATCH_THRESHOLD 0.55f // cellular F1 cutoff; lower = more bare patches, higher = denser
+
+// scatter camera-facing grass over one 16 m surface column by marching the density field:
+// jitter (x,z) inside the column, find the surface Y from the SDF, filter by island/beach/
+// slope and cellular thinning, and write origin-relative fp16 positions plus the tile slot.
+// no mesh required, so a column loads at any distance regardless of terrain lod. also writes
+// the grass world aabb for culling. returns the instance count (capped at GRASS_PER_CHUNK).
+static u32 TerrainBuildTileGrass(u32 tileSlot, s32 cx, s32 cz, GrassInstance* out,
+                                 float3* outMin, float3* outMax)
+{
+    f32 size0 = TerrainChunkWorldSize(0);
+    f32 originX = (f32)cx * size0, originZ = (f32)cz * size0;
+    f32 seaLevel = g_Terrain.genParams.seaLevel;
+    f32 density = g_Terrain.authoring.grassDensity;
+    f32 bladesPerSqM = density > 0.0f ? 2.0f * density : 0.0f;
+    if (bladesPerSqM <= 0.0f) return 0u;
+
+    u32 target = (u32)(bladesPerSqM * size0 * size0);
+    if (target > GRASS_PER_CHUNK) target = GRASS_PER_CHUNK;
+    u32 tileIndex = tileSlot & 0xFFFFu;
+    u32 seed = GrassHashU32((u32)cx * 73856093u ^ (u32)cz * 19349663u);
+
+    f32 minX = 1e30f, minY = 1e30f, minZ = 1e30f, maxX = -1e30f, maxY = -1e30f, maxZ = -1e30f;
+    u32 count = 0u;
+    for (u32 b = 0u; b < target; b++)
+    {
+        f32 wx = originX + GrassRand01(&seed) * size0;
+        f32 wz = originZ + GrassRand01(&seed) * size0;
+        // island only: skip the open-sea plane before paying for the surface march (a no-op
+        // when island mode is off, where the mask is always 0)
+        if (TerrainDensity_IslandMask(wx, wz) > GRASS_ISLAND_MAX) continue;
+        float3 normal;
+        f32 wy = TerrainDensity_SurfaceY(wx, wz, TerrainDensity_Height(wx, wz), &normal);
+        if (wy < seaLevel + GRASS_BEACH_BAND) continue; // no grass underwater or on the beach
+        if (normal.y < 0.55f) continue;                 // skip steep slopes
+
+        float2 cell = NoiseCellular2D((float2){ wx * 0.15f, wz * 0.15f });
+        if (cell.x > GRASS_PATCH_THRESHOLD) continue;   // thin into patches
+
+        out[count].positionXY = MakeHalf2(FloatToHalf(wx - originX), FloatToHalf(wy));
+        out[count].positionZChunkIndex = (u32)FloatToHalf(wz - originZ) | (tileIndex << 16);
+        count++;
+        if (wx < minX) minX = wx; if (wy < minY) minY = wy; if (wz < minZ) minZ = wz;
+        if (wx > maxX) maxX = wx; if (wy > maxY) maxY = wy; if (wz > maxZ) maxZ = wz;
+    }
+
+    if (count == 0u) { *outMin = *outMax = (float3){ originX, 0.0f, originZ }; return 0u; }
+    *outMin = (float3){ minX, minY, minZ };
+    *outMax = (float3){ maxX, maxY + 2.0f, maxZ }; // +2 m so the blade height is inside the box
+    return count;
 }
 
 static f32 TerrainPhysicsTriangleAreaSq(const b3Vec3* vertices, u32 a, u32 b, u32 c)
@@ -820,8 +1270,7 @@ static void TerrainChunkDestroyPhysics(u32 slot)
 static void TerrainChunkSyncPhysics(u32 slot)
 {
     Scene* scene = Scene_GetActive();
-    if (!scene) return;
-    if (slot >= TERRAIN_MAX_CHUNKS) return;
+    if (!scene || slot >= TERRAIN_MAX_CHUNKS) return;
 
     TerrainChunk* chunk = &g_Terrain.chunks[slot];
     if (!chunk->used || chunk->state != ChunkState_Live || chunk->numIndices < 3u ||
@@ -869,15 +1318,8 @@ static void TerrainChunkSyncPhysics(u32 slot)
         indices[outIndexCount++] = (s32)i2;
     }
 
-    if (outIndexCount < 3u)
-    {
-        ArenaRestore(&GlobalArena, mark);
-        Scene_PhysicsDestroyTerrainChunk(scene, slot);
-        return;
-    }
-
-    if (!Scene_PhysicsSyncTerrainChunkMesh(scene, slot, vertices, chunk->numVertices, indices, outIndexCount))
-        Scene_PhysicsDestroyTerrainChunk(scene, slot);
+	if (!Scene_PhysicsSyncTerrainChunkMesh(scene, slot, vertices, chunk->numVertices, indices, outIndexCount))
+		Scene_PhysicsDestroyTerrainChunk(scene, slot);
     ArenaRestore(&GlobalArena, mark);
 }
 
@@ -958,6 +1400,44 @@ static void TerrainFillVSParams(TerrainVSParams* params, const TerrainChunk* chu
     params->cameraForward[3] = 0.0f;
 }
 
+// one indirect multidraw over every frustum-visible grass chunk built this frame. the
+// camera-facing billboards are procedural (SV_VertexID quad), so no index buffer; the
+// instance stream + chunk origin storage buffer give each blade its world position.
+static void TerrainDrawGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
+{
+    if (g_Terrain.grassDrawCount == 0u || !g_Terrain.grassPipeline || !g_Terrain.grassLayers.handle) return;
+
+    SDL_BindGPUGraphicsPipeline(pass, g_Terrain.grassPipeline);
+
+    SDL_GPUBufferBinding instanceBinding = { g_Terrain.grassBuffer, 0 };
+    SDL_BindGPUVertexBuffers(pass, 0, &instanceBinding, 1);
+    SDL_GPUBuffer* vsStorage[1] = { g_Terrain.grassChunkBuffer };
+    SDL_BindGPUVertexStorageBuffers(pass, 0, vsStorage, 1);
+
+    SDL_GPUTextureSamplerBinding grassTex = { .texture = g_Terrain.grassLayers.handle, .sampler = g_RenderState.sampler };
+    SDL_BindGPUFragmentSamplers(pass, 0, &grassTex, 1);
+
+    GrassVSParams vs = {0};
+    vs.view = g_Camera.view;
+    vs.proj = g_Camera.projection;
+    vs.cameraTime[0] = g_Camera.position.x;
+    vs.cameraTime[1] = g_Camera.position.y;
+    vs.cameraTime[2] = g_Camera.position.z;
+    vs.cameraTime[3] = (f32)SDL_GetTicks() * 0.001f;
+    vs.grassParams[0] = g_Terrain.authoring.grassViewDistance;
+    SDL_PushGPUVertexUniformData(cmd, 0, &vs, sizeof(vs));
+
+    float3 sun = GetRenderSunDirection();
+    GrassFSParams fs = {0};
+    fs.sunDirection[0] = sun.x; fs.sunDirection[1] = sun.y; fs.sunDirection[2] = sun.z;
+    // base #495727, variant #a46d48 (sRGB), blended per blade by the texture noise
+    fs.grassColor[0] = 0x49 / 255.0f; fs.grassColor[1] = 0x57 / 255.0f; fs.grassColor[2] = 0x27 / 255.0f;
+    fs.grassColorVariant[0] = 0xA4 / 255.0f; fs.grassColorVariant[1] = 0x6D / 255.0f; fs.grassColorVariant[2] = 0x48 / 255.0f;
+    SDL_PushGPUFragmentUniformData(cmd, 0, &fs, sizeof(fs));
+
+    SDL_DrawGPUPrimitivesIndirect(pass, g_Terrain.grassIndirectBuffer, 0, g_Terrain.grassDrawCount);
+}
+
 static u32 TerrainDrawChunks(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
     FrustumPlanes frustum = CreateFrustumPlanesRevZ(viewProj);
@@ -1035,6 +1515,9 @@ void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, m
     SDL_PushGPUFragmentUniformData(cmd, 0, &fragmentParams, sizeof(fragmentParams));
 
     g_Terrain.drawnLastFrame = TerrainDrawChunks(cmd, pass, viewProj);
+
+    // grass draws into the same forward pass, right after the terrain surface it sits on
+    TerrainDrawGrass(cmd, pass);
 }
 
 // debug line overlay over the lit scene, toggled from the graphics settings panel
@@ -1180,16 +1663,60 @@ static void TerrainInitPipelines(void)
         SDL_ReleaseGPUShader(g_GPUDevice, vert);
         SDL_ReleaseGPUShader(g_GPUDevice, frag);
     }
+
+    // grass: instanced camera-facing billboards. the instance data is an instance-rate
+    // vertex stream (so indirect first_instance offsets it), the quad corner comes from
+    // SV_VertexID, and the chunk origin from a storage buffer. alpha cutout, so it draws
+    // as opaque geometry into the hdr forward target with depth write on.
+    {
+        SDL_GPUVertexAttribute grassAttr = {
+            .location = 0, .buffer_slot = 0, .format = SDL_GPU_VERTEXELEMENTFORMAT_UINT2, .offset = 0
+        };
+        SDL_GPUVertexInputState grassInput = {
+            .vertex_buffer_descriptions = &(SDL_GPUVertexBufferDescription){
+                0, sizeof(GrassInstance), SDL_GPU_VERTEXINPUTRATE_INSTANCE, 0
+            },
+            .num_vertex_buffers = 1,
+            .vertex_attributes = &grassAttr,
+            .num_vertex_attributes = 1
+        };
+        SDL_GPUShader* vert = TerrainCreateShader(Shaders_GrassVert_spv, sizeof(Shaders_GrassVert_spv),
+                                                  SDL_GPU_SHADERSTAGE_VERTEX, "vert", 1, 0, 1);
+        SDL_GPUShader* frag = TerrainCreateShader(Shaders_GrassFrag_spv, sizeof(Shaders_GrassFrag_spv),
+                                                  SDL_GPU_SHADERSTAGE_FRAGMENT, "frag", 1, 1, 0);
+        g_Terrain.grassPipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){
+            .vertex_shader   = vert,
+            .fragment_shader = frag,
+            .primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+            .target_info     = (SDL_GPUGraphicsPipelineTargetInfo){
+                .num_color_targets         = 1,
+                .color_target_descriptions = &(SDL_GPUColorTargetDescription){ .format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT },
+                .depth_stencil_format      = SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+                .has_depth_stencil_target  = true
+            },
+            .rasterizer_state    = (SDL_GPURasterizerState){ .cull_mode = SDL_GPU_CULLMODE_NONE },
+            .depth_stencil_state = (SDL_GPUDepthStencilState){
+                .enable_depth_test  = true,
+                .enable_depth_write = true,
+                .compare_op         = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL
+            },
+            .multisample_state  = (SDL_GPUMultisampleState){ .sample_count = g_RenderState.sceneSampleCount },
+            .vertex_input_state = grassInput
+        });
+        CHECK_CREATE(g_Terrain.grassPipeline, "Terrain Grass Pipeline");
+        SDL_ReleaseGPUShader(g_GPUDevice, vert);
+        SDL_ReleaseGPUShader(g_GPUDevice, frag);
+    }
 }
 
-// loads three pngs into one rgba8 texture array layer by layer, resizing to the target
+// loads count pngs into one rgba8 texture array layer by layer, resizing to the target
 // size when needed. srgb only affects the resize filter, the formats stay unorm and the
 // shader converts srgb to linear like the surface shader does
-static Texture TerrainLoadLayerArray(const char* const paths[3], s32 size, bool srgb, const char* label)
+static Texture TerrainLoadLayerArray(const char* const* paths, u32 count, s32 size, bool srgb, const char* label)
 {
-    Texture tex = rCreateTexture2DArray(size, size, 3, NULL, TEX_FMT_8UNORM4,
+    Texture tex = rCreateTexture2DArray(size, size, count, NULL, TEX_FMT_8UNORM4,
                                         TexFlags_MipMap, TEX_SAMPLER | TEX_COLOR_TARGET, label);
-    for (s32 layer = 0; layer < 3; layer++)
+    for (s32 layer = 0; layer < (s32)count; layer++)
     {
         int w, h, channels;
         u8* image = stbi_load(paths[layer], &w, &h, &channels, 4);
@@ -1215,28 +1742,77 @@ static Texture TerrainLoadLayerArray(const char* const paths[3], s32 size, bool 
     return tex;
 }
 
-static const char* const albedoPaths[3] = {
-	"Assets/Textures/Terrain/brown_mud_leaves_01_diff_2k.png",
-	"Assets/Textures/Terrain/rocky_terrain_02_diff_2k.png",
-	"Assets/Textures/Terrain/rocky_terrain_diff_2k.png"
+// terrain material layers. index 0 is the flat-ground ("grass") layer, 1 the slope
+// ("dirt") layer, 2 the high-rock layer, 3 the beach/underwater sand. layers 0 and 1 are
+// swapped from the raw asset order so flat surfaces read grassy and slopes read dirty.
+#define TERRAIN_LAYER_COUNT 4u
+static const char* const albedoPaths[TERRAIN_LAYER_COUNT] = {
+	"Assets/Textures/Terrain/rocky_terrain_02_diff_2k.png",    // 0 flat / grass
+	"Assets/Textures/Terrain/brown_mud_leaves_01_diff_2k.png", // 1 slope / dirt
+	"Assets/Textures/Terrain/rocky_terrain_diff_2k.png",       // 2 high rock
+	"Assets/Textures/Terrain/sandydrysoil-albedo2b.png"        // 3 beach / underwater
 };
-static const char* const normalPaths[3] = {
-	"Assets/Textures/Terrain/brown_mud_leaves_01_nor_dx_1k.png",
+static const char* const normalPaths[TERRAIN_LAYER_COUNT] = {
 	"Assets/Textures/Terrain/rocky_terrain_02_nor_dx_1k.png",
-	"Assets/Textures/Terrain/rocky_terrain_nor_dx_1k.png"
+	"Assets/Textures/Terrain/brown_mud_leaves_01_nor_dx_1k.png",
+	"Assets/Textures/Terrain/rocky_terrain_nor_dx_1k.png",
+	"Assets/Textures/Terrain/sandydrysoil-normal.png"
 };
-static const char* const metallicRoughnessPaths[3] = {
-	"Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png",
+static const char* const metallicRoughnessPaths[TERRAIN_LAYER_COUNT] = {
 	"Assets/Textures/Terrain/rocky_terrain_02_arm_1k.png",
-	"Assets/Textures/Terrain/rocky_terrain_arm_1k.png"
+	"Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png",
+	"Assets/Textures/Terrain/rocky_terrain_arm_1k.png",
+	"Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png"   // sand has no arm map; reuse the matte mud arm
 };
+
+// the two camera-facing grass blade atlases. rgba with a green alpha-cutout key in the
+// .g channel, matching the unity shader the grass draw is ported from.
+static const char* const grassPaths[2] = {
+    "Assets/Textures/Grass0.png",
+    "Assets/Textures/Grass1.png"
+};
+
+#define TERRAIN_GRASS_SIZE 512
+
+// loads the two grass pngs into a 2-layer rgba8 array, resizing to a square. srgb only
+// affects the resize filter; the shader converts to linear like the surface shader.
+static Texture TerrainLoadGrassArray(void)
+{
+    Texture tex = rCreateTexture2DArray(TERRAIN_GRASS_SIZE, TERRAIN_GRASS_SIZE, 2, NULL, TEX_FMT_8UNORM4,
+                                        TexFlags_MipMap, TEX_SAMPLER | TEX_COLOR_TARGET, "TerrainGrass");
+    for (s32 layer = 0; layer < 2; layer++)
+    {
+        int w, h, channels;
+        u8* image = stbi_load(grassPaths[layer], &w, &h, &channels, 4);
+        if (!image)
+        {
+            AX_ERROR("grass texture missing: %s", grassPaths[layer]);
+            continue;
+        }
+        u8* upload = image;
+        u8* resized = NULL;
+        if (w != TERRAIN_GRASS_SIZE || h != TERRAIN_GRASS_SIZE)
+        {
+            resized = (u8*)SDL_malloc((size_t)TERRAIN_GRASS_SIZE * TERRAIN_GRASS_SIZE * 4u);
+            stbir_resize_uint8_srgb(image, w, h, 0, resized, TERRAIN_GRASS_SIZE, TERRAIN_GRASS_SIZE, 0, STBIR_RGBA);
+            upload = resized;
+        }
+        UploadTextureRegion(tex, (u32)layer, 0, 0, (u32)TERRAIN_GRASS_SIZE, (u32)TERRAIN_GRASS_SIZE,
+                            (u32)TERRAIN_GRASS_SIZE, (u32)TERRAIN_GRASS_SIZE, upload);
+        if (resized) SDL_free(resized);
+        stbi_image_free(image);
+    }
+    GenerateTextureMips(tex);
+    return tex;
+}
 
 static void TerrainInitTextures(void)
 {
     u64 start = SDL_GetTicks();
-    g_Terrain.albedoLayers = TerrainLoadLayerArray(albedoPaths, TERRAIN_ALBEDO_SIZE, true, "TerrainAlbedo");
-    g_Terrain.normalLayers = TerrainLoadLayerArray(normalPaths, TERRAIN_DETAIL_SIZE, false, "TerrainNormal");
-    g_Terrain.armLayers    = TerrainLoadLayerArray(metallicRoughnessPaths, TERRAIN_DETAIL_SIZE, false, "TerrainARM");
+    g_Terrain.albedoLayers = TerrainLoadLayerArray(albedoPaths, TERRAIN_LAYER_COUNT, TERRAIN_ALBEDO_SIZE, true, "TerrainAlbedo");
+    g_Terrain.normalLayers = TerrainLoadLayerArray(normalPaths, TERRAIN_LAYER_COUNT, TERRAIN_DETAIL_SIZE, false, "TerrainNormal");
+    g_Terrain.armLayers    = TerrainLoadLayerArray(metallicRoughnessPaths, TERRAIN_LAYER_COUNT, TERRAIN_DETAIL_SIZE, false, "TerrainARM");
+    g_Terrain.grassLayers  = TerrainLoadGrassArray();
     AX_LOG("terrain textures loaded in %llu ms (png decode, consider baking)", (unsigned long long)(SDL_GetTicks() - start));
 }
 
@@ -1246,7 +1822,7 @@ static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
 {
     SDL_memset(authoring, 0, sizeof(*authoring));
 
-    for (u32 i = 0; i < 3u; i++)
+    for (u32 i = 0; i < TERRAIN_LAYER_COUNT; i++)
     {
         authoring->layers[i].enabled = true;
         CopyString(authoring->layers[i].albedo, sizeof(authoring->layers[i].albedo), albedoPaths[i]);
@@ -1257,6 +1833,7 @@ static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
     authoring->grassDensity  = 1.0f;
     authoring->grassScaleMin = 0.6f;
     authoring->grassScaleMax = 1.2f;
+    authoring->grassViewDistance = 300.0f;
     CopyString(authoring->grassColorHex, sizeof(authoring->grassColorHex), "77AA55FF");
 }
 
@@ -1283,11 +1860,25 @@ void Terrain_Init(void)
     g_Terrain.numFreeSlots = TERRAIN_MAX_CHUNKS;
     g_Terrain.chunkMap = HMCreate(TERRAIN_MAX_CHUNKS, sizeof(u32));
 
+    g_Terrain.grassTiles    = (GrassTile*)AllocZeroTLSFGlobal(TERRAIN_MAX_GRASS_TILES, sizeof(GrassTile));
+    g_Terrain.grassTileFree = (u32*)AllocateTLSFGlobal(TERRAIN_MAX_GRASS_TILES * sizeof(u32));
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+        g_Terrain.grassTileFree[i] = TERRAIN_MAX_GRASS_TILES - 1u - i;
+    g_Terrain.numGrassTileFree = TERRAIN_MAX_GRASS_TILES;
+    g_Terrain.grassTileMap = HMCreate(TERRAIN_MAX_GRASS_TILES, sizeof(u32));
+
     for (u32 i = 0; i < TERRAIN_MAX_JOBS; i++)
     {
         TerrainJob* job = &g_Terrain.jobs[i];
         job->density = (s8*)SDL_malloc(TERRAIN_SAMPLES_TOTAL);
         Transvoxel_ScratchInit(&job->scratch);
+        SDL_SetAtomicInt(&job->state, JobState_Free);
+    }
+
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_JOBS; i++)
+    {
+        GrassJob* job = &g_Terrain.grassJobs[i];
+        job->out = (GrassInstance*)SDL_malloc(GRASS_PER_CHUNK * sizeof(GrassInstance));
         SDL_SetAtomicInt(&job->state, JobState_Free);
     }
 
@@ -1305,6 +1896,22 @@ void Terrain_Init(void)
         .size  = TERRAIN_TRANSFER_BYTES
     });
     CHECK_CREATE(g_Terrain.transferBuffer, "Terrain Transfer Buffer");
+
+    // grass: instance data fed as an instance-rate vertex buffer, per-chunk origins as a
+    // storage buffer, and one indirect draw command per visible chunk rebuilt each frame
+    g_Terrain.grassBuffer        = CreateBuffer(NULL, TERRAIN_MAX_GRASS * sizeof(GrassInstance), BVertexBit, "TerrainGrassBuffer");
+    g_Terrain.grassChunkBuffer   = CreateBuffer(NULL, TERRAIN_MAX_CHUNKS * sizeof(GrassChunkInfo), BReadRasterBit, "TerrainGrassChunkBuffer");
+    g_Terrain.grassIndirectBuffer = CreateBuffer(NULL, TERRAIN_MAX_CHUNKS * sizeof(SDL_GPUIndirectDrawCommand), SDL_GPU_BUFFERUSAGE_INDIRECT, "TerrainGrassIndirect");
+    g_Terrain.grassIndirectTransfer = SDL_CreateGPUTransferBuffer(g_GPUDevice, &(SDL_GPUTransferBufferCreateInfo){
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size  = TERRAIN_MAX_CHUNKS * (u32)sizeof(SDL_GPUIndirectDrawCommand)
+    });
+    CHECK_CREATE(g_Terrain.grassIndirectTransfer, "Terrain Grass Indirect Transfer");
+    g_Terrain.grassUploadTransfer = SDL_CreateGPUTransferBuffer(g_GPUDevice, &(SDL_GPUTransferBufferCreateInfo){
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size  = GRASS_UPLOAD_BYTES
+    });
+    CHECK_CREATE(g_Terrain.grassUploadTransfer, "Terrain Grass Upload Transfer");
 
     TerrainInitPipelines();
     TerrainInitTextures();
@@ -1330,24 +1937,43 @@ void Terrain_Destroy(void)
         Transvoxel_ScratchDestroy(&job->scratch);
         Transvoxel_MeshOutDestroy(&job->mesh);
     }
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_JOBS; i++)
+        SDL_free(g_Terrain.grassJobs[i].out);
 
     if (g_Terrain.forwardPipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.forwardPipeline);
     if (g_Terrain.depthPipeline)   SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.depthPipeline);
     if (g_Terrain.wirePipeline)    SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.wirePipeline);
+    if (g_Terrain.grassPipeline)   SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.grassPipeline);
     if (g_Terrain.vertexBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.vertexBuffer);
     if (g_Terrain.indexBuffer)     SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.indexBuffer);
+    if (g_Terrain.grassBuffer)         SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.grassBuffer);
+    if (g_Terrain.grassChunkBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.grassChunkBuffer);
+    if (g_Terrain.grassIndirectBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.grassIndirectBuffer);
     if (g_Terrain.transferBuffer)  SDL_ReleaseGPUTransferBuffer(g_GPUDevice, g_Terrain.transferBuffer);
+    if (g_Terrain.grassUploadTransfer)   SDL_ReleaseGPUTransferBuffer(g_GPUDevice, g_Terrain.grassUploadTransfer);
+    if (g_Terrain.grassIndirectTransfer) SDL_ReleaseGPUTransferBuffer(g_GPUDevice, g_Terrain.grassIndirectTransfer);
     ReleaseTexture(&g_Terrain.albedoLayers);
     ReleaseTexture(&g_Terrain.normalLayers);
     ReleaseTexture(&g_Terrain.armLayers);
+    ReleaseTexture(&g_Terrain.grassLayers);
 
     for (u32 i = 0; i < TERRAIN_MAX_CHUNKS; i++)
         TerrainChunkFreeMesh(i);
+    // jobs are drained above, so no tile is really building anymore; clear the flag so
+    // TerrainGrassTileFree releases every heap range instead of deferring it
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+    {
+        g_Terrain.grassTiles[i].building = 0u;
+        TerrainGrassTileFree(i);
+    }
 
     HMDestroy(&g_Terrain.chunkMap);
+    HMDestroy(&g_Terrain.grassTileMap);
     DeAllocateTLSFGlobal(g_Terrain.chunks);
     DeAllocateTLSFGlobal(g_Terrain.freeSlots);
     DeAllocateTLSFGlobal(g_Terrain.pending);
+    DeAllocateTLSFGlobal(g_Terrain.grassTiles);
+    DeAllocateTLSFGlobal(g_Terrain.grassTileFree);
     TerrainEdit_Destroy();
     SDL_memset(&g_Terrain, 0, sizeof(g_Terrain));
 }
@@ -1411,6 +2037,9 @@ static void TerrainEvictAll(void)
     for (u32 i = 0; i < TERRAIN_MAX_CHUNKS; i++)
         if (g_Terrain.chunks[i].used && !g_Terrain.chunks[i].dying)
             TerrainChunkEvict(i);
+    // the surface changed underneath every grass tile; drop them so they rebuild fresh
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+        TerrainGrassTileFree(i);
     g_Terrain.numPending = 0;
     g_Terrain.desiredValid = false;
 }
@@ -1637,6 +2266,8 @@ bool Terrain_SaveWorld(const char* path)
     p = TerrainWriteF32(p, "cave_frequency", params->carveFrequency, 6);
     p = TerrainWriteF32(p, "island_radius", params->islandRadius, 3);
     p = TerrainWriteF32(p, "island_falloff", params->islandFalloff, 3);
+    p = TerrainWriteF32(p, "grass_density", authoring->grassDensity, 3);
+    p = TerrainWriteF32(p, "grass_view_distance", authoring->grassViewDistance, 3);
 
     WriteAllBytes(path, text, (unsigned long)(p - text));
     SDL_free(text);
@@ -1681,6 +2312,8 @@ bool Terrain_LoadWorld(const char* path)
         else if (TerrainKeyIs(line, "cave_frequency", &value))   ParseFloat(value, &params.carveFrequency);
         else if (TerrainKeyIs(line, "island_radius", &value))    ParseFloat(value, &params.islandRadius);
         else if (TerrainKeyIs(line, "island_falloff", &value))   ParseFloat(value, &params.islandFalloff);
+        else if (TerrainKeyIs(line, "grass_density", &value))       ParseFloat(value, &authoring->grassDensity);
+        else if (TerrainKeyIs(line, "grass_view_distance", &value)) ParseFloat(value, &authoring->grassViewDistance);
 
         line = hadNewline ? next + 1 : NULL;
     }

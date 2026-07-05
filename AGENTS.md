@@ -12,6 +12,7 @@ Static: persistent, <1GB, single instance
 Arena (temp <256MB): ArenaPushGlobal() / ArenaPopGlobal()
 TLSF/OS: persistent or large allocations
 Use functions (Maxf32, etc.) instead of macros
+don't null check on minimal allocations
 
 #Code Order
 Includes > defines > enums > structs

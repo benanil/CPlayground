@@ -12,6 +12,7 @@
 // transition shrink go through the float path, and those never need cross-chunk matching.
 #include "TerrainInternal.h"
 #include "TransvoxelTables.h"
+#include "Include/Terrain.h"  // TerrainGenParams (sea level for the beach layer)
 #include "Include/Platform.h" // AX_LOG / AX_ERROR
 #include "Math/Vector.h"
 #include "Math/Quaternion.h" // Bitpack.h needs QuaternionFromM33Vec
@@ -23,6 +24,17 @@
 #define TV_EDGE_COUNT    (3 * TV_CORNER_COUNT)
 #define TV_FACEHASH_SIZE 2048u // power of two, > 4x worst case face vertex count
 #define TV_NO_VERTEX     0xFFFFFFFFu
+
+// terrain material layers (texture array indices): grass on flat, dirt on slope / low
+// ground, high rock up top, sand at the water line. the stack low->high is sand -> dirt ->
+// dirt/grass, so sand only ever blends into dirt and grass stays off the coast.
+#define TV_GRASS_LAYER   0u
+#define TV_DIRT_LAYER    1u
+#define TV_SAND_LAYER    3u
+#define TV_SAND_TOP      2.0f  // meters above sea level where sand fully fades to dirt
+#define TV_SAND_FADE     2.0f  // sand->dirt vertical blend band, meters
+#define TV_GRASS_START   3.0f  // meters above sea level where grass starts fading in
+#define TV_GRASS_FADE    8.0f  // dirt->grass vertical blend band, meters
 
 static s32 TVSampleIdx(s32 cx, s32 cy, s32 cz) // corner coords -1..17
 {
@@ -98,23 +110,31 @@ static u32 TVEmitVertex(TerrainMeshOut* out, const u32 q[3], v128f normal, f32 v
         (f32)out->worldOrigin[2] + (f32)q[2] * metersPerStep
     };
 
-    // procedural pick: grass(0) on flat, rocky slope(1) on steep, high rock(2) up top.
-    // fold the three influences into the two strongest layers
+    // procedural land pick: dirt is the default ground; grass only takes over where the
+    // surface is flat AND well above the water line, high rock up top. so the coast is bare
+    // dirt (which sand blends into) and grass never touches sea level.
+    f32 seaLevel = TerrainDensity_GetParams()->seaLevel;
     f32 slope = VecGetY(normal);
-    f32 rockBlend = 1.0f - Saturatef32((slope - 0.55f) * 4.0f);
+    f32 rockBlend = 1.0f - Saturatef32((slope - 0.55f) * 4.0f);           // 0 flat, 1 steep
     f32 highBlend = Saturatef32((wpos.y - 34.0f) * 0.08f);
+    f32 grassHeight = Saturatef32((wpos.y - seaLevel - TV_GRASS_START) * (1.0f / TV_GRASS_FADE));
+    f32 grassAmount = (1.0f - rockBlend) * grassHeight;                   // flat AND high -> grass
     float3 layerWeight = {
-        (1.0f - rockBlend) * (1.0f - highBlend),
-        rockBlend * (1.0f - highBlend),
+        grassAmount * (1.0f - highBlend),
+        (1.0f - grassAmount) * (1.0f - highBlend), // dirt is the land default
         highBlend
     };
-    u32 procA = layerWeight.y > layerWeight.x ? 1u : 0u;
-    u32 procB = procA == 1u ? (layerWeight.z > layerWeight.x ? 2u : 0u)
-                            : (layerWeight.z > layerWeight.y ? 2u : 1u);
+    u32 procA = layerWeight.y > layerWeight.x ? TV_DIRT_LAYER : TV_GRASS_LAYER;
+    u32 procB = procA == TV_DIRT_LAYER ? (layerWeight.z > layerWeight.x ? 2u : TV_GRASS_LAYER)
+                                       : (layerWeight.z > layerWeight.y ? 2u : TV_DIRT_LAYER);
     f32 procWeightAF = procA == 0u ? layerWeight.x : procA == 1u ? layerWeight.y : layerWeight.z;
     f32 procWeightBF = procB == 0u ? layerWeight.x : procB == 1u ? layerWeight.y : layerWeight.z;
     f32 procTotal = procWeightAF + procWeightBF;
     u32 procWeightA = (u32)Clampf32(procWeightAF / Maxf32(procTotal, 1e-4f) * 255.0f + 0.5f, 0.0f, 255.0f);
+
+    // sand takes over at and below the water line, blending up into the dirt band (never
+    // straight into grass, which is already gated above the coast)
+    f32 sandBlend = Saturatef32((seaLevel + TV_SAND_TOP - wpos.y) * (1.0f / TV_SAND_FADE));
 
     u8 matIndex[2], matWeight[2];
     TerrainEdit_MaterialWeights(wpos, matIndex, matWeight);
@@ -125,12 +145,15 @@ static u32 TVEmitVertex(TerrainMeshOut* out, const u32 q[3], v128f normal, f32 v
     u32 idxA, idxB, wA;
     if (matIndex[0] == 0 && matIndex[1] == 0)
     {
-        idxA = procA; idxB = procB; wA = procWeightA;
+        if (sandBlend >= 0.998f)      { idxA = TV_SAND_LAYER; idxB = TV_SAND_LAYER; wA = 255u; }
+        else if (sandBlend > 0.002f)  { idxA = TV_SAND_LAYER; idxB = TV_DIRT_LAYER;
+                                        wA = (u32)(sandBlend * 255.0f + 0.5f); }
+        else                          { idxA = procA; idxB = procB; wA = procWeightA; }
     }
     else
     {
-        idxA = matIndex[0] == 0 ? procDominant : Minu32((u32)matIndex[0] - 1u, 2u);
-        idxB = matIndex[1] == 0 ? procDominant : Minu32((u32)matIndex[1] - 1u, 2u);
+        idxA = matIndex[0] == 0 ? procDominant : Minu32((u32)matIndex[0] - 1u, 3u);
+        idxB = matIndex[1] == 0 ? procDominant : Minu32((u32)matIndex[1] - 1u, 3u);
         wA = matWeight[0];
     }
     v->spare = idxA | (idxB << 8) | (wA << 16) | ((255u - wA) << 24);

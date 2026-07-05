@@ -288,6 +288,7 @@ typedef struct Graphics_
 {
     ASkinedVertex* SkinnedVertexBuffer;
     AVertex*       SurfaceVertexBuffer;
+    void*          TerrainGrassBuffer;
     void*          TerrainVertexBuffer;
     u32*           TerrainIndexBuffer;
     u32*           IndexBuffer;
@@ -317,6 +318,7 @@ enum GeometryBufferKind_
     GeometryBuffer_Index,
     GeometryBuffer_TerrainVertex,
     GeometryBuffer_TerrainIndex,
+    GeometryBuffer_GrassInstance,
     GeometryBuffer_Count
 };
 typedef s32 GeometryBufferKind;

@@ -114,7 +114,8 @@ static void SceneAsyncDone(void* userData, s32 result)
 {
     SceneAsyncRequest* request = (SceneAsyncRequest*)userData;
     request->result = result;
-    SDL_SetAtomicInt(&request->done, 1);
+	if (!result) AX_WARN("scene async request start failed: %s", request->path);
+	SDL_SetAtomicInt(&request->done, 1);
 }
 
 bool SceneAsyncBegin(SceneAsyncOp op, const char* path, const char* taskName, SceneAsyncRequestCallback callback)
@@ -140,22 +141,10 @@ bool SceneAsyncBegin(SceneAsyncOp op, const char* path, const char* taskName, Sc
     }
 
     SceneAsyncRequest* request = (SceneAsyncRequest*)SDL_calloc(1, sizeof(SceneAsyncRequest));
-    if (!request)
-    {
-        AX_WARN("scene async request allocation failed");
-        return false;
-    }
-
     request->callback = callback;
     request->op = op;
     MemCopy(request->path, normalized, StringLength(normalized) + 1);
-    if (!AsyncRun(taskName, SceneAsyncProbe, SceneAsyncDone, request))
-    {
-        SDL_free(request);
-        AX_WARN("scene async request start failed: %s", normalized);
-        return false;
-    }
-
+	AsyncRun(taskName, SceneAsyncProbe, SceneAsyncDone, request);
     sceneAsyncRequest = request;
     return true;
 }
@@ -166,15 +155,14 @@ void Scene_AsyncUpdate(void)
     if (!request || !SDL_GetAtomicInt(&request->done)) return;
     sceneAsyncRequest = NULL;
 
-    if (request->result)
+    if (!request->result)
     {
-        if (request->callback)
-            request->callback(request);
+		AX_ERROR("scene async request failed: %s", request->path);
     }
-    else
-    {
-        AX_ERROR("scene async request failed: %s", request->path);
-    }
+	else if (request->callback)
+	{
+		request->callback(request);
+	}
 
     // The probe held one warming reference per bundle so the callback's scene/import load hit the
     // cache instead of re-baking. The scene took its own references in the callback, so drop the
@@ -300,13 +288,7 @@ static void BundleCacheQueueSave(const char* path, u64 key)
     ChangeExtension(task->abmPath, pathLen, "abm");
     task->cacheKey = key;
 
-    if (!AsyncRun("Save Bundle Cache", SaveBundleCacheTask, SaveBundleCacheDone, task))
-    {
-        // couldn't spawn: persist synchronously so the cache still gets written
-        AX_WARN("bundle cache save task failed to start, saving synchronously: %s", task->abmPath);
-        s32 ok = SaveBundleCacheTask(task);
-        SaveBundleCacheDone(task, ok);
-    }
+	AsyncRun("Save Bundle Cache", SaveBundleCacheTask, SaveBundleCacheDone, task);
 }
 
 static void BVHCallback(void* data, s32 result)
@@ -400,8 +382,7 @@ BundleCacheEntry* BundleCacheAcquire(const char* path)
         BundleCacheQueueSave(path, key);
 
     // BVH builds asynchronously and addresses the entry by key, so it is safe across later inserts.
-    if (!AsyncRun("Create BVH", CreateBVH, BVHCallback, (void*)(uintptr_t)key))
-        AX_WARN("bvh create task failed! %s", path);
+	AsyncRun("Create BVH", CreateBVH, BVHCallback, (void*)(uintptr_t)key);
     return entry;
 }
 

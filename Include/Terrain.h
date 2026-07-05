@@ -49,6 +49,7 @@ typedef struct TerrainAuthoring_
     f32  grassDensity;
     f32  grassScaleMin;
     f32  grassScaleMax;
+    f32  grassViewDistance; // meters; blades farther than this are culled in the grass shader
     char grassColorHex[9]; // AABBGGRR
 } TerrainAuthoring;
 
