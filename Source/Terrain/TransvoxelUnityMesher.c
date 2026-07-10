@@ -218,12 +218,12 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
     tMesherFillS32(previousCache, cacheCount, -1);
 
     bool result = true;
-    for (s32 y = 0; y < chunkSize && result; y++)
+    for (s32 y = 0; y < chunkSize; y++)
     {
         tMesherFillS32(currentCache, cacheCount, -1);
-        for (s32 z = 0; z < chunkSize && result; z++)
+        for (s32 z = 0; z < chunkSize; z++)
         {
-            for (s32 x = 0; x < chunkSize && result; x++)
+            for (s32 x = 0; x < chunkSize; x++)
             {
                 int3 cellPos = { x, y, z };
                 f32 cellValues[8];
@@ -253,7 +253,7 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
                 u32 vertexIndices[16] = {0};
                 u32 cellVertCount = TVCellVertexCount(cellData);
 
-                for (u32 i = 0; i < cellVertCount && result; i++)
+                for (u32 i = 0; i < cellVertCount; i++)
                 {
                     u16 edgeCode = edgeCodes[i];
                     u32 cornerIdx0 = (edgeCode >> 4) & 0x0Fu;
@@ -348,17 +348,17 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
                         }
 
                         normal = F3NormSafe(normal);
-                        result = tMesherEmitVertex(meshData, vertex, normal, chunkSize, mesher->lodScale, boundaryMask, (u32)vertexIndex);
+                        tMesherEmitVertex(meshData, vertex, normal, chunkSize, mesher->lodScale, boundaryMask, (u32)vertexIndex);
                     }
                     vertexIndices[i] = (u32)vertexIndex;
                 }
 
                 u32 indexCount = TVCellTriangleCount(cellData) * 3u;
-                for (u32 i = 0; i < indexCount && result; i += 3)
+                for (u32 i = 0; i < indexCount; i += 3)
                 {
-                    result = tMeshDataPushIndex(meshData, vertexIndices[cellData.vertexIndex[i + 0]]) && result;
-                    result = tMeshDataPushIndex(meshData, vertexIndices[cellData.vertexIndex[i + 1]]) && result;
-                    result = tMeshDataPushIndex(meshData, vertexIndices[cellData.vertexIndex[i + 2]]) && result;
+                    tMeshDataPushIndex(meshData, vertexIndices[cellData.vertexIndex[i + 0]]);
+                    tMeshDataPushIndex(meshData, vertexIndices[cellData.vertexIndex[i + 1]]);
+                    tMeshDataPushIndex(meshData, vertexIndices[cellData.vertexIndex[i + 2]]);
                 }
             }
         }
@@ -370,7 +370,7 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
 
     ArrayDestroy(currentCache);
     ArrayDestroy(previousCache);
-    return result;
+    return 1;
 }
 
 static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTransitionDirection direction)
@@ -382,10 +382,9 @@ static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
     s32* currentCache  = ArenaPushGlobal(sizeof(s32) * cacheCount);
     s32* previousCache = ArenaPushGlobal(sizeof(s32) * cacheCount);
 
-    bool result = true;
-    for (s32 y = 0; y < chunkSize && result; y++)
+    for (s32 y = 0; y < chunkSize; y++)
     {
-        for (s32 x = 0; x < chunkSize && result; x++)
+        for (s32 x = 0; x < chunkSize; x++)
         {
             f32 cellValues[13];
             int3 pos0 = I3AddI(tMesherFaceToLocalI(direction, chunkSize, x,     y,     0), padding);
@@ -440,7 +439,7 @@ static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
             u32 vertexIndices[36] = {0};
             u32 cellVertCount = TVCellVertexCount(cellData);
 
-            for (u32 i = 0; i < cellVertCount && result; i++)
+            for (u32 i = 0; i < cellVertCount; i++)
             {
                 u16 edgeCode = edgeCodes[i];
                 u32 cornerIdx0 = (edgeCode >> 4) & 0x0Fu;
@@ -564,29 +563,29 @@ static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
                     }
 
                     normal = F3NormSafe(normal);
-                    result = tMesherEmitVertex(meshData, vertex, normal, chunkSize, mesher->lodScale, boundaryMask, (u32)vertexIndex);
+                    tMesherEmitVertex(meshData, vertex, normal, chunkSize, mesher->lodScale, boundaryMask, (u32)vertexIndex);
                 }
                 vertexIndices[i] = (u32)vertexIndex;
             }
 
             bool flipWinding = (cellClass & 0x80u) > 0u;
             u32 indexCount = TVCellTriangleCount(cellData) * 3u;
-            for (u32 i = 0; i < indexCount && result; i += 3)
+            for (u32 i = 0; i < indexCount; i += 3)
             {
                 u32 ia = vertexIndices[cellData.vertexIndex[i + 0]];
                 u32 ib = vertexIndices[cellData.vertexIndex[i + 1]];
                 u32 ic = vertexIndices[cellData.vertexIndex[i + 2]];
                 if (!flipWinding)
                 {
-                    result = tMeshDataPushIndex(meshData, ic) && result;
-                    result = tMeshDataPushIndex(meshData, ib) && result;
-                    result = tMeshDataPushIndex(meshData, ia) && result;
+                    tMeshDataPushIndex(meshData, ic);
+                    tMeshDataPushIndex(meshData, ib);
+                    tMeshDataPushIndex(meshData, ia);
                 }
                 else
                 {
-                    result = tMeshDataPushIndex(meshData, ia) && result;
-                    result = tMeshDataPushIndex(meshData, ib) && result;
-                    result = tMeshDataPushIndex(meshData, ic) && result;
+                    tMeshDataPushIndex(meshData, ia);
+                    tMeshDataPushIndex(meshData, ib);
+                    tMeshDataPushIndex(meshData, ic);
                 }
             }
         }
@@ -598,7 +597,7 @@ static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
 
     ArenaPopGlobal(sizeof(s32) * cacheCount);
     ArenaPopGlobal(sizeof(s32) * cacheCount);
-    return result;
+    return 1;
 }
 
 bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, s32 chunkSize, const f32* densityData,

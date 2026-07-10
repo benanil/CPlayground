@@ -438,6 +438,12 @@ purefn f32 FMod(f32 x, f32 y)
     return remainder;
 }
 
+purefn s32 FloorDiv(s32 a, s32 b)
+{
+    s32 q = a / b, r = a % b;
+    return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
+}
+
 // https://github.com/id-Software/DOOM-3/blob/master/neo/idlib/math/Math.h
 purefn f32 Expf(f32 f) {
     const s32 IEEE_FLT_MANTISSA_BITS  =	23;

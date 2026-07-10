@@ -29,6 +29,7 @@ typedef struct tExampleChunk_
     u32 pendingHeapFirst;
     u32 pendingVertexCount;
     u8  pendingFrames;
+    s32 neighboursMask; // bit per face (-x,-y,-z,+x,+y,+z): neighbor renders at a finer lod
     bool built;
     bool dirty;
     bool physicsDirty;
@@ -51,6 +52,8 @@ typedef struct tTransvoxelExample_
     u32 culledChunks;
     u32 emptyChunks;
     u32 physicsSyncCursor;
+    f32 lodFactor;   // this frame's lod distance scale, read by the mask computation
+    bool fixedArea;  // fixed-area worlds are lod0-only: no lod seams, masks stay 0
     u64 lastStatsTicks;
     float3 brushPos;
     f32 brushRadius;
@@ -184,6 +187,62 @@ static bool tExampleBuildDensity(int3 chunkMin, s32 lod)
     return true;
 }
 
+static const f32 tExampleLODDistance[T_EXAMPLE_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };}
+
+// true when the quadtree node at (nodeX, nodeZ, lod) splits into finer children:
+// the closest point of its XZ box lies inside the next-finer lod's distance ring.
+// same test tExampleSubmitNode uses, so the mask stays consistent with traversal
+static bool tExampleNodeSplits(s32 nodeX, s32 nodeZ, s32 lod, f32 lodFactor)
+{
+    if (lod <= 0)
+        return false;
+    s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
+    f32 minX = (f32)(nodeX * step);
+    f32 minZ = (f32)(nodeZ * step);
+    f32 dx = Clampf32(g_Camera.position.x, minX, minX + (f32)step) - g_Camera.position.x;
+    f32 dz = Clampf32(g_Camera.position.z, minZ, minZ + (f32)step) - g_Camera.position.z;
+    f32 splitDistance = tExampleLODDistance[lod - 1] * lodFactor;
+    return dx * dx + dz * dz < splitDistance * splitDistance;
+}
+
+// does the column at (chunkX, chunkZ) on this lod's grid render at a finer lod?
+// walks the quadtree top-down: every ancestor must split to reach this lod, and the
+// node at this lod itself must split for its children to render instead
+static bool tExampleNeighbourFiner(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor)
+{
+    if (lod == 0)
+        return false;
+    for (s32 l = (s32)T_EXAMPLE_LOD_COUNT - 1; l >= lod; l--)
+    {
+        // arithmetic shift floors negative chunk coords onto the coarser grid
+        s32 nodeX = chunkX >> (l - lod);
+        s32 nodeZ = chunkZ >> (l - lod);
+        if (!tExampleNodeSplits(nodeX, nodeZ, l, lodFactor))
+            return false;
+    }
+    return true;
+}
+
+// transvoxel neighbour mask for a chunk column: transition cells live on the COARSE
+// side in this port (the mesher samples the face at half steps, i.e. the finer
+// neighbour's resolution), so a bit is set when that face's neighbour renders finer.
+// vertical neighbours share the column and lod, so the y bits are never set
+static s32 tExampleColumnMask(int3 min, s32 lod)
+{
+    if (tExample.fixedArea || lod == 0)
+        return 0;
+    s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
+    s32 chunkX = FloorDiv(min.x, step);
+    s32 chunkZ = FloorDiv(min.z, step);
+    f32 lodFactor = tExample.lodFactor;
+    s32 mask = 0;
+    if (tExampleNeighbourFiner(chunkX - 1, chunkZ, lod, lodFactor)) mask |= 1;  // -x
+    if (tExampleNeighbourFiner(chunkX + 1, chunkZ, lod, lodFactor)) mask |= 8;  // +x
+    if (tExampleNeighbourFiner(chunkX, chunkZ - 1, lod, lodFactor)) mask |= 4;  // -z
+    if (tExampleNeighbourFiner(chunkX, chunkZ + 1, lod, lodFactor)) mask |= 32; // +z
+    return mask;
+}
+
 static bool tExamplePushTriangleVertex(ALineVertex** vertices, float3 p, u32 color)
 {
     if (!vertices || !*vertices)
@@ -219,6 +278,15 @@ static void tExampleAppendMeshSlotTriangles(const tExampleChunk* chunk, tMeshDat
         float3 a = F3Add(Vec3Get(mesh->vertices[ia].position), offset);
         float3 b = F3Add(Vec3Get(mesh->vertices[ib].position), offset);
         float3 c = F3Add(Vec3Get(mesh->vertices[ic].position), offset);
+
+        // secondary-vertex snapping and transition cells produce degenerate triangles
+        // (verts collapse onto each other); skip them here instead of shading zero-area
+        float3 ab = F3Sub(b, a);
+        float3 ac = F3Sub(c, a);
+        float3 cross = F3Cross(&ab, &ac);
+        if (F3Dot(cross, cross) <= 1.0e-12f)
+            continue;
+
         float3 na = F3NormSafe(Vec3Get(mesh->vertices[ia].normal));
         float3 nb = F3NormSafe(Vec3Get(mesh->vertices[ib].normal));
         float3 nc = F3NormSafe(Vec3Get(mesh->vertices[ic].normal));
@@ -321,16 +389,24 @@ static bool tExampleBuildChunk(u32 chunkIndex, tExampleChunk* chunk)
         return false;
 
     if (!tTransvoxelMesherMesh(&tExample.generator, chunk->min, T_EXAMPLE_CHUNK_SIZE, tExample.densityData,
-                               chunk->lod, 0, &tExample.scratchMesh, NULL))
+                               chunk->lod, chunk->neighboursMask, &tExample.scratchMesh, NULL))
     {
         AX_WARN("transvoxel example chunk mesh build failed");
         return false;
     }
 
-    // Transition slots need real neighbour masks; drawing all of them creates artificial
-    // chunk-boundary strips instead of the terrain surface.
+    // lod stitching: snap boundary vertices to their secondary positions (shrinks the
+    // regular mesh half a cell inward on faces with a finer neighbour) and fill the gap
+    // with that face's transition cell strip. faces without a finer neighbour keep
+    // primary positions and skip their transition slot
+    tMeshDataContainerApplySecondaryVertices(&tExample.scratchMesh, chunk->neighboursMask);
     ArrayFieldSet(tExample.buildVertices, ArrayField_Length, 0);
     tExampleAppendMeshSlotTriangles(chunk, tMeshDataSlot_Main);
+    for (u32 bit = 0; bit < 6u; bit++)
+    {
+        if (chunk->neighboursMask & (1 << bit))
+            tExampleAppendMeshSlotTriangles(chunk, (tMeshDataSlot)(tMeshDataSlot_LeftTransition + bit));
+    }
 
     u32 vertexCount = (u32)ArrayLength(tExample.buildVertices);
     tExample.builtThisFrame++;
@@ -455,10 +531,19 @@ static void tExampleSyncDirtyPhysics(void)
 
 static tExampleChunk* tExampleGetChunk(int3 min, s32 lod)
 {
+    s32 neighboursMask = tExampleColumnMask(min, lod);
     u32* found = (u32*)HMFind(&tExample.chunkLookup, tExampleChunkKey(min, lod));
     tExampleChunk* chunk = found ? &tExample.chunks[*found] : NULL;
     if (chunk)
     {
+        // a neighbour crossed a lod ring: this chunk's boundary shrink + transition
+        // strips no longer match, remesh with the new mask (old mesh keeps drawing
+        // until the pending rebuild promotes, so the seam heals without a flash)
+        if (chunk->neighboursMask != neighboursMask)
+        {
+            chunk->neighboursMask = neighboursMask;
+            chunk->dirty = true;
+        }
         if (chunk->dirty && !chunk->pendingHeapPtr && !chunk->pendingEmpty &&
             tExample.builtThisFrame < T_EXAMPLE_MAX_BUILDS_PER_FRAME)
             tExampleBuildChunk(*found, chunk);
@@ -478,7 +563,7 @@ static tExampleChunk* tExampleGetChunk(int3 min, s32 lod)
 
     u32 index = tExample.chunkCount++;
     chunk = &tExample.chunks[index];
-    *chunk = (tExampleChunk){ .min = min, .lod = lod };
+    *chunk = (tExampleChunk){ .min = min, .lod = lod, .neighboursMask = neighboursMask };
     HMInsert(&tExample.chunkLookup, tExampleChunkKey(min, lod), &index);
     if (!tExampleBuildChunk(index, chunk))
         chunk->built = true;
@@ -565,15 +650,6 @@ static bool tExampleAppendChunkTriangles(const tExampleChunk* chunk)
     }
     tExample.submittedChunks++;
     return true;
-}
-
-static const f32 tExampleLODDistance[T_EXAMPLE_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };
-
-static s32 tExampleFloorDiv(s32 a, s32 b)
-{
-    s32 q = a / b;
-    s32 r = a % b;
-    return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
 }
 
 // a chunk counts as presentable when it is built and either has a live (drawable) mesh
@@ -735,8 +811,8 @@ static void tExampleSubmitTerrain(f32 lodFactor, const FrustumPlanes* frustum, b
     {
         s32 fixedSize = Clamps32((s32)params->fixedWorldSize, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE);
         s32 halfSize = fixedSize / 2;
-        s32 minChunkX = tExampleFloorDiv(-halfSize, T_EXAMPLE_CHUNK_SIZE);
-        s32 maxChunkX = tExampleFloorDiv(fixedSize - halfSize - 1, T_EXAMPLE_CHUNK_SIZE);
+        s32 minChunkX = FloorDiv(-halfSize, T_EXAMPLE_CHUNK_SIZE);
+        s32 maxChunkX = FloorDiv(fixedSize - halfSize - 1, T_EXAMPLE_CHUNK_SIZE);
         s32 minChunkZ = minChunkX;
         s32 maxChunkZ = maxChunkX;
 
@@ -846,6 +922,9 @@ void tTransvoxelExampleUpdate(void)
     FrustumPlanes frustum = CreateFrustumPlanesRevZ(viewProj);
 
     f32 lodFactor = Maxf32(g_RenderSettings.terrainLodFactor, 0.25f);
+    const TerrainGenParams* genParams = Terrain_GetGenParams();
+    tExample.lodFactor = lodFactor;
+    tExample.fixedArea = genParams && genParams->fixedArea;
     tExampleSubmitTerrain(lodFactor, &frustum, true);
     if (ArrayLength(tExample.submitVertices) == 0 && ArrayLength(tExample.chunkDraws) == 0)
         tExampleSubmitTerrain(lodFactor, &frustum, false);
