@@ -27,7 +27,12 @@ typedef struct TerrainGenParams_
     bool island;         // fade terrain to a flat sea-level plane outside the island radius
     f32  islandRadius, islandFalloff;
     bool fixedArea;      // freeze the chunk rings where they were created, no streaming
+    u32  fixedWorldSize; // horizontal fixed terrain size in meters, clamped by TERRAIN_FIXED_WORLD_MAX_SIZE
 } TerrainGenParams;
+
+#define TERRAIN_FIXED_WORLD_MIN_SIZE     16u
+#define TERRAIN_FIXED_WORLD_DEFAULT_SIZE 128u
+#define TERRAIN_FIXED_WORLD_MAX_SIZE     512u
 
 #define TERRAIN_MAX_LAYERS 8u
 
@@ -129,6 +134,9 @@ TerrainStats Terrain_GetStats(void);
 // flush records copy passes for pending chunk meshes on the frame command buffer and
 // must run before any render pass uses the terrain buffers
 void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd);
+// grass multidraw for the port terrain path, called inside the forward pass right
+// after the port terrain surface; no-op until the grass system is initialized
+void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass);
 void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj);
 void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj, u32 width, u32 height);
 // line overlay over the lit scene, enabled by g_RenderSettings.terrainWireframe

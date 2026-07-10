@@ -38,6 +38,7 @@ typedef struct TerrainEditorState_
     f32 ridgeFrequency;
     f32 caveAmplitude;
     f32 caveFrequency;
+    f32 fixedWorldSize;
     f32 islandRadius;
     f32 islandFalloff;
     f32 brushRadius;
@@ -84,6 +85,7 @@ static void TerrainEditorInit(void)
     terrainUI.ridgeFrequency = 0.35f;
     terrainUI.caveAmplitude  = 0.8f;
     terrainUI.caveFrequency  = 0.045f;
+    terrainUI.fixedWorldSize = (f32)TERRAIN_FIXED_WORLD_DEFAULT_SIZE;
     terrainUI.islandRadius   = 250.0f;
     terrainUI.islandFalloff  = 120.0f;
     terrainUI.brushRadius    = 10.0f;
@@ -105,6 +107,7 @@ static TerrainGenParams TerrainEditorBuildParams(void)
     params.ridgeFrequency = Clampf32(terrainUI.ridgeFrequency, 0.05f, 2.0f);
     params.carveAmplitude = Clampf32(terrainUI.caveAmplitude, 0.0f, 32.0f);
     params.carveFrequency = Clampf32(terrainUI.caveFrequency, 0.0001f, 0.2f);
+    params.fixedWorldSize = (u32)Clamps32((s32)terrainUI.fixedWorldSize, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE);
     params.island         = terrainUI.island;
     params.islandRadius   = terrainUI.islandRadius;
     params.islandFalloff  = terrainUI.islandFalloff;
@@ -123,6 +126,7 @@ static void TerrainEditorApplyParams(const TerrainGenParams* params)
     terrainUI.ridgeFrequency = params->ridgeFrequency;
     terrainUI.caveAmplitude  = params->carveAmplitude;
     terrainUI.caveFrequency  = params->carveFrequency;
+    terrainUI.fixedWorldSize = (f32)params->fixedWorldSize;
     terrainUI.island         = params->island;
     terrainUI.islandRadius   = params->islandRadius;
     terrainUI.islandFalloff  = params->islandFalloff;
@@ -305,6 +309,8 @@ static void TerrainNoiseUI(void)
     }
     bool edited = false;
     edited |= UICheckbox(CLAY_ID("TerrainFixedChunks"), CLAY_STRING("Fixed chunk size, do not stream with movement"), &terrainUI.fixedChunkSize);
+    if (terrainUI.fixedChunkSize)
+        edited |= UIEditFloat(CLAY_ID("TerrainFixedWorldSize"), CLAY_STRING("Fixed world size"), &terrainUI.fixedWorldSize, (f32)TERRAIN_FIXED_WORLD_MIN_SIZE, (f32)TERRAIN_FIXED_WORLD_MAX_SIZE, 16.0f, 0);
     edited |= UICheckbox(CLAY_ID("TerrainIsland"), CLAY_STRING("Island mask, center area above sea level"), &terrainUI.island);
     edited |= UIEditFloat(CLAY_ID("TerrainSeed"), CLAY_STRING("Seed"), &terrainUI.seed, 0.0f, 999999.0f, 1.0f, 0);
     edited |= UIEditFloat(CLAY_ID("TerrainSeaLevel"), CLAY_STRING("Sea level"), &terrainUI.seaLevel, -200.0f, 200.0f, 1.0f, 2);

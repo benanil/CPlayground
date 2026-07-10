@@ -30,6 +30,19 @@ typedef struct TransitionCellData_
 #define TVCellVertexCount(d)   ((d).geometryCounts >> 4)
 #define TVCellTriangleCount(d) ((d).geometryCounts & 0x0F)
 
+static const int3 tRegularCornerOffset[] =
+{
+    {0, 0, 0}, {1, 0, 0}, {0, 0, 1}, {1, 0, 1},
+    {0, 1, 0}, {1, 1, 0}, {0, 1, 1}, {1, 1, 1}
+};
+
+static const int3 tTransitionCornerOffset[] =
+{
+    {0, 0, 0}, {1, 0, 0}, {2, 0, 0},
+    {0, 1, 0}, {1, 1, 0}, {2, 1, 0},
+    {0, 2, 0}, {1, 2, 0}, {2, 2, 0},
+    {0, 0, 2}, {2, 0, 2}, {0, 2, 2}, {2, 2, 2}
+};
 
 // The regularCellClass table maps an 8-bit regular Marching Cubes case index to
 // an equivalence class index. Even though there are 18 equivalence classes in our

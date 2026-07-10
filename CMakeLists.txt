@@ -122,6 +122,19 @@ target_sources(${EXECUTABLE_NAME} PRIVATE
     Source/Terrain/TerrainDensity.c
     Source/Terrain/TerrainEdit.c
     Source/Terrain/TransvoxelMesher.c
+    Source/Terrain/TransvoxelUnity.c
+    Source/Terrain/TransvoxelUnityOctree.c
+    Source/Terrain/TransvoxelUnityMesh.c
+    Source/Terrain/TransvoxelUnityJobs.c
+    Source/Terrain/TransvoxelUnityUpdates.c
+    Source/Terrain/TransvoxelUnityPool.c
+    Source/Terrain/TransvoxelUnityWorld.c
+    Source/Terrain/TransvoxelUnityTasks.c
+    Source/Terrain/TransvoxelUnityCollision.c
+    Source/Terrain/TransvoxelUnityScheduler.c
+    Source/Terrain/TransvoxelUnityVoxelWorld.c
+    Source/Terrain/TransvoxelUnityMesher.c
+    Source/Terrain/TransvoxelUnityExample.c
     Source/Editor/AssetsEditor.c
     Source/Editor/SceneEditor.c
     Source/Editor/TerrainEditor.c

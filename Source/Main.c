@@ -19,6 +19,7 @@
 #include "Include/Terrain.h"
 #include "Include/Editor.h"
 #include "Include/JobSystem.h"
+#include "Source/Terrain/TransvoxelUnity.h"
 #include "Math/Quaternion.h"
 
 static s32 done = 0;
@@ -56,7 +57,9 @@ static void MainLoopTick(void)
     SetPressedAndReleasedKeys();
     PlatformUpdate();
     CameraUpdate(&g_Camera, PlatformCtx.DeltaTime, EditorSceneInteractAllowed());
-    Terrain_Update(&g_Camera);
+    // builtin transvoxel terrain disabled while testing the transvoxel-unity port
+    // (tTransvoxelExampleUpdate below); re-enable once the port replaces it for real
+    // Terrain_Update(&g_Camera);
     DemoScene_Update(PlatformCtx.DeltaTime);
     Scene_SubmitLights();
 
@@ -65,6 +68,8 @@ static void MainLoopTick(void)
 
     if (!TerrainEditorUpdate(&g_Camera) && !EditorGizmoUpdate(&g_Camera) && !EditorLightGizmoUpdate(&g_Camera))
         EditorPickingUpdate(&g_Camera);
+
+    tTransvoxelExampleUpdate();
 
     if (!done) Render();
     // else emscripten_cancel_main_loop();
@@ -107,10 +112,18 @@ static SDL_AppResult SDLCALL MainAppInit(void** appstate, int argc, char* argv[]
     RendererInit();
     EditorInit();
 
-    if (!Scene_NewActive()) return SDL_APP_FAILURE;
     InitBuffers();
+    if (DemoScene_Create())
+    {
+        if (!Scene_MakeActive(DemoScene_Get())) return SDL_APP_FAILURE;
+    }
+    else
+    {
+        AX_WARN("demo scene failed to load; running transvoxel example in an empty scene");
+        if (!Scene_NewActive()) return SDL_APP_FAILURE;
+    }
     Terrain_Init();
-    EditorSceneStartup();
+    // Keep the runnable Transvoxel example in the demo scene instead of reopening the last editor scene.
 	
     CameraInit(&g_Camera, 1920, 1080);
 
@@ -138,6 +151,7 @@ static void SDLCALL MainAppQuit(void* appstate, SDL_AppResult result)
 {
     (void)appstate;
     (void)result;
+    tTransvoxelExampleDestroy();
 }
 
 s32 main(s32 argc, char* argv[])

@@ -13,7 +13,10 @@
 
 #define TERRAIN_VOXEL_SIZE     1.0f   // meters per cell at lod 0
 #define TERRAIN_LOD_COUNT      4      // chunk world sizes 16/32/64/128 m
-#define TERRAIN_MAX_VERTICES   (1u << 20) // 16 MB of TerrainVertex
+// the transvoxel-unity port parks non-indexed triangle soup in the vertex heap
+// (~3x an indexed mesh), so it is sized above the old runtime's needs. these back
+// both the CPU mirrors (Graphics.c) and the GPU mirror (Rendering.c) - keep sane.
+#define TERRAIN_MAX_VERTICES   (4u << 20) // 64 MB of TerrainVertex
 #define TERRAIN_MAX_INDICES    (4u << 20) // 16 MB of u32
 
 #define TERRAIN_MAX_CHUNKS     2048u
@@ -29,6 +32,11 @@
 // transvoxel transition cells are only crack free when a coarse sample equals the fine
 // sample at the same world position, which per lod scaling would break
 #define TERRAIN_SDF_CLAMP      4.0f
+
+// world y of the solid bedrock floor. The visible floor surface is half a voxel above
+// this so integer lattice samples at the protected bottom stay solid instead of zero.
+#define TERRAIN_BEDROCK_Y      (-60.0f)
+#define TERRAIN_BEDROCK_SURFACE_Y (TERRAIN_BEDROCK_Y + 0.5f)
 
 // transition faces shrink the boundary layer of regular cells inward by this fraction
 // of a cell, the gap is filled by transition cells (Lengyel 4.4)

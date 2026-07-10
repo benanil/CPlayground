@@ -76,6 +76,10 @@
 #define Shaders_UIImageFrag_spv Shaders_UI_UIImageFrag_msl
 #define Shaders_SurfaceDepthOnlyVert_spv Shaders_SurfaceDepthOnlyVert_msl
 #define Shaders_SurfaceDepthOnlyFrag_spv Shaders_SurfaceDepthOnlyFrag_msl
+#define Shaders_TerrainDepthOnlyFrag_spv Shaders_TerrainDepthOnlyFrag_msl
+#define Shaders_TerrainDepthOnlyFrag_spv_size Shaders_TerrainDepthOnlyFrag_msl_size
+extern const unsigned int Shaders_TerrainDepthOnlyFrag_msl_size;
+extern const unsigned char Shaders_TerrainDepthOnlyFrag_msl[];
 #define Shaders_SkinnedDepthOnlyVert_spv Shaders_SkinnedDepthOnlyVert_msl
 #define Shaders_SkinnedDepthOnlyFrag_spv Shaders_SkinnedDepthOnlyFrag_msl
 #define Shaders_SurfaceShadowDepthOnlyVert_spv Shaders_Shadow_SurfaceShadowDepthOnlyVert_msl
@@ -192,6 +196,8 @@
 #define Shaders_SkinnedPointShadowDepthOnlyVert_spv_size Shaders_Shadow_SkinnedPointShadowDepthOnlyVert_spv_size
 #define Shaders_SkinnedPointShadowDepthOnlyFrag_spv Shaders_Shadow_SkinnedPointShadowDepthOnlyFrag_spv
 #define Shaders_SkinnedPointShadowDepthOnlyFrag_spv_size Shaders_Shadow_SkinnedPointShadowDepthOnlyFrag_spv_size
+extern const unsigned int Shaders_TerrainDepthOnlyFrag_spv_size;
+extern const unsigned char Shaders_TerrainDepthOnlyFrag_spv[];
 #endif
 
 #define PIPELINE_VERT_DEF(xbuffer) \
@@ -438,6 +444,88 @@ static void InitGizmoLinePipeline(void)
 
 SDL_GPUGraphicsPipeline* g_OutlinePipeline;
 SDL_GPUGraphicsPipeline* g_GizmoLinePipeline;
+SDL_GPUGraphicsPipeline* g_TerrainTrianglePipeline;
+SDL_GPUGraphicsPipeline* g_TerrainTriangleDepthPipeline;
+
+static void InitTerrainTrianglePipeline(void)
+{
+    SDL_GPUShaderFormat shaderformat = AX_GPU_SHADER_FORMAT;
+    SDL_GPUShader* vertex_shader   = PIPELINE_VERT_DEF(Shaders_LineDebugVert_spv), .num_uniform_buffers = 1 }); CHECK_CREATE(vertex_shader, "Terrain Triangle Vertex Shader")
+    SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_LineDebugFrag_spv)});                            CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
+
+    const SDL_GPUVertexAttribute vertex_attributes[2] = {
+        { .location = 0, .buffer_slot = 0, .format = VFORMAT_FLOAT3, .offset = 0 },
+        { .location = 1, .buffer_slot = 0, .format = VFORMAT_UINT, .offset = sizeof(f32) * 3 }
+    };
+
+    g_TerrainTrianglePipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){
+        .vertex_shader   = vertex_shader,
+        .fragment_shader = fragment_shader,
+        .primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+        .target_info     = (SDL_GPUGraphicsPipelineTargetInfo){
+            .num_color_targets         = 1,
+            .color_target_descriptions = &(SDL_GPUColorTargetDescription){ .format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT },
+            .depth_stencil_format      = SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+            .has_depth_stencil_target  = true
+        },
+        .rasterizer_state = (SDL_GPURasterizerState){ .cull_mode = SDL_GPU_CULLMODE_NONE },
+        .depth_stencil_state = (SDL_GPUDepthStencilState){
+            .enable_depth_test  = true,
+            .enable_depth_write = true,
+            .compare_op         = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL
+        },
+        .multisample_state = (SDL_GPUMultisampleState){ .sample_count = g_RenderState.sceneSampleCount },
+        .vertex_input_state = (SDL_GPUVertexInputState){
+            .vertex_buffer_descriptions = &(SDL_GPUVertexBufferDescription){
+                0, sizeof(ALineVertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
+            },
+            .num_vertex_buffers    = 1,
+            .vertex_attributes     = vertex_attributes,
+            .num_vertex_attributes = ARRAY_SIZE(vertex_attributes)
+        }
+    });
+    CHECK_CREATE(g_TerrainTrianglePipeline, "Terrain Triangle Pipeline")
+
+    SDL_GPUShader* depth_fragment_shader = SDL_CreateGPUShader(g_GPUDevice, &(SDL_GPUShaderCreateInfo){
+        .code = Shaders_TerrainDepthOnlyFrag_spv,
+        .code_size = Shaders_TerrainDepthOnlyFrag_spv_size,
+        .format = shaderformat,
+        .stage = SDL_GPU_SHADERSTAGE_FRAGMENT,
+        .entrypoint = "frag",
+        .num_uniform_buffers = 0
+    });
+    CHECK_CREATE(depth_fragment_shader, "Terrain Triangle Depth Fragment Shader")
+    g_TerrainTriangleDepthPipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){
+        .vertex_shader   = vertex_shader,
+        .fragment_shader = depth_fragment_shader,
+        .primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+        .target_info     = (SDL_GPUGraphicsPipelineTargetInfo){
+            .num_color_targets         = 1,
+            .color_target_descriptions = &(SDL_GPUColorTargetDescription){ .format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT },
+            .depth_stencil_format      = SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+            .has_depth_stencil_target  = true
+        },
+        .rasterizer_state = (SDL_GPURasterizerState){ .cull_mode = SDL_GPU_CULLMODE_NONE },
+        .depth_stencil_state = (SDL_GPUDepthStencilState){
+            .enable_depth_test  = true,
+            .enable_depth_write = true,
+            .compare_op         = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL
+        },
+        .multisample_state = (SDL_GPUMultisampleState){ .sample_count = SDL_GPU_SAMPLECOUNT_1 },
+        .vertex_input_state = (SDL_GPUVertexInputState){
+            .vertex_buffer_descriptions = &(SDL_GPUVertexBufferDescription){
+                0, sizeof(ALineVertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
+            },
+            .num_vertex_buffers    = 1,
+            .vertex_attributes     = vertex_attributes,
+            .num_vertex_attributes = ARRAY_SIZE(vertex_attributes)
+        }
+    });
+    CHECK_CREATE(g_TerrainTriangleDepthPipeline, "Terrain Triangle Depth Pipeline")
+    SDL_ReleaseGPUShader(g_GPUDevice, vertex_shader);
+    SDL_ReleaseGPUShader(g_GPUDevice, fragment_shader);
+    SDL_ReleaseGPUShader(g_GPUDevice, depth_fragment_shader);
+}
 
 // editor selection outline: the selected primitive re-draws as an inverted hull, the
 // vertex shader grows it along the normals (ported from the old engine's outline)
@@ -833,6 +921,7 @@ void InitRenderPipelines(void)
     InitShadows();
     InitLinePipeline();
     InitGizmoLinePipeline();
+    InitTerrainTrianglePipeline();
     InitOutlinePipeline();
     InitSlugPipeline();
     InitUIShapePipeline();
@@ -861,6 +950,8 @@ void DestroyRenderPipelines(void)
     if (g_RenderState.linePipeline)          SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.linePipeline);
     if (g_OutlinePipeline)                   SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_OutlinePipeline);
     if (g_GizmoLinePipeline)                 SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_GizmoLinePipeline);
+    if (g_TerrainTrianglePipeline)           SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_TerrainTrianglePipeline);
+    if (g_TerrainTriangleDepthPipeline)      SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_TerrainTriangleDepthPipeline);
     if (g_RenderState.slugPipeline)          SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.slugPipeline);
     if (g_RenderState.slug2DPipeline)        SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.slug2DPipeline);
     if (g_RenderState.slugDepthPipeline)     SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.slugDepthPipeline);

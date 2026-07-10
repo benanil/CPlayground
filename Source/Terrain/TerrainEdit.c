@@ -14,11 +14,11 @@
 
 #define TERRAIN_EDIT_VALUES (TERRAIN_EDIT_CELLS * TERRAIN_EDIT_CELLS * TERRAIN_EDIT_CELLS)
 #define TERRAIN_EDIT_CHUNKS_MAGIC 0x4B4E4843u // "CHNK"
-#define TERRAIN_EDIT_CHUNKS_VERSION 1u
+#define TERRAIN_EDIT_CHUNKS_VERSION 2u
 
 typedef struct TerrainEditChunk_
 {
-    s8 delta[TERRAIN_EDIT_VALUES];     // quantized sdf offsets, same scale as the field
+    s16 delta[TERRAIN_EDIT_VALUES];    // quantized sdf offsets, same scale as the field
     // paint per voxel: layer A (4 bits) | layer B (4 bits) | blend weight (8 bits,
     // 0 = pure A, 255 = pure B). index 0 is the procedural default, painting
     // accumulates pressure into the weight so transitions stay smooth gradients
@@ -38,9 +38,16 @@ typedef struct TerrainEditChunkFileHeader_
 typedef struct TerrainEditChunkFileRecord_
 {
     s32 x, y, z;
-    s8  delta[TERRAIN_EDIT_VALUES];
+    s16 delta[TERRAIN_EDIT_VALUES];
     u16 material[TERRAIN_EDIT_VALUES];
 } TerrainEditChunkFileRecord;
+
+typedef struct TerrainEditChunkFileRecordV1_
+{
+    s32 x, y, z;
+    s8  delta[TERRAIN_EDIT_VALUES];
+    u16 material[TERRAIN_EDIT_VALUES];
+} TerrainEditChunkFileRecordV1;
 
 typedef struct TerrainEditState_
 {
@@ -135,6 +142,14 @@ static void TerrainEditGrowBounds(s32 mn[3], s32 mx[3])
     }
 }
 
+static s8 TerrainEdit_ApplyDelta(s8 sample, s16 delta)
+{
+    s32 v = (s32)sample + (s32)delta;
+    v = Clamps32(v, -127, 127);
+    if (v == 0 && delta != 0) v = delta < 0 ? -1 : 1;
+    return (s8)v;
+}
+
 void TerrainEdit_OverlayChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* samples)
 {
     if (!g_TerrainEdit.initialized || !g_TerrainEdit.boundsValid) return;
@@ -167,10 +182,9 @@ void TerrainEdit_OverlayChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* samples)
             lastEx = ex; lastEy = ey; lastEz = ez;
         }
         if (!last) continue;
-        s8 d = last->delta[((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15)];
+        s16 d = last->delta[((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15)];
         if (d == 0) continue;
-        s32 v = (s32)*dst + (s32)d;
-        *dst = (s8)Clamps32(v, -127, 127);
+        *dst = TerrainEdit_ApplyDelta(*dst, d);
     }
     SDL_UnlockMutex(g_TerrainEdit.lock);
 }
@@ -200,7 +214,7 @@ f32 TerrainEdit_DeltaAt(s32 wx, s32 wy, s32 wz)
 
     SDL_LockMutex(g_TerrainEdit.lock);
     TerrainEditChunk* chunk = TerrainEditFind(wx >> 4, wy >> 4, wz >> 4);
-    s8 delta = chunk ? chunk->delta[((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15)] : 0;
+    s16 delta = chunk ? chunk->delta[((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15)] : 0;
     SDL_UnlockMutex(g_TerrainEdit.lock);
     return (f32)delta * (TERRAIN_SDF_CLAMP / 127.0f);
 }
@@ -228,6 +242,13 @@ static void TerrainBrushWalk(float3 center, f32 radius, f32 softness, f32 param,
 {
     s32 mn[3] = { (s32)Floorf32(center.x - radius), (s32)Floorf32(center.y - radius), (s32)Floorf32(center.z - radius) };
     s32 mx[3] = { (s32)Ceilf(center.x + radius), (s32)Ceilf(center.y + radius), (s32)Ceilf(center.z + radius) };
+    mn[1] = Maxs32(mn[1], (s32)Floorf32(TERRAIN_BEDROCK_Y) + 1);
+    if (mx[1] <= (s32)Floorf32(TERRAIN_BEDROCK_Y))
+    {
+        outMin->x = (f32)mn[0]; outMin->y = (f32)mn[1]; outMin->z = (f32)mn[2];
+        outMax->x = (f32)mx[0]; outMax->y = (f32)mx[1]; outMax->z = (f32)mx[2];
+        return;
+    }
     f32 core = radius * (1.0f - Clampf32(softness, 0.0f, 1.0f));
 
     SDL_LockMutex(g_TerrainEdit.lock);
@@ -272,7 +293,7 @@ static void TerrainBrushSculpt(TerrainEditChunk* chunk, u32 idx, f32 weight, f32
     f32 centerPressure = weight * weight;
     f32 d = -strength * centerPressure * (127.0f / TERRAIN_SDF_CLAMP);
     s32 v = (s32)chunk->delta[idx] + (s32)(d >= 0.0f ? d + 0.5f : d - 0.5f);
-    chunk->delta[idx] = (s8)Clamps32(v, -127, 127);
+    chunk->delta[idx] = (s16)Clamps32(v, -32767, 32767);
 }
 
 // pressure painting: the brush pushes the voxel's A/B blend weight toward the painted
@@ -405,10 +426,11 @@ bool TerrainEdit_LoadChunks(const char* path)
     TerrainEditChunkFileHeader* header = (TerrainEditChunkFileHeader*)bytes;
     if (ok)
         ok = header->magic == TERRAIN_EDIT_CHUNKS_MAGIC &&
-             header->version == TERRAIN_EDIT_CHUNKS_VERSION &&
+             (header->version == 1u || header->version == TERRAIN_EDIT_CHUNKS_VERSION) &&
              header->valuesPerChunk == TERRAIN_EDIT_VALUES;
+    size_t recordSize = header->version == 1u ? sizeof(TerrainEditChunkFileRecordV1) : sizeof(TerrainEditChunkFileRecord);
     if (ok)
-        ok = header->rawSize == (u64)header->chunkCount * sizeof(TerrainEditChunkFileRecord) &&
+        ok = header->rawSize == (u64)header->chunkCount * recordSize &&
              fileSize == sizeof(TerrainEditChunkFileHeader) + header->compressedSize;
 
     if (!ok)
@@ -418,10 +440,10 @@ bool TerrainEdit_LoadChunks(const char* path)
         return false;
     }
 
-    TerrainEditChunkFileRecord* records = NULL;
+    void* records = NULL;
     if (header->rawSize)
     {
-        records = (TerrainEditChunkFileRecord*)SDL_malloc((size_t)header->rawSize + 16u);
+        records = SDL_malloc((size_t)header->rawSize + 16u);
         if (!records)
         {
             AX_WARN("terrain chunks load failed: out of memory");
@@ -441,14 +463,38 @@ bool TerrainEdit_LoadChunks(const char* path)
     SDL_LockMutex(g_TerrainEdit.lock);
     for (u32 i = 0; i < header->chunkCount && ok; i++)
     {
-        TerrainEditChunkFileRecord* record = &records[i];
-        TerrainEditChunk* chunk = TerrainEditGetOrCreate(record->x, record->y, record->z);
+        s32 x, y, z;
+        const u16* material;
+        if (header->version == 1u)
+        {
+            const TerrainEditChunkFileRecordV1* record = &((const TerrainEditChunkFileRecordV1*)records)[i];
+            x = record->x; y = record->y; z = record->z;
+            material = record->material;
+        }
+        else
+        {
+            const TerrainEditChunkFileRecord* record = &((const TerrainEditChunkFileRecord*)records)[i];
+            x = record->x; y = record->y; z = record->z;
+            material = record->material;
+        }
+
+        TerrainEditChunk* chunk = TerrainEditGetOrCreate(x, y, z);
         ok = chunk != NULL;
         if (!ok) break;
-        MemCopy(chunk->delta, record->delta, sizeof(record->delta));
-        MemCopy(chunk->material, record->material, sizeof(record->material));
-        s32 mn[3] = { record->x * 16, record->y * 16, record->z * 16 };
-        s32 mx[3] = { record->x * 16 + 15, record->y * 16 + 15, record->z * 16 + 15 };
+        if (header->version == 1u)
+        {
+            const s8* delta = ((const TerrainEditChunkFileRecordV1*)records)[i].delta;
+            for (u32 d = 0; d < TERRAIN_EDIT_VALUES; d++)
+                chunk->delta[d] = (s16)delta[d];
+        }
+        else
+        {
+            const TerrainEditChunkFileRecord* record = &((const TerrainEditChunkFileRecord*)records)[i];
+            MemCopy(chunk->delta, record->delta, sizeof(record->delta));
+        }
+        MemCopy(chunk->material, material, sizeof(chunk->material));
+        s32 mn[3] = { x * 16, y * 16, z * 16 };
+        s32 mx[3] = { x * 16 + 15, y * 16 + 15, z * 16 + 15 };
         TerrainEditGrowBounds(mn, mx);
     }
     SDL_UnlockMutex(g_TerrainEdit.lock);

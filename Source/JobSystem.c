@@ -389,6 +389,11 @@ void JobSystem_WaitJob(JobSystem* jobs, JobHandle handle)
     }
 }
 
+s32 JobSystem_IsJobDone(const JobSystem* jobs, JobHandle handle)
+{
+    return !JobSystem_IsHandleActive(jobs, handle);
+}
+
 void JobSystem_Wait(JobSystem* jobs)
 {
     if (!jobs) return;

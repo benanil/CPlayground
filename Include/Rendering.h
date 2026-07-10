@@ -101,6 +101,22 @@ void RendererClearOutlineTarget(void);
 // submits its lines every frame, count 0 hides it
 void RendererSetGizmoLines(const ALineVertex* vertices, u32 count);
 
+#define MAX_TERRAIN_TRIANGLE_VERTICES (512u * 1024u)
+// world space filled terrain triangles submitted by the new terrain path each frame.
+// count is a vertex count and must be a multiple of 3 for complete triangles.
+void RendererSetTerrainTriangles(const ALineVertex* vertices, u32 count);
+
+#define MAX_TERRAIN_CHUNK_DRAWS 8192u
+// static terrain chunk meshes resident in the TerrainVertex geometry heap: each draw is
+// a vertex range (ALineVertex layout, non-indexed triangles) drawn straight from the
+// heap's GPU mirror, no per-frame copy. submitted every frame, count 0 hides them.
+typedef struct TerrainChunkDraw_
+{
+    u32 first;
+    u32 count;
+} TerrainChunkDraw;
+void RendererSetTerrainChunkDraws(const TerrainChunkDraw* draws, u32 count);
+
 u32 RendererGetLightCount(void);
 
 RenderLightDebugInfo RendererGetLightDebugInfo(void);

@@ -10,10 +10,9 @@
 #define TD_WEIGHT       0.5f
 #define TD_MULT         0.45f
 
-// world y of the solid bedrock floor. nothing below this is ever air: the base field is
-// clamped solid and the sample path re-forces it after sculpt overlay, so a dug hole can
-// never break through into the unstreamed void below and drop the player out of the world.
-#define TD_BEDROCK_Y   (-64.0f)
+// TERRAIN_BEDROCK_Y is deliberately NOT a multiple of the lod chunk sizes (16/32/64/128):
+// if the floor landed on a chunk boundary the surface would fall on the seam with the
+// all-solid chunk below it and mesh degenerately, leaving a hole at the bottom of a deep dig.
 // extra mountain height toward the island center (island mode only). elevation above the
 // base is scaled by up to (1 + this) at the center, tapering to 1 at the coast.
 #define TD_CENTER_GAIN  0.75f
@@ -28,6 +27,7 @@ static TerrainGenParams td_Params = {
     .island = false,
     .islandRadius = 250.0f, .islandFalloff = 110.0f,
     .fixedArea = false,
+    .fixedWorldSize = TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
 };
 // seed turns into a large noise domain offset, world coords stay near the origin
 // so the s8 quantization and chunk keys are unaffected
@@ -266,6 +266,7 @@ TerrainGenParams Terrain_DefaultGenParams(void)
         .island = false,
         .islandRadius = 250.0f, .islandFalloff = 110.0f,
         .fixedArea = false,
+        .fixedWorldSize = TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
     };
     return defaults;
 }
@@ -339,24 +340,31 @@ static v128f TerrainDensity_CarveV(v128f x, v128f y, v128f z)
     return VecMulf(TerrainNoiseSimplex2V(nx, nz), td_Params.carveAmplitude);
 }
 
-f32 TerrainDensity_SDF(f32 x, f32 y, f32 z)
+// raw analytic field: terrain heightfield + 3D carve, no bedrock floor, no sculpt. the
+// floor is a min applied by the callers as their final step so sculpt can never defeat it.
+static f32 TerrainDensity_Raw(f32 x, f32 y, f32 z)
 {
     f32 islandFade = TerrainDensity_IslandFade(x, z);
     f32 carve = TerrainDensity_Carve(x, y, z) * (1.0f - islandFade);
-    f32 sdf = (y - TerrainDensity_Height(x, z)) + carve;
-    // solid bedrock floor: min with (y - floor) forces everything at/below TD_BEDROCK_Y
-    // negative (solid), so the world has no bottom to fall through
-    return Minf32(sdf, y - TD_BEDROCK_Y);
+    return (y - TerrainDensity_Height(x, z)) + carve;
+}
+
+f32 TerrainDensity_SDF(f32 x, f32 y, f32 z)
+{
+    // solid bedrock floor: min with (y - surface) keeps integer samples at/below
+    // TERRAIN_BEDROCK_Y negative (solid), so the world has no bottom to fall through
+    return Minf32(TerrainDensity_Raw(x, y, z), y - TERRAIN_BEDROCK_SURFACE_Y);
 }
 
 f32 TerrainDensity_At(f32 x, f32 y, f32 z)
 {
-    f32 sdf = TerrainDensity_SDF(x, y, z);
-    // add sculpt edits so grass follows painted/sculpted terrain; the overlay is applied
-    // the same way in TerrainDensity_SampleChunk. skip the map probe when nothing is edited.
+    f32 density = TerrainDensity_Raw(x, y, z);
+    // sculpt edits raise/lower the field so grass follows painted/sculpted terrain, added
+    // BEFORE the floor min so a dig can never punch through the bedrock (floor always wins).
+    // skip the map probe when nothing is edited.
     if (TerrainEdit_NumChunks() != 0u)
-        sdf += TerrainEdit_DeltaAt((s32)Floorf32(x + 0.5f), (s32)Floorf32(y + 0.5f), (s32)Floorf32(z + 0.5f));
-    return sdf;
+        density += TerrainEdit_DeltaAt((s32)Floorf32(x + 0.5f), (s32)Floorf32(y + 0.5f), (s32)Floorf32(z + 0.5f));
+    return Minf32(density, y - TERRAIN_BEDROCK_SURFACE_Y);
 }
 
 f32 TerrainDensity_SurfaceY(f32 x, f32 z, f32 startY, float3* outNormal)
@@ -391,7 +399,7 @@ void TerrainDensity_GetYRange(f32* outMin, f32* outMax)
     f32 lo = td_Params.baseHeight + minElev - td_Params.carveAmplitude - 2.0f;
     f32 hi = td_Params.baseHeight + maxElev + td_Params.carveAmplitude + 2.0f;
     // stream a chunk past the bedrock floor so the solid floor itself always meshes
-    lo = Minf32(lo, TD_BEDROCK_Y - (f32)TERRAIN_CHUNK_CELLS);
+    lo = Minf32(lo, TERRAIN_BEDROCK_Y - (f32)TERRAIN_CHUNK_CELLS);
     if (td_Params.island)
     {
         lo = Minf32(lo, td_Params.seaLevel - td_Params.carveAmplitude - 2.0f);
@@ -408,7 +416,9 @@ static s8 TerrainDensity_Quantize(f32 sdf)
     f32 q = sdf * (127.0f / TERRAIN_SDF_CLAMP);
     if (q >  127.0f) q =  127.0f;
     if (q < -127.0f) q = -127.0f;
-    return (s8)(q >= 0.0f ? q + 0.5f : q - 0.5f);
+    s32 v = (s32)(q >= 0.0f ? q + 0.5f : q - 0.5f);
+    if (v == 0) v = q < 0.0f ? -1 : 1;
+    return (s8)v;
 }
 
 void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
@@ -452,8 +462,6 @@ void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
             v128f carve = VecMul(TerrainDensity_CarveV(wx, wy, wz), VecSub(VecOne(), TerrainDensity_IslandFadeV(wx, wz)));
             sdf = VecAdd(sdf, VecSelect(VecZero(), carve, carveMask));
         }
-        // solid bedrock floor (matches TerrainDensity_SDF)
-        sdf = VecMin(sdf, VecSubf(wy, TD_BEDROCK_Y));
         f32 s[4];
         VecStore(s, sdf);
         for (u32 i = 0; i < n; i++) *dst++ = TerrainDensity_Quantize(s[i]);
@@ -463,13 +471,17 @@ void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
     // lod sees identical values at shared sample positions
     TerrainEdit_OverlayChunk(cx, cy, cz, lod, out);
 
-    // re-force the bedrock floor after the sculpt overlay: any sample at or below the
-    // floor is hard solid, so a dug hole can never punch through the bottom of the world
+    // bedrock floor, applied last so sculpt can never dig through it. each y-plane clamps
+    // its samples toward solid by the quantized (worldY - floor): above the floor that
+    // threshold saturates to +127 and the min is a no-op, below it drives samples solid.
     for (s32 y = 0; y < TERRAIN_SAMPLES_AXIS; y++)
     {
-        if (oy + (f32)(y - 1) * voxel > TD_BEDROCK_Y) continue;
+        s32 floorQ = TerrainDensity_Quantize(oy + (f32)(y - 1) * voxel - TERRAIN_BEDROCK_SURFACE_Y);
         for (s32 z = 0; z < TERRAIN_SAMPLES_AXIS; z++)
         for (s32 x = 0; x < TERRAIN_SAMPLES_AXIS; x++)
-            out[(z * TERRAIN_SAMPLES_AXIS + y) * TERRAIN_SAMPLES_AXIS + x] = -127;
+        {
+            s8* p = &out[(z * TERRAIN_SAMPLES_AXIS + y) * TERRAIN_SAMPLES_AXIS + x];
+            *p = (s8)Mins32(*p, floorQ);
+        }
     }
 }

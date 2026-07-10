@@ -9,6 +9,7 @@
 #include "Include/Memory.h"
 #include "Include/Scene.h"
 #include "Include/Terrain.h"
+#include "Source/Terrain/TerrainInternal.h" // TerrainVertex stride for the terrain geometry heap mirror
 
 #define RESIZE_RELEASE_DELAY 4u
 
@@ -118,6 +119,8 @@ OutlineTarget g_OutlineTargets[MAX_OUTLINE_TARGETS];
 u32           g_NumOutlineTargets;
 ALineVertex   g_GizmoVertices[MAX_GIZMO_VERTICES];
 u32           g_NumGizmoVertices;
+ALineVertex   g_TerrainTriangleVertices[MAX_TERRAIN_TRIANGLE_VERTICES];
+u32           g_NumTerrainTriangleVertices;
 
 static void ReleaseFrameTextureSet(FrameTextureSet* set)
 {
@@ -186,6 +189,28 @@ void RendererSetGizmoLines(const ALineVertex* vertices, u32 count)
     if (count > 0 && vertices)
         MemCopy(g_GizmoVertices, vertices, count * sizeof(ALineVertex));
     g_NumGizmoVertices = vertices ? count : 0;
+}
+
+void RendererSetTerrainTriangles(const ALineVertex* vertices, u32 count)
+{
+    count = Minu32(count, MAX_TERRAIN_TRIANGLE_VERTICES);
+    count -= count % 3u;
+    if (count > 0 && vertices)
+        MemCopy(g_TerrainTriangleVertices, vertices, count * sizeof(ALineVertex));
+    g_NumTerrainTriangleVertices = vertices ? count : 0;
+}
+
+// per-chunk vertex ranges resident in the terrain geometry heap, drawn without any
+// per-frame vertex copy (the heap's GPU mirror is flushed by UploadDirtyGeometry)
+TerrainChunkDraw g_TerrainChunkDraws[MAX_TERRAIN_CHUNK_DRAWS];
+u32              g_NumTerrainChunkDraws;
+
+void RendererSetTerrainChunkDraws(const TerrainChunkDraw* draws, u32 count)
+{
+    count = Minu32(count, MAX_TERRAIN_CHUNK_DRAWS);
+    if (count > 0 && draws)
+        MemCopy(g_TerrainChunkDraws, draws, count * sizeof(TerrainChunkDraw));
+    g_NumTerrainChunkDraws = draws ? count : 0;
 }
 
 void RendererSetOutlineTargets(const OutlineTarget* targets, u32 count)
@@ -290,13 +315,14 @@ static void UploadDirtyGeometry(void)
     if (!g_RenderState.indexBuffer) return;
 
     SDL_GPUBuffer* gpuBuffers[GeometryBuffer_Count] = {
-        g_RenderState.skinned.vertexBuffer, g_RenderState.surface.vertexBuffer, g_RenderState.indexBuffer, NULL, NULL
+        g_RenderState.skinned.vertexBuffer, g_RenderState.surface.vertexBuffer, g_RenderState.indexBuffer,
+        g_RenderState.terrainChunkVertexBuffer, NULL, NULL
     };
     const u8* sources[GeometryBuffer_Count] = {
         (const u8*)gGFX.SkinnedVertexBuffer, (const u8*)gGFX.SurfaceVertexBuffer, (const u8*)gGFX.IndexBuffer,
-        NULL, NULL
+        (const u8*)gGFX.TerrainVertexBuffer, NULL, NULL
     };
-    const size_t strides[GeometryBuffer_Count] = { sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), 0u, 0u };
+    const size_t strides[GeometryBuffer_Count] = { sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), sizeof(TerrainVertex), 0u, 0u };
 
     // Snapshot and clear the queue under the lock, then do the (slower) GPU copies without holding
     // it, so a baking worker thread never spins waiting on a transfer. The source ranges are stable
@@ -337,6 +363,8 @@ void InitBuffers(void)
     g_RenderState.lineBuffer           = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_LINE_COUNT   , BVertexBit     | BWriteComputeBit, "CPLineVertexBuffer");
     g_RenderState.lineDrawArgsBuffer   = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
     g_RenderState.gizmoLineBuffer      = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
+    g_RenderState.terrainTriangleBuffer = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_TERRAIN_TRIANGLE_VERTICES, BVertexBit, "CPTerrainTriangleBuffer");
+    g_RenderState.terrainChunkVertexBuffer = CreateBuffer(NULL, sizeof(TerrainVertex) * TERRAIN_MAX_VERTICES, BVertexBit, "CPTerrainChunkVertexBuffer");
     g_RenderState.lightBuffer          = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
     g_RenderState.lightVisibilityBuffer = CreateBuffer(NULL, sizeof(u32) * MAX_LIGHT_COUNT          , BWriteComputeBit, "CPLightVisibilityBuffer");
     // Forward+ tiled light grid. lightGrid holds a {offset,count} per tile; lightIndex is a
@@ -804,6 +832,8 @@ void DestroyPipeline(void)
     if (g_RenderState.indexBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.indexBuffer);
     if (g_RenderState.lineBuffer)               SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineBuffer);
     if (g_RenderState.lineDrawArgsBuffer)       SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineDrawArgsBuffer);
+    if (g_RenderState.terrainTriangleBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainTriangleBuffer);
+    if (g_RenderState.terrainChunkVertexBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainChunkVertexBuffer);
     if (g_RenderState.lightBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightBuffer);
     if (g_RenderState.lightVisibilityBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightVisibilityBuffer);
     if (g_RenderState.lightGridBuffer)          SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightGridBuffer);

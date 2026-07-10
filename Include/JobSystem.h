@@ -24,6 +24,8 @@ JobHandle JobSystem_Execute(JobSystem* jobs, JobSystemFn fn, void* userData);
 
 // Waits until this specific job has finished. Invalid/stale handles return immediately.
 void JobSystem_WaitJob(JobSystem* jobs, JobHandle handle);
+// Nonblocking status query. Invalid/stale handles are considered done.
+s32 JobSystem_IsJobDone(const JobSystem* jobs, JobHandle handle);
 
 // Runs available work on the calling thread while waiting for all queued/running
 // tasks in this JobSystem to finish.

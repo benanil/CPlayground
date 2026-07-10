@@ -193,12 +193,6 @@
 						<Path>Extern/c89atomic.h</Path>
 					</File>
 					<File>
-						<Path>Extern/dynarray.c</Path>
-					</File>
-					<File>
-						<Path>Extern/dynarray.h</Path>
-					</File>
-					<File>
 						<Path>Extern/ufbx.c</Path>
 					</File>
 					<File>
@@ -515,10 +509,10 @@
 						<Path>Shaders/ShaderCompile.bat</Path>
 					</File>
 					<File>
-						<Path>Shaders/Math.hlsl</Path>
+						<Path>Shaders/LineDebug.hlsl</Path>
 					</File>
 					<File>
-						<Path>Shaders/LineDebug.hlsl</Path>
+						<Path>Shaders/Math.hlsl</Path>
 					</File>
 					<File>
 						<Path>Shaders/CompileShaders.py</Path>
@@ -540,9 +534,6 @@
 					</File>
 					<File>
 						<Path>Shaders/Outline.hlsl</Path>
-					</File>
-					<File>
-						<Path>Shaders/Terrain.hlsl</Path>
 					</File>
 					<File>
 						<Path>Shaders/TerrainDepthOnly.hlsl</Path>
@@ -577,6 +568,12 @@
 					<File>
 						<Path>Shaders/SurfaceForward.hlsl</Path>
 					</File>
+					<File>
+						<Path>Shaders/Grass.hlsl</Path>
+					</File>
+					<File>
+						<Path>Shaders/TerrainForward.hlsl</Path>
+					</File>
 				</Children>
 			</Folder>
 			<Folder>
@@ -596,7 +593,35 @@
 						<Recursive>true</Recursive>
 						<ShowEmptyFolders>true</ShowEmptyFolders>
 						<IncludeFilesWithoutExt>false</IncludeFilesWithoutExt>
-						<Children></Children>
+						<Children>
+							<File>
+								<Path>Source/Rendering/Graphics.c</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/Rendering.c</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/RenderingCompute.c</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/RenderingDraw.c</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/RenderingInternal.h</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/RenderingPipelines.c</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/RenderSet.c</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/Shadow.c</Path>
+							</File>
+							<File>
+								<Path>Source/Rendering/bend_sss_cpu.h</Path>
+							</File>
+						</Children>
 					</Folder>
 					<Folder>
 						<Path>Source/UI</Path>
@@ -636,7 +661,68 @@
 						<Recursive>true</Recursive>
 						<ShowEmptyFolders>true</ShowEmptyFolders>
 						<IncludeFilesWithoutExt>false</IncludeFilesWithoutExt>
-						<Children></Children>
+						<Children>
+							<File>
+								<Path>Source/Terrain/Terrain.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TerrainDensity.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TerrainEdit.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TerrainInternal.h</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelMesher.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnity.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnity.h</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityJobs.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityMesh.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityPool.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityOctree.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityUpdates.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityWorld.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityTasks.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelTables.h</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityCollision.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityVoxelWorld.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityMesher.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityExample.c</Path>
+							</File>
+							<File>
+								<Path>Source/Terrain/TransvoxelUnityScheduler.c</Path>
+							</File>
+						</Children>
 					</Folder>
 					<Folder>
 						<Path>Source/Windows</Path>
@@ -702,9 +788,16 @@
 					<File>
 						<Path>Source/JobSystem.c</Path>
 					</File>
-					<File>
-						<Path>Source/MostUsed.py</Path>
-					</File>
+					<Folder>
+						<Path>Source/DataStructures</Path>
+						<IncludeFilter>*.c,*.cc,*.cpp,*.c++,*.cp,*.cxx,*.h,*.hh,*.hpp,*.h++,*.hp,*.hxx,*.inl,*.cs,*.rs,*.java,*.jav,*.js,*.jsc,*.jsx,*.json,*.cls,*.py,*.rpy,*.php,*.php3,*.phl,*.phtml,*.rhtml,*.tpl,*.phps,*.lua,*.html,*.html5,*.htm,*.xml,*.xaml,*.css,*.ssi,*.haml,*.yaml,*.bat,*.wbf,*.wbt,*.txt,*.cmake,*.make,*.makefile,*.mak,*.mk,*.sh,*.bash,*.csv,*.asp,*.pl,*.mac,*.ws,*.vbs,*.perl,*.src,*.rss,*.inc,*.f,*.go,*.prl,*.plx,*.rb,*.lsp,*.lpx,*.ps1,*.command,*.cbl,*.cob,*.qs,*.wxs,*.ph,*.msc,*.glsl,*.hlsl,*.fx,*.vert,*.tesc,*.tese,*.geom,*.frag,*.comp,*.pssl,*.scons,*.cu,*.jai,</IncludeFilter>
+						<ExcludeFilter>Extern/SDL3/examples,Extern/SDL3/test,</ExcludeFilter>
+						<SyncFiles>true</SyncFiles>
+						<Recursive>true</Recursive>
+						<ShowEmptyFolders>true</ShowEmptyFolders>
+						<IncludeFilesWithoutExt>false</IncludeFilesWithoutExt>
+						<Children></Children>
+					</Folder>
 				</Children>
 			</Folder>
 			<Folder>
@@ -813,6 +906,9 @@
 				<IncludeFilesWithoutExt>false</IncludeFilesWithoutExt>
 				<Children></Children>
 			</Folder>
+			<File>
+				<Path>CMakeLists.txt</Path>
+			</File>
 			<Folder>
 				<Path>Build</Path>
 				<IncludeFilter>*.c,*.cc,*.cpp,*.c++,*.cp,*.cxx,*.h,*.hh,*.hpp,*.h++,*.hp,*.hxx,*.inl,*.cs,*.rs,*.java,*.jav,*.js,*.jsc,*.jsx,*.json,*.cls,*.py,*.rpy,*.php,*.php3,*.phl,*.phtml,*.rhtml,*.tpl,*.phps,*.lua,*.html,*.html5,*.htm,*.xml,*.xaml,*.css,*.ssi,*.haml,*.yaml,*.bat,*.wbf,*.wbt,*.txt,*.cmake,*.make,*.makefile,*.mak,*.mk,*.sh,*.bash,*.csv,*.asp,*.pl,*.mac,*.ws,*.vbs,*.perl,*.src,*.rss,*.inc,*.f,*.go,*.prl,*.plx,*.rb,*.lsp,*.lpx,*.ps1,*.command,*.cbl,*.cob,*.qs,*.wxs,*.ph,*.msc,*.glsl,*.hlsl,*.fx,*.vert,*.tesc,*.tese,*.geom,*.frag,*.comp,*.pssl,*.scons,*.cu,*.jai,</IncludeFilter>
@@ -823,9 +919,6 @@
 				<IncludeFilesWithoutExt>false</IncludeFilesWithoutExt>
 				<Children></Children>
 			</Folder>
-			<File>
-				<Path>CMakeLists.txt</Path>
-			</File>
 		</Children>
 	</Workspace>
 </N10X>

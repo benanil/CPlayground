@@ -145,10 +145,12 @@ static u32 TVEmitVertex(TerrainMeshOut* out, const u32 q[3], v128f normal, f32 v
     u32 idxA, idxB, wA;
     if (matIndex[0] == 0 && matIndex[1] == 0)
     {
-        if (sandBlend >= 0.998f)      { idxA = TV_SAND_LAYER; idxB = TV_SAND_LAYER; wA = 255u; }
-        else if (sandBlend > 0.002f)  { idxA = TV_SAND_LAYER; idxB = TV_DIRT_LAYER;
-                                        wA = (u32)(sandBlend * 255.0f + 0.5f); }
-        else                          { idxA = procA; idxB = procB; wA = procWeightA; }
+        // unpainted: land pick with sand folded over it near the water line. a single flat
+        // select instead of a ladder; full sand falls out on its own when wA reaches 255.
+        u32 sandy = (u32)(sandBlend > 0.002f);
+        idxA = sandy ? TV_SAND_LAYER : procA;
+        idxB = sandy ? TV_DIRT_LAYER : procB;
+        wA   = sandy ? (u32)(sandBlend * 255.0f + 0.5f) : procWeightA;
     }
     else
     {

@@ -76,7 +76,10 @@ void RenderDepth(SDL_GPUCommandBuffer* cmd, const DepthPassContext* ctx)
 
     // terrain draws into the main depth prepass only, it does not cast shadows yet
     if ((ctx->flags & DepthPassFlag_AnyShadow) == 0)
+    {
         Terrain_RenderDepth(cmd, pass, ctx->viewProj);
+        RenderTerrainTrianglesDepth(cmd, pass, ctx->viewProj);
+    }
 
     SDL_EndGPURenderPass(pass);
 }
@@ -156,7 +159,7 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
 {
     Scene* scene = g_ActiveScene;
     u32 totalGroups = scene->skinnedSet.numGroups + scene->surfaceSet.numGroups + scene->transparentSurfaceSet.numGroups;
-    if (totalGroups == 0)
+    if (totalGroups == 0 && g_NumTerrainTriangleVertices == 0 && g_NumTerrainChunkDraws == 0)
         return;
 
     struct {
@@ -229,6 +232,8 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
                             &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
 
     Terrain_RenderForward(cmd, pass, ctx->viewProj, width, height);
+    RenderTerrainTriangles(cmd, pass, ctx->viewProj);
+    Terrain_RenderGrass(cmd, pass);
 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSurfaceSet, &scene->transparentSurfaceBuffers,
                             g_RenderState.surface.transparentForwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
@@ -263,6 +268,58 @@ void RenderGizmo(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
     SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
     SDL_DrawGPUPrimitives(pass, g_NumGizmoVertices, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
+}
+
+// heap-resident chunk ranges drawn straight from the geometry heap's GPU mirror; the
+// caller has already bound the terrain triangle pipeline and pushed the viewProj uniform
+static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
+{
+    if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainChunkVertexBuffer) return;
+
+    SDL_GPUBufferBinding heapBinding = { g_RenderState.terrainChunkVertexBuffer, 0 };
+    SDL_BindGPUVertexBuffers(pass, 0, &heapBinding, 1);
+    for (u32 i = 0; i < g_NumTerrainChunkDraws; i++)
+        SDL_DrawGPUPrimitives(pass, g_TerrainChunkDraws[i].count, 1, g_TerrainChunkDraws[i].first, 0);
+}
+
+void RenderTerrainTriangles(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
+{
+    if ((g_NumTerrainTriangleVertices == 0 && g_NumTerrainChunkDraws == 0) ||
+        !g_TerrainTrianglePipeline || !g_RenderState.terrainTriangleBuffer) return;
+
+    SDL_BindGPUGraphicsPipeline(pass, g_TerrainTrianglePipeline);
+    SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
+
+    if (g_NumTerrainTriangleVertices > 0)
+    {
+        UpdateGPUBufferCycle(g_RenderState.terrainTriangleBuffer, g_TerrainTriangleVertices,
+                             g_NumTerrainTriangleVertices * sizeof(ALineVertex), 0, true);
+        SDL_GPUBufferBinding vertexBinding = { g_RenderState.terrainTriangleBuffer, 0 };
+        SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
+        SDL_DrawGPUPrimitives(pass, g_NumTerrainTriangleVertices, 1, 0, 0);
+    }
+
+    RenderTerrainChunkRanges(pass);
+}
+
+void RenderTerrainTrianglesDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
+{
+    if ((g_NumTerrainTriangleVertices == 0 && g_NumTerrainChunkDraws == 0) ||
+        !g_TerrainTriangleDepthPipeline || !g_RenderState.terrainTriangleBuffer) return;
+
+    SDL_BindGPUGraphicsPipeline(pass, g_TerrainTriangleDepthPipeline);
+    SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
+
+    if (g_NumTerrainTriangleVertices > 0)
+    {
+        UpdateGPUBufferCycle(g_RenderState.terrainTriangleBuffer, g_TerrainTriangleVertices,
+                             g_NumTerrainTriangleVertices * sizeof(ALineVertex), 0, true);
+        SDL_GPUBufferBinding vertexBinding = { g_RenderState.terrainTriangleBuffer, 0 };
+        SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
+        SDL_DrawGPUPrimitives(pass, g_NumTerrainTriangleVertices, 1, 0, 0);
+    }
+
+    RenderTerrainChunkRanges(pass);
 }
 
 // re-draws every selected primitive as a grown inverted hull on top of the lit scene

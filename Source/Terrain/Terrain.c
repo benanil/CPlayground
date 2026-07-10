@@ -13,10 +13,22 @@
 #include "Include/Memory.h"
 #include "Include/FileSystem.h"
 #include "Include/Algorithm.h"
+#include "Include/Random.h"
 #include "Include/DataStructures/HashMap.h"
 
 #include "Extern/stb/stb_image.h"
 #include "Extern/stb/stb_image_resize2.h"
+
+#define TERRAIN_OLD_RUNTIME_DISABLED 1
+
+#if TERRAIN_OLD_RUNTIME_DISABLED
+// port mode: the old streaming runtime stays compiled out; the editor-facing wrappers
+// below carry world state here and delegate remeshing to the transvoxel unity example
+#include "Source/Terrain/TransvoxelUnity.h"
+static bool tvWorldEnabled;
+static bool tvPortInitialized;
+static bool tvGrassReady;
+#endif
 
 #if defined(PLATFORM_MACOSX)
 #include "Shaders/msl/TerrainForwardVert.msl.h"
@@ -863,7 +875,7 @@ static void TerrainGrassDispatch(void)
     for (s32 dz = -r; dz <= r && !full; dz++)
     for (s32 dx = -r; dx <= r; dx++)
     {
-        s32 adx = dx < 0 ? -dx : dx, adz = dz < 0 ? -dz : dz;
+        s32 adx = Absi32(dx), adz = Absi32(dz);
         if (r != 0 && adx != r && adz != r) continue; // only this ring's border cells
         s32 cx = camCx + dx, cz = camCz + dz;
         if (TerrainGrassColumnDist(cam, cx, cz, size0) > viewDist) continue;
@@ -1034,8 +1046,85 @@ static void TerrainGrassBuildDrawArgs(SDL_GPUCommandBuffer* cmd)
     g_Terrain.grassDrawCount = n;
 }
 
+#if TERRAIN_OLD_RUNTIME_DISABLED
+// port mode grass: the density-driven grass tiles are self-contained (the scatter jobs
+// march TerrainDensity_SurfaceY on their own pool), so only their slice of the old
+// Terrain_Init has to exist. lazily created on the first flush with a world enabled.
+static void TerrainInitPipelines(void);
+static Texture TerrainLoadGrassArray(void);
+
+static bool TerrainPortEnsureGrass(void)
+{
+    if (tvGrassReady) return true;
+    if (!g_GPUDevice) return false;
+
+    g_Terrain.grassTiles    = (GrassTile*)AllocZeroTLSFGlobal(TERRAIN_MAX_GRASS_TILES, sizeof(GrassTile));
+    g_Terrain.grassTileFree = (u32*)AllocateTLSFGlobal(TERRAIN_MAX_GRASS_TILES * sizeof(u32));
+    if (!g_Terrain.grassTiles || !g_Terrain.grassTileFree)
+    {
+        AX_WARN("terrain port grass allocation failed");
+        return false;
+    }
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+        g_Terrain.grassTileFree[i] = TERRAIN_MAX_GRASS_TILES - 1u - i;
+    g_Terrain.numGrassTileFree = TERRAIN_MAX_GRASS_TILES;
+    g_Terrain.grassTileMap = HMCreate(TERRAIN_MAX_GRASS_TILES, sizeof(u32));
+
+    for (u32 i = 0; i < TERRAIN_MAX_GRASS_JOBS; i++)
+    {
+        GrassJob* job = &g_Terrain.grassJobs[i];
+        job->out = (GrassInstance*)SDL_malloc(GRASS_PER_CHUNK * sizeof(GrassInstance));
+        SDL_SetAtomicInt(&job->state, JobState_Free);
+    }
+
+    s32 cores = SDL_GetNumLogicalCPUCores();
+    u32 grassWorkers = (u32)Clamps32(cores - 2, 2, 8);
+    g_Terrain.jobSystem = JobSystem_Create(grassWorkers, TERRAIN_MAX_JOBS);
+    CHECK_CREATE(g_Terrain.jobSystem, "Terrain Port Grass Job System");
+
+    g_Terrain.grassBuffer         = CreateBuffer(NULL, TERRAIN_MAX_GRASS * sizeof(GrassInstance), BVertexBit, "TerrainGrassBuffer");
+    g_Terrain.grassChunkBuffer    = CreateBuffer(NULL, TERRAIN_MAX_CHUNKS * sizeof(GrassChunkInfo), BReadRasterBit, "TerrainGrassChunkBuffer");
+    g_Terrain.grassIndirectBuffer = CreateBuffer(NULL, TERRAIN_MAX_CHUNKS * sizeof(SDL_GPUIndirectDrawCommand), SDL_GPU_BUFFERUSAGE_INDIRECT, "TerrainGrassIndirect");
+    g_Terrain.grassIndirectTransfer = SDL_CreateGPUTransferBuffer(g_GPUDevice, &(SDL_GPUTransferBufferCreateInfo){
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size  = TERRAIN_MAX_CHUNKS * (u32)sizeof(SDL_GPUIndirectDrawCommand)
+    });
+    CHECK_CREATE(g_Terrain.grassIndirectTransfer, "Terrain Grass Indirect Transfer");
+    g_Terrain.grassUploadTransfer = SDL_CreateGPUTransferBuffer(g_GPUDevice, &(SDL_GPUTransferBufferCreateInfo){
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size  = GRASS_UPLOAD_BYTES
+    });
+    CHECK_CREATE(g_Terrain.grassUploadTransfer, "Terrain Grass Upload Transfer");
+
+    TerrainInitPipelines();
+    g_Terrain.grassLayers = TerrainLoadGrassArray();
+    g_Terrain.grassScanDirty = true;
+    tvGrassReady = true;
+    return true;
+}
+#endif
+
 void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
 {
+    (void)cmd;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!tvWorldEnabled || g_Terrain.authoring.grassViewDistance <= 0.0f)
+    {
+        g_Terrain.grassDrawCount = 0;
+        return;
+    }
+    if (!TerrainPortEnsureGrass())
+        return;
+
+    // the grass ring scan, frustum cull, and consume all read state Terrain_Update used
+    // to maintain; feed it from the camera directly since the old update never runs
+    g_Terrain.cameraFrustum = CreateFrustumPlanesRevZ(M44Multiply(g_Camera.view, g_Camera.projection));
+    g_Terrain.frustumValid = true;
+    TerrainGrassConsume(cmd);   // pick up finished scatter jobs -> upload, frees job slots
+    TerrainGrassDispatch();     // reclaim + ring scan -> dispatch new scatter jobs
+    TerrainGrassBuildDrawArgs(cmd);
+    return;
+#endif
     if (!g_Terrain.initialized) return;
 
     TerrainCopyRegion regions[TERRAIN_MAX_JOBS * 4u]; // vertex+index (+grass+grassInfo for lod0)
@@ -1103,6 +1192,7 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         // swap the resident mesh, the freed range can be reused immediately: the copy
         // pass lands before this frame's draws and the draws use the new offsets
         bool wasVisible = chunk->numIndices > 0u;
+        bool wasEmpty   = chunk->empty; // was all-solid/all-air; capture before clearing below
         TerrainChunkFreeMeshEx(job->chunkSlot, false);
         chunk->vertexHeapPtr = vertexRaw;
         chunk->indexHeapPtr  = indexRaw;
@@ -1116,9 +1206,11 @@ void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
         chunk->appliedMask = job->transitionMask;
         chunk->state = ChunkState_Live;
         chunk->jobSlot = -1;
-        // fresh split/merge replacements stay hidden until the whole group is live,
-        // remeshes of an already visible chunk swap in place
-        if (!wasVisible) chunk->hidden = TerrainCoveredByRetiring(chunk);
+        // fresh split/merge replacements stay hidden until the whole group is live, so a
+        // half-built lod swap never shows a hole. remeshes of an already-visible chunk, and
+        // edits that reveal a previously-empty chunk (digging into solid ground below the
+        // surface), are in-place swaps that must show immediately or they read as see-through.
+        if (!wasVisible && !wasEmpty) chunk->hidden = TerrainCoveredByRetiring(chunk);
         g_Terrain.numDrawable++;
 
         f32 size = TerrainChunkWorldSize(chunk->lod);
@@ -1180,26 +1272,14 @@ static v128f TerrainDecodePosition(const TerrainVertex* v, v128f chunkOrigin, f3
     return VecAdd(chunkOrigin, VecMulf(local, metersPerStep));
 }
 
-// small deterministic hash / rng for grass scatter (PCG-ish), keeps placement stable
-// across remeshes of the same triangle so grass does not swim when a chunk repaints.
-static inline u32 GrassHashU32(u32 x)
-{
-    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
-    return x;
-}
-static inline f32 GrassRand01(u32* state)
-{
-    *state = *state * 747796405u + 2891336453u;
-    u32 r = ((*state >> ((*state >> 28) + 4u)) ^ *state) * 277803737u;
-    r ^= r >> 22;
-    return (f32)(r & 0xFFFFFFu) * (1.0f / 16777216.0f);
-}
 
 // grass placement tuning (see TerrainBuildTileGrass)
 #define GRASS_BEACH_BAND      5.0f  // meters above sea level kept blade-free; matches the terrain
                                     // grass texture onset (sand->dirt->grass) so blades sit on green
 #define GRASS_ISLAND_MAX      0.02f // island fade above this is off the island proper -> no grass
 #define GRASS_PATCH_THRESHOLD 0.55f // cellular F1 cutoff; lower = more bare patches, higher = denser
+#define GRASS_BLADE_EXTENT    0.7f  // billboard half-width + wind sway, padded into the tile AABB
+#define GRASS_BLADE_HEIGHT    2.0f  // billboard height above the blade root, padded into the AABB
 
 // scatter camera-facing grass over one 16 m surface column by marching the density field:
 // jitter (x,z) inside the column, find the surface Y from the SDF, filter by island/beach/
@@ -1219,14 +1299,15 @@ static u32 TerrainBuildTileGrass(u32 tileSlot, s32 cx, s32 cz, GrassInstance* ou
     u32 target = (u32)(bladesPerSqM * size0 * size0);
     if (target > GRASS_PER_CHUNK) target = GRASS_PER_CHUNK;
     u32 tileIndex = tileSlot & 0xFFFFu;
-    u32 seed = GrassHashU32((u32)cx * 73856093u ^ (u32)cz * 19349663u);
+    // deterministic per-column seed so grass placement stays stable across remeshes
+    u32 seed = WangHash((u32)cx * 73856093u ^ (u32)cz * 19349663u);
 
-    f32 minX = 1e30f, minY = 1e30f, minZ = 1e30f, maxX = -1e30f, maxY = -1e30f, maxZ = -1e30f;
+    float3 aMin = { 1e30f, 1e30f, 1e30f }, aMax = { -1e30f, -1e30f, -1e30f };
     u32 count = 0u;
     for (u32 b = 0u; b < target; b++)
     {
-        f32 wx = originX + GrassRand01(&seed) * size0;
-        f32 wz = originZ + GrassRand01(&seed) * size0;
+        f32 wx = originX + NextFloat01(PCG2Next(&seed)) * size0;
+        f32 wz = originZ + NextFloat01(PCG2Next(&seed)) * size0;
         // island only: skip the open-sea plane before paying for the surface march (a no-op
         // when island mode is off, where the mask is always 0)
         if (TerrainDensity_IslandMask(wx, wz) > GRASS_ISLAND_MAX) continue;
@@ -1241,13 +1322,16 @@ static u32 TerrainBuildTileGrass(u32 tileSlot, s32 cx, s32 cz, GrassInstance* ou
         out[count].positionXY = MakeHalf2(FloatToHalf(wx - originX), FloatToHalf(wy));
         out[count].positionZChunkIndex = (u32)FloatToHalf(wz - originZ) | (tileIndex << 16);
         count++;
-        if (wx < minX) minX = wx; if (wy < minY) minY = wy; if (wz < minZ) minZ = wz;
-        if (wx > maxX) maxX = wx; if (wy > maxY) maxY = wy; if (wz > maxZ) maxZ = wz;
+        float3 root = { wx, wy, wz };
+        aMin = F3Min(aMin, root);
+        aMax = F3Max(aMax, root);
     }
 
     if (count == 0u) { *outMin = *outMax = (float3){ originX, 0.0f, originZ }; return 0u; }
-    *outMin = (float3){ minX, minY, minZ };
-    *outMax = (float3){ maxX, maxY + 2.0f, maxZ }; // +2 m so the blade height is inside the box
+    // pad the root bounds by the blade extent: billboards are camera-facing and sway/rise
+    // above their root, so an unpadded box frustum-culls edge tiles and leaves grass holes
+    *outMin = (float3){ aMin.x - GRASS_BLADE_EXTENT, aMin.y, aMin.z - GRASS_BLADE_EXTENT };
+    *outMax = (float3){ aMax.x + GRASS_BLADE_EXTENT, aMax.y + GRASS_BLADE_HEIGHT, aMax.z + GRASS_BLADE_EXTENT };
     return count;
 }
 
@@ -1325,6 +1409,14 @@ static void TerrainChunkSyncPhysics(u32 slot)
 
 s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit)
 {
+    (void)origin;
+    (void)dir;
+    (void)maxDist;
+    (void)maxLod;
+    (void)hit;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return 0;
+#endif
     if (!g_Terrain.initialized || !g_Terrain.enabled) return 0;
 
     v128f rayOrigin = VecSetR(origin.x, origin.y, origin.z, 0.0f);
@@ -1379,6 +1471,9 @@ s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* 
 
 bool Terrain_HasDraws(void)
 {
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return false;
+#endif
     return g_Terrain.initialized && g_Terrain.enabled && g_Terrain.numDrawable > 0u;
 }
 
@@ -1438,6 +1533,14 @@ static void TerrainDrawGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
     SDL_DrawGPUPrimitivesIndirect(pass, g_Terrain.grassIndirectBuffer, 0, g_Terrain.grassDrawCount);
 }
 
+// port mode: the transvoxel unity example draws the terrain surface, but the grass
+// still lives here; the forward pass calls this right after the port terrain draw.
+// safe no-op while grass is not initialized (grassDrawCount stays 0).
+void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
+{
+    TerrainDrawGrass(cmd, pass);
+}
+
 static u32 TerrainDrawChunks(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
     FrustumPlanes frustum = CreateFrustumPlanesRevZ(viewProj);
@@ -1462,6 +1565,12 @@ static u32 TerrainDrawChunks(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
 
 void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
+    (void)cmd;
+    (void)pass;
+    (void)viewProj;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return;
+#endif
     if (!Terrain_HasDraws()) return;
 
     SDL_BindGPUGraphicsPipeline(pass, g_Terrain.depthPipeline);
@@ -1474,6 +1583,14 @@ void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat
 
 void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj, u32 width, u32 height)
 {
+    (void)cmd;
+    (void)pass;
+    (void)viewProj;
+    (void)width;
+    (void)height;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return;
+#endif
     if (!Terrain_HasDraws()) return;
     if (!g_WindowState.tex_shadow_color || !g_RenderState.shadowCascadeBuffer ||
         !g_WindowState.tex_hbao_blur || !g_WindowState.tex_contact_shadow)
@@ -1524,6 +1641,13 @@ void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, m
 void Terrain_RenderWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
                              SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj)
 {
+    (void)cmd;
+    (void)colorTarget;
+    (void)depthTarget;
+    (void)viewProj;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return;
+#endif
     if (!g_RenderSettings.terrainWireframe || !Terrain_HasDraws()) return;
 
     SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, colorTarget, 1, depthTarget);
@@ -1711,8 +1835,9 @@ static void TerrainInitPipelines(void)
 
 // loads count pngs into one rgba8 texture array layer by layer, resizing to the target
 // size when needed. srgb only affects the resize filter, the formats stay unorm and the
-// shader converts srgb to linear like the surface shader does
-static Texture TerrainLoadLayerArray(const char* const* paths, u32 count, s32 size, bool srgb, const char* label)
+// shader converts srgb to linear like the surface shader does.
+static Texture TerrainLoadTextureArray(const char* const* paths, u32 count, s32 size, bool srgb,
+                                       const char* label, const char* errorLabel)
 {
     Texture tex = rCreateTexture2DArray(size, size, count, NULL, TEX_FMT_8UNORM4,
                                         TexFlags_MipMap, TEX_SAMPLER | TEX_COLOR_TARGET, label);
@@ -1722,7 +1847,7 @@ static Texture TerrainLoadLayerArray(const char* const* paths, u32 count, s32 si
         u8* image = stbi_load(paths[layer], &w, &h, &channels, 4);
         if (!image)
         {
-            AX_ERROR("terrain texture missing: %s", paths[layer]);
+            AX_ERROR("%s texture missing: %s", errorLabel, paths[layer]);
             continue;
         }
         u8* upload = image;
@@ -1740,6 +1865,11 @@ static Texture TerrainLoadLayerArray(const char* const* paths, u32 count, s32 si
     }
     GenerateTextureMips(tex);
     return tex;
+}
+
+static Texture TerrainLoadLayerArray(const char* const* paths, u32 count, s32 size, bool srgb, const char* label)
+{
+    return TerrainLoadTextureArray(paths, count, size, srgb, label, "terrain");
 }
 
 // terrain material layers. index 0 is the flat-ground ("grass") layer, 1 the slope
@@ -1774,36 +1904,9 @@ static const char* const grassPaths[2] = {
 
 #define TERRAIN_GRASS_SIZE 512
 
-// loads the two grass pngs into a 2-layer rgba8 array, resizing to a square. srgb only
-// affects the resize filter; the shader converts to linear like the surface shader.
 static Texture TerrainLoadGrassArray(void)
 {
-    Texture tex = rCreateTexture2DArray(TERRAIN_GRASS_SIZE, TERRAIN_GRASS_SIZE, 2, NULL, TEX_FMT_8UNORM4,
-                                        TexFlags_MipMap, TEX_SAMPLER | TEX_COLOR_TARGET, "TerrainGrass");
-    for (s32 layer = 0; layer < 2; layer++)
-    {
-        int w, h, channels;
-        u8* image = stbi_load(grassPaths[layer], &w, &h, &channels, 4);
-        if (!image)
-        {
-            AX_ERROR("grass texture missing: %s", grassPaths[layer]);
-            continue;
-        }
-        u8* upload = image;
-        u8* resized = NULL;
-        if (w != TERRAIN_GRASS_SIZE || h != TERRAIN_GRASS_SIZE)
-        {
-            resized = (u8*)SDL_malloc((size_t)TERRAIN_GRASS_SIZE * TERRAIN_GRASS_SIZE * 4u);
-            stbir_resize_uint8_srgb(image, w, h, 0, resized, TERRAIN_GRASS_SIZE, TERRAIN_GRASS_SIZE, 0, STBIR_RGBA);
-            upload = resized;
-        }
-        UploadTextureRegion(tex, (u32)layer, 0, 0, (u32)TERRAIN_GRASS_SIZE, (u32)TERRAIN_GRASS_SIZE,
-                            (u32)TERRAIN_GRASS_SIZE, (u32)TERRAIN_GRASS_SIZE, upload);
-        if (resized) SDL_free(resized);
-        stbi_image_free(image);
-    }
-    GenerateTextureMips(tex);
-    return tex;
+    return TerrainLoadTextureArray(grassPaths, 2u, TERRAIN_GRASS_SIZE, true, "TerrainGrass", "grass");
 }
 
 static void TerrainInitTextures(void)
@@ -1844,6 +1947,16 @@ TerrainAuthoring* Terrain_GetAuthoring(void)
 
 void Terrain_Init(void)
 {
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (tvPortInitialized) return;
+    AX_LOG("old terrain runtime disabled; using transvoxel unity example");
+    g_Terrain.genParams = Terrain_DefaultGenParams();
+    TerrainAuthoringDefaults(&g_Terrain.authoring);
+    TerrainDensity_SetParams(&g_Terrain.genParams);
+    TerrainEdit_Init();
+    tvPortInitialized = true;
+    return;
+#endif
     if (g_Terrain.initialized) return;
     SDL_memset(&g_Terrain, 0, sizeof(g_Terrain));
     g_Terrain.genParams = Terrain_DefaultGenParams();
@@ -1922,6 +2035,39 @@ void Terrain_Init(void)
 
 void Terrain_Destroy(void)
 {
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!tvPortInitialized) return;
+    if (tvGrassReady)
+    {
+        JobSystem_Wait(g_Terrain.jobSystem);
+        JobSystem_Destroy(g_Terrain.jobSystem);
+        for (u32 i = 0; i < TERRAIN_MAX_GRASS_JOBS; i++)
+            SDL_free(g_Terrain.grassJobs[i].out);
+        for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+        {
+            g_Terrain.grassTiles[i].building = 0u; // jobs drained, release every range
+            TerrainGrassTileFree(i);
+        }
+        if (g_Terrain.grassPipeline)   SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.grassPipeline);
+        if (g_Terrain.forwardPipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.forwardPipeline);
+        if (g_Terrain.depthPipeline)   SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.depthPipeline);
+        if (g_Terrain.wirePipeline)    SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_Terrain.wirePipeline);
+        if (g_Terrain.grassBuffer)         SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.grassBuffer);
+        if (g_Terrain.grassChunkBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.grassChunkBuffer);
+        if (g_Terrain.grassIndirectBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_Terrain.grassIndirectBuffer);
+        if (g_Terrain.grassIndirectTransfer) SDL_ReleaseGPUTransferBuffer(g_GPUDevice, g_Terrain.grassIndirectTransfer);
+        if (g_Terrain.grassUploadTransfer)   SDL_ReleaseGPUTransferBuffer(g_GPUDevice, g_Terrain.grassUploadTransfer);
+        ReleaseTexture(&g_Terrain.grassLayers);
+        HMDestroy(&g_Terrain.grassTileMap);
+        DeAllocateTLSFGlobal(g_Terrain.grassTiles);
+        DeAllocateTLSFGlobal(g_Terrain.grassTileFree);
+        tvGrassReady = false;
+    }
+    TerrainEdit_Destroy();
+    tvPortInitialized = false;
+    tvWorldEnabled = false;
+    return;
+#endif
     if (!g_Terrain.initialized) return;
 
     // stop the pool after in-flight jobs observe cancellation and finish
@@ -1984,6 +2130,10 @@ void Terrain_Destroy(void)
 
 void Terrain_Update(const Camera* camera)
 {
+    (void)camera;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return;
+#endif
     if (!g_Terrain.initialized || !g_Terrain.enabled) return;
 
     g_Terrain.cameraFrustum = CreateFrustumPlanesRevZ(M44Multiply(camera->view, camera->projection));
@@ -2021,12 +2171,20 @@ void Terrain_Update(const Camera* camera)
 
 void Terrain_SetEnabled(bool enabled)
 {
+    (void)enabled;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    tvWorldEnabled = enabled;
+    return;
+#endif
     if (!g_Terrain.initialized) return;
     g_Terrain.enabled = enabled;
 }
 
 bool Terrain_GetEnabled(void)
 {
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return tvWorldEnabled;
+#endif
     return g_Terrain.initialized && g_Terrain.enabled;
 }
 
@@ -2046,21 +2204,42 @@ static void TerrainEvictAll(void)
 
 void Terrain_ApplyGenParams(const TerrainGenParams* params)
 {
+    (void)params;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!tvPortInitialized) Terrain_Init();
+    g_Terrain.genParams = *params;
+    g_Terrain.genParams.fixedWorldSize = (u32)Clamps32((s32)g_Terrain.genParams.fixedWorldSize, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE);
+    TerrainDensity_SetParams(&g_Terrain.genParams);
+    tTransvoxelExampleInvalidateAll();
+    if (tvGrassReady)
+    {
+        // the surface changed everywhere; drop every grass tile so the ring rebuilds
+        for (u32 i = 0; i < TERRAIN_MAX_GRASS_TILES; i++)
+            TerrainGrassTileFree(i);
+        g_Terrain.grassScanDirty = true;
+    }
+    return;
+#endif
     if (!g_Terrain.initialized)
     {
         AX_WARN("Terrain_ApplyGenParams called without terrain instance");
         return;
     }
     g_Terrain.genParams = *params;
+    g_Terrain.genParams.fixedWorldSize = (u32)Clamps32((s32)g_Terrain.genParams.fixedWorldSize, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE);
     g_Terrain.fixedCenterValid = false; // recapture at the next update
     // jobs sampling while the params swap produce torn results, but every live and
     // generating chunk is evicted right after, so nothing stale survives
-    TerrainDensity_SetParams(params);
+    TerrainDensity_SetParams(&g_Terrain.genParams);
     TerrainEvictAll();
 }
 
 const TerrainGenParams* Terrain_GetGenParams(void)
 {
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!tvPortInitialized) Terrain_Init();
+    return &g_Terrain.genParams;
+#endif
     static TerrainGenParams defaultParams;
     static bool defaultValid;
     if (!g_Terrain.initialized)
@@ -2077,6 +2256,12 @@ const TerrainGenParams* Terrain_GetGenParams(void)
 
 void Terrain_CreateWorld(const TerrainGenParams* params)
 {
+    (void)params;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    Terrain_ApplyGenParams(params);
+    tvWorldEnabled = true;
+    return;
+#endif
     if (!g_Terrain.initialized) return;
     Terrain_ApplyGenParams(params);
     g_Terrain.enabled = true;
@@ -2084,6 +2269,12 @@ void Terrain_CreateWorld(const TerrainGenParams* params)
 
 void Terrain_DeleteWorld(void)
 {
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    tvWorldEnabled = false;
+    TerrainEdit_Clear();
+    tTransvoxelExampleInvalidateAll();
+    return;
+#endif
     if (!g_Terrain.initialized) return;
     g_Terrain.enabled = false;
     g_Terrain.brushRadius = 0.0f;
@@ -2097,6 +2288,13 @@ void Terrain_DeleteWorld(void)
 
 void Terrain_SetBrushCursor(float3 position, f32 radius, bool active)
 {
+    (void)position;
+    (void)radius;
+    (void)active;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    tTransvoxelExampleSetBrushCursor(position, radius, active);
+    return;
+#endif
     if (!g_Terrain.initialized) return;
     g_Terrain.brushPos = position;
     g_Terrain.brushRadius = active ? radius : 0.0f;
@@ -2126,6 +2324,36 @@ static void TerrainRemeshRegion(float3 mn, float3 mx)
 
 void Terrain_SculptSphere(float3 center, f32 radius, f32 strength, f32 softness)
 {
+    (void)center;
+    (void)radius;
+    (void)strength;
+    (void)softness;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!tvWorldEnabled) return;
+    float3 tvMn, tvMx;
+    TerrainEdit_SculptSphere(center, radius, strength, softness, &tvMn, &tvMx);
+    tTransvoxelExampleInvalidateRegion(tvMn, tvMx);
+    if (tvGrassReady)
+    {
+        // grass sits on the sculpted surface; dirty the touched columns so they rescatter
+        f32 size0 = TerrainChunkWorldSize(0);
+        s32 cx0 = (s32)Floorf32(tvMn.x / size0), cx1 = (s32)Floorf32(tvMx.x / size0);
+        s32 cz0 = (s32)Floorf32(tvMn.z / size0), cz1 = (s32)Floorf32(tvMx.z / size0);
+        for (s32 cz = cz0; cz <= cz1; cz++)
+        {
+            for (s32 cx = cx0; cx <= cx1; cx++)
+            {
+                GrassTile* tile = TerrainGrassTileFind(cx, cz);
+                if (tile && !tile->dying)
+                {
+                    tile->dirty = 1u;
+                    g_Terrain.grassScanDirty = true;
+                }
+            }
+        }
+    }
+    return;
+#endif
     if (!g_Terrain.initialized || !g_Terrain.enabled) return;
     float3 mn, mx;
     TerrainEdit_SculptSphere(center, radius, strength, softness, &mn, &mx);
@@ -2134,6 +2362,18 @@ void Terrain_SculptSphere(float3 center, f32 radius, f32 strength, f32 softness)
 
 void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32 softness)
 {
+    (void)center;
+    (void)radius;
+    (void)layer;
+    (void)strength;
+    (void)softness;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!tvWorldEnabled) return;
+    float3 tvMn, tvMx;
+    TerrainEdit_PaintSphere(center, radius, (u8)Clamps32((s32)layer + 1, 1, 15), strength, softness, &tvMn, &tvMx);
+    tTransvoxelExampleInvalidateRegion(tvMn, tvMx);
+    return;
+#endif
     if (!g_Terrain.initialized || !g_Terrain.enabled) return;
     float3 mn, mx;
     TerrainEdit_PaintSphere(center, radius, (u8)Clamps32((s32)layer + 1, 1, 15), strength, softness, &mn, &mx);
@@ -2145,14 +2385,22 @@ void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32
 // analytic surface, within ~half a coarse cell of the rendered mesh
 s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
 {
+    (void)origin;
+    (void)dir;
+    (void)maxDist;
+    (void)hit;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    // pure field march over TerrainDensity_At; works without the old runtime
+    if (!tvWorldEnabled) return 0;
+#else
     if (!g_Terrain.initialized || !g_Terrain.enabled) return 0;
+#endif
 
     f32 t = 0.0f, lastT = 0.0f;
     for (u32 step = 0; step < 256u && t < maxDist; step++)
     {
         f32 px = origin.x + dir.x * t, py = origin.y + dir.y * t, pz = origin.z + dir.z * t;
-        f32 sdf = TerrainDensity_SDF(px, py, pz) +
-                  TerrainEdit_DeltaAt((s32)Floorf32(px), (s32)Floorf32(py), (s32)Floorf32(pz));
+        f32 sdf = TerrainDensity_At(px, py, pz);
         if (sdf < 0.0f)
         {
             // bisect between the last outside sample and this inside one
@@ -2161,8 +2409,7 @@ s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
             {
                 f32 mid = (lo + hi) * 0.5f;
                 f32 mx = origin.x + dir.x * mid, my = origin.y + dir.y * mid, mz = origin.z + dir.z * mid;
-                f32 d = TerrainDensity_SDF(mx, my, mz) +
-                        TerrainEdit_DeltaAt((s32)Floorf32(mx), (s32)Floorf32(my), (s32)Floorf32(mz));
+                f32 d = TerrainDensity_At(mx, my, mz);
                 if (d < 0.0f) hi = mid; else lo = mid;
             }
             hit->hit.t = lo;
@@ -2183,16 +2430,28 @@ s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
 
 u32 Terrain_NumEditedRegions(void)
 {
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return TerrainEdit_NumChunks();
+#endif
     return g_Terrain.initialized ? TerrainEdit_NumChunks() : 0u;
 }
 
 bool Terrain_SaveEditChunks(const char* path)
 {
+    (void)path;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return tvPortInitialized && TerrainEdit_SaveChunks(path);
+#endif
     return g_Terrain.initialized && TerrainEdit_SaveChunks(path);
 }
 
 bool Terrain_LoadEditChunks(const char* path)
 {
+    (void)path;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!tvPortInitialized) Terrain_Init();
+    return tvPortInitialized && TerrainEdit_LoadChunks(path);
+#endif
     if (!g_Terrain.initialized) Terrain_Init();
     return g_Terrain.initialized && TerrainEdit_LoadChunks(path);
 }
@@ -2243,7 +2502,12 @@ static bool TerrainChunksPathFromWorld(const char* terrainPath, char* dst, u32 d
 
 bool Terrain_SaveWorld(const char* path)
 {
+    (void)path;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!path || !path[0] || !tvPortInitialized || !tvWorldEnabled) return false;
+#else
     if (!path || !path[0] || !g_Terrain.initialized || !g_Terrain.enabled) return false;
+#endif
     EnsurePath(path);
 
     char* text = (char*)SDL_malloc(4096u);
@@ -2254,6 +2518,7 @@ bool Terrain_SaveWorld(const char* path)
     char* p = text;
     p = TerrainWriteString(p, "terrain 1\n");
     p = TerrainWriteBool(p, "fixed_chunk_size", params->fixedArea);
+    p = TerrainWriteF32(p, "fixed_world_size", (f32)params->fixedWorldSize, 0);
     p = TerrainWriteBool(p, "island", params->island);
     p = TerrainWriteF32(p, "seed", (f32)params->seed, 0);
     p = TerrainWriteF32(p, "sea_level", params->seaLevel, 3);
@@ -2280,9 +2545,16 @@ bool Terrain_SaveWorld(const char* path)
 
 bool Terrain_LoadWorld(const char* path)
 {
+    (void)path;
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    if (!path || !path[0]) return false;
+    if (!tvPortInitialized) Terrain_Init();
+    if (!tvPortInitialized) return false;
+#else
     if (!path || !path[0]) return false;
     if (!g_Terrain.initialized) Terrain_Init();
     if (!g_Terrain.initialized) return false;
+#endif
 
     char* text = ReadAllFileAlloc(path);
     if (!text) return false;
@@ -2300,6 +2572,7 @@ bool Terrain_LoadWorld(const char* path)
         *next = '\0';
 
         if      (TerrainKeyIs(line, "fixed_chunk_size", &value)) params.fixedArea = value[0] == '1';
+        else if (TerrainKeyIs(line, "fixed_world_size", &value)) { f32 f; ParseFloat(value, &f); params.fixedWorldSize = (u32)Clamps32((s32)f, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE); }
         else if (TerrainKeyIs(line, "island", &value))           params.island = value[0] == '1';
         else if (TerrainKeyIs(line, "seed", &value))             { f32 f; ParseFloat(value, &f); params.seed = (u32)f; }
         else if (TerrainKeyIs(line, "sea_level", &value))        ParseFloat(value, &params.seaLevel);
@@ -2329,6 +2602,9 @@ bool Terrain_LoadWorld(const char* path)
 TerrainStats Terrain_GetStats(void)
 {
     TerrainStats stats = {0};
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    return stats;
+#endif
     if (!g_Terrain.initialized) return stats;
     for (u32 i = 0; i < TERRAIN_MAX_CHUNKS; i++)
     {
