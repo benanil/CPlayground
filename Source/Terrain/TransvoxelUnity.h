@@ -51,13 +51,19 @@ typedef struct tSecondaryVertexData_
     v128f position;
     u16   vertexMask;
     u16   vertexIndex;
-} tSecondaryVertexData;
+} tSecondaryVert;
 
 typedef struct tMeshData_
 {
-    tVertexData*          vertices;
-    u32*                  indices;
-    tSecondaryVertexData* secondaryVertices;
+    tVertexData*  vertices;      // fixed-capacity ranges in the terrain geometry heaps
+    u32*          indices;
+    tSecondaryVert* secondaryVert;
+	s32 numIndices;
+	s32 numVertices;
+	s32 numSecondaryVert;
+	s32 vertexCapacity;          // pushes beyond capacity are dropped (heaps are shared,
+	s32 indexCapacity;           // an overrun would corrupt other chunks' meshes)
+	s32 secondaryCapacity;
 } tMeshData;
 
 typedef enum tMeshDataSlot_
@@ -464,8 +470,8 @@ void tMeshDataDestroy(tMeshData* data);
 void tMeshDataClear(tMeshData* data);
 bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex);
 bool tMeshDataPushIndex(tMeshData* data, u32 index);
-bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVertexData vertex);
-bool tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask);
+bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVert vertex);
+void tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask);
 u32* tMeshDataBuildValidIndices(const tMeshData* data);
 
 bool tMeshDataContainerInit(tMeshDataContainer* container, size_t vertexCapacity, size_t indexCapacity, size_t secondaryVertexCapacity);
@@ -474,7 +480,7 @@ void tMeshDataContainerClear(tMeshDataContainer* container);
 bool tMeshDataContainerHasAnyData(const tMeshDataContainer* container);
 tMeshData* tMeshDataContainerGet(tMeshDataContainer* container, tMeshDataSlot slot);
 const tMeshData* tMeshDataContainerGetConst(const tMeshDataContainer* container, tMeshDataSlot slot);
-bool tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask);
+void tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask);
 void tMeshCopyJobClearResults(tMeshCopyJob* job);
 bool tMeshCopyJobExecute(tMeshCopyJob* job);
 

@@ -574,6 +574,9 @@
 					<File>
 						<Path>Shaders/TerrainForward.hlsl</Path>
 					</File>
+					<File>
+						<Path>Shaders/TerrainChunk.hlsl</Path>
+					</File>
 				</Children>
 			</Folder>
 			<Folder>
@@ -678,49 +681,19 @@
 								<Path>Source/Terrain/TransvoxelMesher.c</Path>
 							</File>
 							<File>
-								<Path>Source/Terrain/TransvoxelUnity.c</Path>
-							</File>
-							<File>
 								<Path>Source/Terrain/TransvoxelUnity.h</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityJobs.c</Path>
 							</File>
 							<File>
 								<Path>Source/Terrain/TransvoxelUnityMesh.c</Path>
 							</File>
 							<File>
-								<Path>Source/Terrain/TransvoxelUnityPool.c</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityOctree.c</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityUpdates.c</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityWorld.c</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityTasks.c</Path>
-							</File>
-							<File>
 								<Path>Source/Terrain/TransvoxelTables.h</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityCollision.c</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityVoxelWorld.c</Path>
 							</File>
 							<File>
 								<Path>Source/Terrain/TransvoxelUnityMesher.c</Path>
 							</File>
 							<File>
 								<Path>Source/Terrain/TransvoxelUnityExample.c</Path>
-							</File>
-							<File>
-								<Path>Source/Terrain/TransvoxelUnityScheduler.c</Path>
 							</File>
 						</Children>
 					</Folder>

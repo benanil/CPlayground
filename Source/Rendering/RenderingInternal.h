@@ -106,10 +106,9 @@ extern SDL_GPUGraphicsPipeline* g_TerrainTrianglePipeline;
 extern SDL_GPUGraphicsPipeline* g_TerrainTriangleDepthPipeline;
 extern ALineVertex g_GizmoVertices[MAX_GIZMO_VERTICES];
 extern u32         g_NumGizmoVertices;
-extern ALineVertex g_TerrainTriangleVertices[MAX_TERRAIN_TRIANGLE_VERTICES];
-extern u32         g_NumTerrainTriangleVertices;
 extern TerrainChunkDraw g_TerrainChunkDraws[MAX_TERRAIN_CHUNK_DRAWS];
 extern u32              g_NumTerrainChunkDraws;
+extern f32              g_TerrainBrushPosRadius[4];
 
 extern OutlineTarget g_OutlineTargets[MAX_OUTLINE_TARGETS];
 extern u32           g_NumOutlineTargets;

@@ -119,8 +119,6 @@ OutlineTarget g_OutlineTargets[MAX_OUTLINE_TARGETS];
 u32           g_NumOutlineTargets;
 ALineVertex   g_GizmoVertices[MAX_GIZMO_VERTICES];
 u32           g_NumGizmoVertices;
-ALineVertex   g_TerrainTriangleVertices[MAX_TERRAIN_TRIANGLE_VERTICES];
-u32           g_NumTerrainTriangleVertices;
 
 static void ReleaseFrameTextureSet(FrameTextureSet* set)
 {
@@ -191,26 +189,38 @@ void RendererSetGizmoLines(const ALineVertex* vertices, u32 count)
     g_NumGizmoVertices = vertices ? count : 0;
 }
 
-void RendererSetTerrainTriangles(const ALineVertex* vertices, u32 count)
-{
-    count = Minu32(count, MAX_TERRAIN_TRIANGLE_VERTICES);
-    count -= count % 3u;
-    if (count > 0 && vertices)
-        MemCopy(g_TerrainTriangleVertices, vertices, count * sizeof(ALineVertex));
-    g_NumTerrainTriangleVertices = vertices ? count : 0;
-}
-
-// per-chunk vertex ranges resident in the terrain geometry heap, drawn without any
-// per-frame vertex copy (the heap's GPU mirror is flushed by UploadDirtyGeometry)
+// per-chunk vertex ranges resident in the terrain geometry heap, converted to indirect
+// draw commands so the depth and forward passes each render every chunk with a single
+// SDL_DrawGPUPrimitivesIndirect (no per-frame vertex copy either, the heap's GPU mirror
+// is flushed by UploadDirtyGeometry)
 TerrainChunkDraw g_TerrainChunkDraws[MAX_TERRAIN_CHUNK_DRAWS];
 u32              g_NumTerrainChunkDraws;
+f32              g_TerrainBrushPosRadius[4]; // xyz brush position, w radius (<= 0 inactive)
 
 void RendererSetTerrainChunkDraws(const TerrainChunkDraw* draws, u32 count)
 {
-    count = Minu32(count, MAX_TERRAIN_CHUNK_DRAWS);
-    if (count > 0 && draws)
+    count = draws ? Minu32(count, MAX_TERRAIN_CHUNK_DRAWS) : 0;
+    if (count > 0)
         MemCopy(g_TerrainChunkDraws, draws, count * sizeof(TerrainChunkDraw));
-    g_NumTerrainChunkDraws = draws ? count : 0;
+    g_NumTerrainChunkDraws = count;
+    if (count == 0 || !g_RenderState.terrainDrawArgsBuffer)
+        return;
+
+    // first_instance stays 0: SDL only guarantees it with the drawIndirectFirstInstance
+    // feature, and the terrain shader does not use instancing anyway
+    static SDL_GPUIndirectDrawCommand commands[MAX_TERRAIN_CHUNK_DRAWS];
+    for (u32 i = 0; i < count; i++)
+        commands[i] = (SDL_GPUIndirectDrawCommand){ draws[i].count, 1u, draws[i].first, 0u };
+    UpdateGPUBufferCycle(g_RenderState.terrainDrawArgsBuffer, commands,
+                         count * sizeof(SDL_GPUIndirectDrawCommand), 0, true);
+}
+
+void RendererSetTerrainBrush(float3 position, f32 radius)
+{
+    g_TerrainBrushPosRadius[0] = position.x;
+    g_TerrainBrushPosRadius[1] = position.y;
+    g_TerrainBrushPosRadius[2] = position.z;
+    g_TerrainBrushPosRadius[3] = radius;
 }
 
 void RendererSetOutlineTargets(const OutlineTarget* targets, u32 count)
@@ -363,8 +373,8 @@ void InitBuffers(void)
     g_RenderState.lineBuffer           = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_LINE_COUNT   , BVertexBit     | BWriteComputeBit, "CPLineVertexBuffer");
     g_RenderState.lineDrawArgsBuffer   = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
     g_RenderState.gizmoLineBuffer      = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
-    g_RenderState.terrainTriangleBuffer = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_TERRAIN_TRIANGLE_VERTICES, BVertexBit, "CPTerrainTriangleBuffer");
     g_RenderState.terrainChunkVertexBuffer = CreateBuffer(NULL, sizeof(TerrainVertex) * TERRAIN_MAX_VERTICES, BVertexBit, "CPTerrainChunkVertexBuffer");
+    g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
     g_RenderState.lightBuffer          = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
     g_RenderState.lightVisibilityBuffer = CreateBuffer(NULL, sizeof(u32) * MAX_LIGHT_COUNT          , BWriteComputeBit, "CPLightVisibilityBuffer");
     // Forward+ tiled light grid. lightGrid holds a {offset,count} per tile; lightIndex is a
@@ -832,8 +842,8 @@ void DestroyPipeline(void)
     if (g_RenderState.indexBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.indexBuffer);
     if (g_RenderState.lineBuffer)               SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineBuffer);
     if (g_RenderState.lineDrawArgsBuffer)       SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineDrawArgsBuffer);
-    if (g_RenderState.terrainTriangleBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainTriangleBuffer);
     if (g_RenderState.terrainChunkVertexBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainChunkVertexBuffer);
+    if (g_RenderState.terrainDrawArgsBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainDrawArgsBuffer);
     if (g_RenderState.lightBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightBuffer);
     if (g_RenderState.lightVisibilityBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightVisibilityBuffer);
     if (g_RenderState.lightGridBuffer)          SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightGridBuffer);

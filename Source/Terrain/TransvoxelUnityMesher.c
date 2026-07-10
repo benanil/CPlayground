@@ -36,9 +36,24 @@ static f32 tMesherDensityAtI3(const tTransvoxelMesher* mesher, int3 position)
     return tMesherDensityAt(mesher, position.x, position.y, position.z);
 }
 
-static f32 tMesherGeneratorAt(const tTransvoxelMesher* mesher, float3 position)
+static f32 tMesherGeneratorAt(const tTransvoxelMesher* mesher, float3 pos)
 {
-    return tDensityGeneratorGetValue(mesher->generator, position.x, position.y, position.z);
+	const tDensityGenerator* generator = mesher->generator;
+	if (!generator)
+    {
+        AX_WARN("transvoxel unity density generator failed: null generator");
+        return -pos.y;
+    }
+
+    f32 heightMap = 0.0f;
+    if (generator->heightMapNoise)
+        heightMap = generator->heightMapNoise(pos.x, pos.z, generator->heightMapUserData) * generator->heightMapStrength;
+
+    f32 noise3D = 0.0f;
+    if (generator->noise3D)
+        noise3D = generator->noise3D(pos.x, pos.y, pos.z, generator->noise3DUserData) * generator->noise3DStrength;
+
+    return -pos.y + heightMap + noise3D;
 }
 
 static s32 tTransvoxelMesherSign(f32 value)
@@ -179,7 +194,7 @@ static bool tMesherEmitVertex(tMeshData* meshData, float3 vertex, float3 normal,
         else
         {
             float3 secondaryPos = tMesherSecondaryPosition(vertex, normal, chunkSize, boundaryMask);
-            tSecondaryVertexData secondary = {0};
+            tSecondaryVert secondary = {0};
             secondary.position = VecSetR(secondaryPos.x * (f32)lodScale, secondaryPos.y * (f32)lodScale, secondaryPos.z * (f32)lodScale, 0.0f);
             secondary.vertexMask = (u16)boundaryMask;
             secondary.vertexIndex = (u16)vertexIndex;
@@ -217,6 +232,7 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
     tMesherFillS32(currentCache, cacheCount, -1);
     tMesherFillS32(previousCache, cacheCount, -1);
 
+	s32 numIndices  = 0;
     bool result = true;
     for (s32 y = 0; y < chunkSize; y++)
     {
@@ -289,7 +305,7 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
                     {
                         float3 vertex = F3Zero();
                         float3 normal = F3Up();
-                        vertexIndex = (s32)ArrayLength(meshData->vertices);
+                        vertexIndex = meshData->numVertices;
                         s32 boundaryMask = 0;
 
                         if (cacheIdx == 0)
@@ -475,7 +491,7 @@ static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
                 {
                     float3 vertex = F3Zero();
                     float3 normal = F3Up();
-                    vertexIndex = (s32)ArrayLength(meshData->vertices);
+                    vertexIndex = meshData->numVertices;
                     s32 boundaryMask = 0;
                     bool lowResFace = cacheIdx > 6u;
 

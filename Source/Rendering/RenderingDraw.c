@@ -159,7 +159,7 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
 {
     Scene* scene = g_ActiveScene;
     u32 totalGroups = scene->skinnedSet.numGroups + scene->surfaceSet.numGroups + scene->transparentSurfaceSet.numGroups;
-    if (totalGroups == 0 && g_NumTerrainTriangleVertices == 0 && g_NumTerrainChunkDraws == 0)
+    if (totalGroups == 0 && g_NumTerrainChunkDraws == 0)
         return;
 
     struct {
@@ -270,55 +270,34 @@ void RenderGizmo(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
     SDL_EndGPURenderPass(pass);
 }
 
-// heap-resident chunk ranges drawn straight from the geometry heap's GPU mirror; the
-// caller has already bound the terrain triangle pipeline and pushed the viewProj uniform
+// every visible chunk in one indirect multidraw straight from the geometry heap's GPU
+// mirror; the caller has already bound the terrain pipeline and pushed its uniforms
 static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
 {
-    if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainChunkVertexBuffer) return;
+    if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainChunkVertexBuffer ||
+        !g_RenderState.terrainDrawArgsBuffer) return;
 
     SDL_GPUBufferBinding heapBinding = { g_RenderState.terrainChunkVertexBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &heapBinding, 1);
-    for (u32 i = 0; i < g_NumTerrainChunkDraws; i++)
-        SDL_DrawGPUPrimitives(pass, g_TerrainChunkDraws[i].count, 1, g_TerrainChunkDraws[i].first, 0);
+    SDL_DrawGPUPrimitivesIndirect(pass, g_RenderState.terrainDrawArgsBuffer, 0, g_NumTerrainChunkDraws);
 }
 
 void RenderTerrainTriangles(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
-    if ((g_NumTerrainTriangleVertices == 0 && g_NumTerrainChunkDraws == 0) ||
-        !g_TerrainTrianglePipeline || !g_RenderState.terrainTriangleBuffer) return;
+    if (g_NumTerrainChunkDraws == 0 || !g_TerrainTrianglePipeline) return;
 
     SDL_BindGPUGraphicsPipeline(pass, g_TerrainTrianglePipeline);
     SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
-
-    if (g_NumTerrainTriangleVertices > 0)
-    {
-        UpdateGPUBufferCycle(g_RenderState.terrainTriangleBuffer, g_TerrainTriangleVertices,
-                             g_NumTerrainTriangleVertices * sizeof(ALineVertex), 0, true);
-        SDL_GPUBufferBinding vertexBinding = { g_RenderState.terrainTriangleBuffer, 0 };
-        SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
-        SDL_DrawGPUPrimitives(pass, g_NumTerrainTriangleVertices, 1, 0, 0);
-    }
-
+    SDL_PushGPUFragmentUniformData(cmd, 0, &g_TerrainBrushPosRadius, sizeof(g_TerrainBrushPosRadius));
     RenderTerrainChunkRanges(pass);
 }
 
 void RenderTerrainTrianglesDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
-    if ((g_NumTerrainTriangleVertices == 0 && g_NumTerrainChunkDraws == 0) ||
-        !g_TerrainTriangleDepthPipeline || !g_RenderState.terrainTriangleBuffer) return;
+    if (g_NumTerrainChunkDraws == 0 || !g_TerrainTriangleDepthPipeline) return;
 
     SDL_BindGPUGraphicsPipeline(pass, g_TerrainTriangleDepthPipeline);
     SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
-
-    if (g_NumTerrainTriangleVertices > 0)
-    {
-        UpdateGPUBufferCycle(g_RenderState.terrainTriangleBuffer, g_TerrainTriangleVertices,
-                             g_NumTerrainTriangleVertices * sizeof(ALineVertex), 0, true);
-        SDL_GPUBufferBinding vertexBinding = { g_RenderState.terrainTriangleBuffer, 0 };
-        SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
-        SDL_DrawGPUPrimitives(pass, g_NumTerrainTriangleVertices, 1, 0, 0);
-    }
-
     RenderTerrainChunkRanges(pass);
 }
 

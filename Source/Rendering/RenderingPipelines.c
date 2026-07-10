@@ -104,6 +104,8 @@ extern const unsigned char Shaders_TerrainDepthOnlyFrag_msl[];
 #include "Shaders/spv/Animation/AnimateVertices.spv.h"
 #include "Shaders/spv/LineDebugVert.spv.h"
 #include "Shaders/spv/LineDebugFrag.spv.h"
+#include "Shaders/spv/TerrainChunkVert.spv.h"
+#include "Shaders/spv/TerrainChunkFrag.spv.h"
 #include "Shaders/spv/OutlineVert.spv.h"
 #include "Shaders/spv/OutlineFrag.spv.h"
 #include "Shaders/spv/UI/SlugVert.spv.h"
@@ -450,8 +452,8 @@ SDL_GPUGraphicsPipeline* g_TerrainTriangleDepthPipeline;
 static void InitTerrainTrianglePipeline(void)
 {
     SDL_GPUShaderFormat shaderformat = AX_GPU_SHADER_FORMAT;
-    SDL_GPUShader* vertex_shader   = PIPELINE_VERT_DEF(Shaders_LineDebugVert_spv), .num_uniform_buffers = 1 }); CHECK_CREATE(vertex_shader, "Terrain Triangle Vertex Shader")
-    SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_LineDebugFrag_spv)});                            CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
+    SDL_GPUShader* vertex_shader   = PIPELINE_VERT_DEF(Shaders_TerrainChunkVert_spv), .num_uniform_buffers = 1 }); CHECK_CREATE(vertex_shader, "Terrain Triangle Vertex Shader")
+    SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_TerrainChunkFrag_spv), .num_uniform_buffers = 1 }); CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
 
     const SDL_GPUVertexAttribute vertex_attributes[2] = {
         { .location = 0, .buffer_slot = 0, .format = VFORMAT_FLOAT3, .offset = 0 },

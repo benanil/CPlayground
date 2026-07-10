@@ -16,24 +16,24 @@
 
 typedef struct tExampleChunk_
 {
-    int3 min;
-    s32 lod;
+    int3   min;
+    s32    lod;
     float3 aabbMin;
     float3 aabbMax;
     // chunk mesh lives in the TerrainVertex geometry heap (ALineVertex payload, same
     // 16 byte stride); the GPU mirror draws it without any per-frame copy
     void* heapPtr;
-    u32 heapFirst;
-    u32 vertexCount;
+    u32   heapFirst;
+    u32   vertexCount;
     void* pendingHeapPtr;
-    u32 pendingHeapFirst;
-    u32 pendingVertexCount;
-    u8  pendingFrames;
-    s32 neighboursMask; // bit per face (-x,-y,-z,+x,+y,+z): neighbor renders at a finer lod
-    bool built;
-    bool dirty;
-    bool physicsDirty;
-    bool pendingEmpty;
+    u32   pendingHeapFirst;
+    u32   pendingVertexCount;
+    u8    pendingFrames;
+    s32   neighboursMask; // bit per face (-x,-y,-z,+x,+y,+z): neighbor renders at a finer lod
+    bool  built;
+    bool  dirty;
+    bool  physicsDirty;
+    bool  pendingEmpty;
 } tExampleChunk;
 
 typedef struct tTransvoxelExample_
@@ -42,8 +42,7 @@ typedef struct tTransvoxelExample_
     tMeshDataContainer scratchMesh;
     f32* densityData;
     ALineVertex* buildVertices;  // per-build scratch, copied into the geometry heap
-    ALineVertex* submitVertices; // per-frame soup, only brush-highlighted chunks now
-    TerrainChunkDraw* chunkDraws; // per-frame heap ranges for the static chunks
+    TerrainChunkDraw* chunkDraws; // per-frame heap ranges, one indirect multidraw
     tExampleChunk chunks[T_EXAMPLE_MAX_CHUNKS];
     HashMap chunkLookup; // key: tExampleChunkKey, value: u32 index into chunks
     u32 chunkCount;
@@ -187,7 +186,7 @@ static bool tExampleBuildDensity(int3 chunkMin, s32 lod)
     return true;
 }
 
-static const f32 tExampleLODDistance[T_EXAMPLE_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };}
+static const f32 tExampleLODDistance[T_EXAMPLE_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };
 
 // true when the quadtree node at (nodeX, nodeZ, lod) splits into finer children:
 // the closest point of its XZ box lies inside the next-finer lod's distance ring.
@@ -261,8 +260,8 @@ static void tExampleAppendMeshSlotTriangles(const tExampleChunk* chunk, tMeshDat
     if (!mesh || !mesh->vertices || !mesh->indices || !tExample.buildVertices)
         return;
 
-    size_t vertexCount = ArrayLength(mesh->vertices);
-    size_t indexCount = ArrayLength(mesh->indices);
+    size_t vertexCount = (size_t)mesh->numVertices;
+    size_t indexCount = (size_t)mesh->numIndices;
     float3 offset = ToFloat3(chunk->min);
     for (size_t i = 0; i + 2 < indexCount; i += 3)
     {
@@ -453,14 +452,15 @@ static bool tExampleBuildChunk(u32 chunkIndex, tExampleChunk* chunk)
 
 // tChunkPositionKey packs the position into bits 3..63, so the 2-bit lod fits in
 // the free low bits and one map covers all LOD levels
-static u64 tExampleChunkKey(int3 min, s32 lod)
+static u64 tExampleChunkKey(int3 position, s32 lod)
 {
-    return tChunkPositionKey(min) | (u64)(u32)lod;
+	return ((u64)((u32)(position.x + 0x100000) & 0x1FFFFFu) << 40)
+		| ((u64)((u32)(position.y + 0x8000)   & 0xFFFFu)   << 24)
+		| ((u64)((u32)(position.z + 0x100000) & 0x1FFFFFu) << 3) | (u64)(u32)lod;
 }
 
 static void tExampleClearChunkCache(void)
 {
-    RendererSetTerrainTriangles(NULL, 0);
     RendererSetTerrainChunkDraws(NULL, 0);
     for (u32 i = 0; i < tExample.chunkCount; i++)
     {
@@ -582,72 +582,18 @@ static s32 tExampleAbss32(s32 value)
     return value < 0 ? -value : value;
 }
 
-static u32 tExampleBrushTint(u32 color)
-{
-    // lighten toward a warm highlight so the cursor reads on any terrain color
-    u32 r = (color)       & 0xFFu;
-    u32 g = (color >> 8)  & 0xFFu;
-    u32 b = (color >> 16) & 0xFFu;
-    r = r + ((255u - r) >> 1);
-    g = g + ((200u - Minu32(g, 200u)) >> 1);
-    b = b >> 1;
-    return r | (g << 8) | (b << 16);
-}
-
-// brush cursor: chunks are cached meshes, so the highlight is applied on the per-frame
-// submit copy instead of a shader uniform like the builtin terrain used
-static bool tExampleChunkTouchesBrush(const tExampleChunk* chunk)
-{
-    if (!tExample.brushActive)
-        return false;
-    f32 cx = Clampf32(tExample.brushPos.x, chunk->aabbMin.x, chunk->aabbMax.x) - tExample.brushPos.x;
-    f32 cy = Clampf32(tExample.brushPos.y, chunk->aabbMin.y, chunk->aabbMax.y) - tExample.brushPos.y;
-    f32 cz = Clampf32(tExample.brushPos.z, chunk->aabbMin.z, chunk->aabbMax.z) - tExample.brushPos.z;
-    return cx * cx + cy * cy + cz * cz < tExample.brushRadius * tExample.brushRadius;
-}
-
-// returns false only when the submit buffers are full; empty chunks are a successful no-op
-// so one air/solid chunk does not abort the rest of the LOD ring. static chunks submit a
-// heap draw range (no vertex copy); brush-highlighted chunks go through the per-frame
-// soup path with tinted colors, reading the pristine mesh from the heap's CPU mirror.
+// returns false only when the draw list is full; empty chunks are a successful no-op so
+// one air/solid chunk does not abort the rest of the LOD ring. every chunk submits a heap
+// draw range (no vertex copy); the brush highlight is a terrain shader uniform now
 static bool tExampleAppendChunkTriangles(const tExampleChunk* chunk)
 {
     if (!chunk || chunk->vertexCount == 0 || !chunk->heapPtr)
         return true;
 
-    if (!tExampleChunkTouchesBrush(chunk))
-    {
-        if (ArrayLength(tExample.chunkDraws) >= ArrayCapacity(tExample.chunkDraws))
-            return false;
-        TerrainChunkDraw draw = { chunk->heapFirst, chunk->vertexCount };
-        ArrayPush(tExample.chunkDraws, draw);
-        tExample.submittedChunks++;
-        return true;
-    }
-
-    size_t count = chunk->vertexCount;
-    size_t dstCount = ArrayLength(tExample.submitVertices);
-    size_t capacity = ArrayCapacity(tExample.submitVertices);
-    if (dstCount >= capacity)
+    if (ArrayLength(tExample.chunkDraws) >= ArrayCapacity(tExample.chunkDraws))
         return false;
-    if (dstCount + count > capacity)
-        count = capacity - dstCount;
-    count -= count % 3u;
-    if (count == 0)
-        return false;
-
-    const ALineVertex* source = (const ALineVertex*)gGFX.TerrainVertexBuffer + chunk->heapFirst;
-    f32 radiusSq = tExample.brushRadius * tExample.brushRadius;
-    for (size_t i = 0; i < count; i++)
-    {
-        ALineVertex vertex = source[i];
-        f32 dx = vertex.x - tExample.brushPos.x;
-        f32 dy = vertex.y - tExample.brushPos.y;
-        f32 dz = vertex.z - tExample.brushPos.z;
-        if (dx * dx + dy * dy + dz * dz < radiusSq)
-            vertex.color = tExampleBrushTint(vertex.color);
-        ArrayPush(tExample.submitVertices, vertex);
-    }
+    TerrainChunkDraw draw = { chunk->heapFirst, chunk->vertexCount };
+    ArrayPush(tExample.chunkDraws, draw);
     tExample.submittedChunks++;
     return true;
 }
@@ -864,8 +810,8 @@ static void tExampleLogStats(void)
     if (now - tExample.lastStatsTicks < 1000u)
         return;
     tExample.lastStatsTicks = now;
-    AX_LOG("transvoxel example: vertices=%u chunks=%u built=%u cached=%u culled=%u empty=%u",
-           (u32)ArrayLength(tExample.submitVertices), tExample.submittedChunks, tExample.builtThisFrame,
+    AX_LOG("transvoxel example: draws=%u chunks=%u built=%u cached=%u culled=%u empty=%u",
+           (u32)ArrayLength(tExample.chunkDraws), tExample.submittedChunks, tExample.builtThisFrame,
            tExample.chunkCount, tExample.culledChunks, tExample.emptyChunks);
 }
 
@@ -882,10 +828,9 @@ static bool tExampleInit(void)
     size_t densityCount = densitySize * densitySize * densitySize;
     tExample.densityData = ArrayCreatePrealloc(f32, densityCount);
     tExample.buildVertices = ArrayCreatePrealloc(ALineVertex, T_EXAMPLE_CHUNK_TRIANGLE_CAP);
-    tExample.submitVertices = ArrayCreatePrealloc(ALineVertex, MAX_TERRAIN_TRIANGLE_VERTICES);
-    tExample.chunkDraws = ArrayCreatePrealloc(TerrainChunkDraw, T_EXAMPLE_MAX_CHUNKS);
+    tExample.chunkDraws = ArrayCreatePrealloc(TerrainChunkDraw, MAX_TERRAIN_CHUNK_DRAWS);
     tExample.chunkLookup = HMCreate(T_EXAMPLE_MAX_CHUNKS, sizeof(u32));
-    if (!tExample.densityData || !tExample.buildVertices || !tExample.submitVertices || !tExample.chunkDraws)
+    if (!tExample.densityData || !tExample.buildVertices || !tExample.chunkDraws)
     {
         AX_WARN("transvoxel example allocation failed");
         tTransvoxelExampleDestroy();
@@ -906,13 +851,11 @@ void tTransvoxelExampleUpdate(void)
 {
     if (!tExampleInit())
     {
-        RendererSetTerrainTriangles(NULL, 0);
         RendererSetTerrainChunkDraws(NULL, 0);
         return;
     }
 
     tExamplePromotePendingMeshes();
-    ArrayFieldSet(tExample.submitVertices, ArrayField_Length, 0);
     ArrayFieldSet(tExample.chunkDraws, ArrayField_Length, 0);
     tExample.builtThisFrame = 0;
     tExample.submittedChunks = 0;
@@ -926,13 +869,13 @@ void tTransvoxelExampleUpdate(void)
     tExample.lodFactor = lodFactor;
     tExample.fixedArea = genParams && genParams->fixedArea;
     tExampleSubmitTerrain(lodFactor, &frustum, true);
-    if (ArrayLength(tExample.submitVertices) == 0 && ArrayLength(tExample.chunkDraws) == 0)
+    if (ArrayLength(tExample.chunkDraws) == 0)
         tExampleSubmitTerrain(lodFactor, &frustum, false);
 
     tExampleSyncDirtyPhysics();
     tExampleLogStats();
-    RendererSetTerrainTriangles(tExample.submitVertices, (u32)ArrayLength(tExample.submitVertices));
     RendererSetTerrainChunkDraws(tExample.chunkDraws, (u32)ArrayLength(tExample.chunkDraws));
+    RendererSetTerrainBrush(tExample.brushPos, tExample.brushActive ? tExample.brushRadius : 0.0f);
 }
 
 void tTransvoxelExampleInvalidateAll(void)
@@ -972,13 +915,11 @@ void tTransvoxelExampleSetBrushCursor(float3 position, f32 radius, bool active)
 
 void tTransvoxelExampleDestroy(void)
 {
-    RendererSetTerrainTriangles(NULL, 0);
     RendererSetTerrainChunkDraws(NULL, 0);
     tExampleClearChunkCache();
     HMDestroy(&tExample.chunkLookup);
     ArrayDestroy(tExample.densityData);
     ArrayDestroy(tExample.buildVertices);
-    ArrayDestroy(tExample.submitVertices);
     ArrayDestroy(tExample.chunkDraws);
     tMeshDataContainerDestroy(&tExample.scratchMesh);
     SDL_memset(&tExample, 0, sizeof(tExample));

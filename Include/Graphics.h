@@ -266,8 +266,8 @@ typedef struct RenderState
     SDL_GPUBuffer*           lineBuffer;
     SDL_GPUBuffer*           lineDrawArgsBuffer;
     SDL_GPUBuffer*           gizmoLineBuffer;
-    SDL_GPUBuffer*           terrainTriangleBuffer;
     SDL_GPUBuffer*           terrainChunkVertexBuffer; // GPU mirror of the TerrainVertex geometry heap
+    SDL_GPUBuffer*           terrainDrawArgsBuffer;    // SDL_GPUIndirectDrawCommand per visible chunk
     SDL_GPUBuffer*           lightBuffer;
     SDL_GPUBuffer*           pointShadowMatrixBuffer;
     SDL_GPUBuffer*           spotShadowMatrixBuffer;
@@ -291,8 +291,11 @@ typedef struct Graphics_
     ASkinedVertex* SkinnedVertexBuffer;
     AVertex*       SurfaceVertexBuffer;
     void*          TerrainGrassBuffer;
+    void*          TerrainVertNewBuffer;
+    void*          TerrainSecondBuffer;
     void*          TerrainVertexBuffer;
     u32*           TerrainIndexBuffer;
+    u32*           TerrainIndexBuffer2;
     u32*           IndexBuffer;
     u32            NumIndices;          // in use stats, not cursors
     u32            NumSkinnedVertices;
@@ -321,6 +324,9 @@ enum GeometryBufferKind_
     GeometryBuffer_TerrainVertex,
     GeometryBuffer_TerrainIndex,
     GeometryBuffer_GrassInstance,
+    GeometryBuffer_TerrainVertNew,
+    GeometryBuffer_TerrainSecond, // secondary vertex
+    GeometryBuffer_TerrainIndex2,
     GeometryBuffer_Count
 };
 typedef s32 GeometryBufferKind;

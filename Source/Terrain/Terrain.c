@@ -305,12 +305,6 @@ static f32 TerrainChunkWorldSize(u32 lod)
     return (f32)TERRAIN_CHUNK_CELLS * TERRAIN_VOXEL_SIZE * (f32)(1u << lod);
 }
 
-static s32 TerrainFloorDiv(s32 a, s32 b)
-{
-    s32 q = a / b, r = a % b;
-    return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
-}
-
 static u64 TerrainChunkKey(s32 x, s32 y, s32 z, u32 lod)
 {
     return ((u64)((u32)(x + 0x100000) & 0x1FFFFFu) << 40)

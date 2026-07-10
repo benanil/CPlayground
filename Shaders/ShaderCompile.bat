@@ -9,7 +9,7 @@ set SPV_DIR=Shaders\spv
 
 rem One HLSL file per graphics pass:
 rem FileName:VertexEntry:FragmentEntry
-set GRAPHICS_SHADERS=SurfaceForward:vert:frag SkinnedForward:vert:frag SurfaceDepthOnly:vert:frag SkinnedDepthOnly:vert:frag LineDebug:vert:frag Outline:vert:frag UI\Slug:vert:frag UI\UIShape:vert:frag UI\UIImage:vert:frag Shadow\SurfaceShadowDepthOnly:vert:frag Shadow\SkinnedShadowDepthOnly:vert:frag Shadow\SurfacePointShadowDepthOnly:vert:frag Shadow\SkinnedPointShadowDepthOnly:vert:frag TerrainForward:vert:frag TerrainDepthOnly:vert:frag
+set GRAPHICS_SHADERS=SurfaceForward:vert:frag SkinnedForward:vert:frag SurfaceDepthOnly:vert:frag SkinnedDepthOnly:vert:frag LineDebug:vert:frag Outline:vert:frag UI\Slug:vert:frag UI\UIShape:vert:frag UI\UIImage:vert:frag Shadow\SurfaceShadowDepthOnly:vert:frag Shadow\SkinnedShadowDepthOnly:vert:frag Shadow\SurfacePointShadowDepthOnly:vert:frag Shadow\SkinnedPointShadowDepthOnly:vert:frag TerrainForward:vert:frag TerrainDepthOnly:vert:frag TerrainChunk:vert:frag
 
 rem Extra single-stage graphics passes with custom entry/output/target:
 rem FileName:OutputName:Entry:Target

@@ -1,65 +1,73 @@
 #include "Source/Terrain/TransvoxelUnity.h"
 #include "Include/Platform.h"
+#include "Include/Graphics.h"
 
 bool tMeshDataInit(tMeshData* data, size_t vertexCapacity, size_t indexCapacity, size_t secondaryVertexCapacity)
 {
-    data->vertices          = ArrayCreatePrealloc(tVertexData, vertexCapacity);
-    data->indices           = ArrayCreatePrealloc(u32, indexCapacity);
-    data->secondaryVertices = ArrayCreatePrealloc(tSecondaryVertexData, secondaryVertexCapacity);
+    *data = (tMeshData){0};
+    u32 r0 = GeometryHeapAlloc(GeometryBuffer_TerrainVertNew, (u32)vertexCapacity         , (void**)&data->vertices     );
+    u32 r1 = GeometryHeapAlloc(GeometryBuffer_TerrainIndex2 , (u32)indexCapacity          , (void**)&data->indices      );
+    u32 r2 = GeometryHeapAlloc(GeometryBuffer_TerrainSecond , (u32)secondaryVertexCapacity, (void**)&data->secondaryVert);
 
-    if (!data->vertices || !data->indices || !data->secondaryVertices)
+    if (!data->vertices || !data->indices || !data->secondaryVert
+		|| r0 == GEOMETRY_ALLOC_FAIL || r1 == GEOMETRY_ALLOC_FAIL || r2 == GEOMETRY_ALLOC_FAIL )
     {
         AX_WARN("transvoxel unity mesh data init failed: allocation failed");
         tMeshDataDestroy(data);
         return false;
     }
-
+    data->vertexCapacity    = (s32)vertexCapacity;
+    data->indexCapacity     = (s32)indexCapacity;
+    data->secondaryCapacity = (s32)secondaryVertexCapacity;
     return true;
 }
 
 void tMeshDataDestroy(tMeshData* data)
 {
-    ArrayDestroy(data->vertices);
-    ArrayDestroy(data->indices);
-    ArrayDestroy(data->secondaryVertices);
+    GeometryHeapFree(GeometryBuffer_TerrainVertNew, data->vertices);
+    GeometryHeapFree(GeometryBuffer_TerrainIndex2 , data->indices);
+    GeometryHeapFree(GeometryBuffer_TerrainSecond , data->secondaryVert);
     *data = (tMeshData){0};
 }
 
 void tMeshDataClear(tMeshData* data)
 {
-    if (data->vertices) ArrayFieldSet(data->vertices, ArrayField_Length, 0);
-    if (data->indices) ArrayFieldSet(data->indices, ArrayField_Length, 0);
-    if (data->secondaryVertices) ArrayFieldSet(data->secondaryVertices, ArrayField_Length, 0);
+	data->numVertices = 0;
+	data->numIndices = 0;
+	data->numSecondaryVert = 0;
 }
 
 bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex)
 {
-    size_t oldCount = ArrayLength(data->vertices);
-    ArrayPush(data->vertices, vertex);
-    return ArrayLength(data->vertices) == oldCount + 1;
+	if (data->numVertices >= data->vertexCapacity)
+		return false;
+	data->vertices[data->numVertices++] = vertex;
+	return true;
 }
 
 bool tMeshDataPushIndex(tMeshData* data, u32 index)
 {
-    size_t oldCount = ArrayLength(data->indices);
-    ArrayPush(data->indices, index);
-    return ArrayLength(data->indices) == oldCount + 1;
+	if (data->numIndices >= data->indexCapacity)
+		return false;
+	data->indices[data->numIndices++] = index;
+	return true;
 }
 
-bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVertexData vertex)
+bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVert vertex)
 {
-    size_t oldCount = ArrayLength(data->secondaryVertices);
-    ArrayPush(data->secondaryVertices, vertex);
-    return ArrayLength(data->secondaryVertices) == oldCount + 1;
+	if (data->numSecondaryVert >= data->secondaryCapacity)
+		return false;
+	data->secondaryVert[data->numSecondaryVert++] = vertex;
+	return true;
 }
 
-bool tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask)
+void tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask)
 {
-    size_t vertexCount = ArrayLength(data->vertices);
-    size_t secondaryCount = ArrayLength(data->secondaryVertices);
+    size_t vertexCount = data->numVertices;
+    size_t secondaryCount = data->numSecondaryVert;
     for (size_t i = 0; i < secondaryCount; i++)
     {
-        tSecondaryVertexData secondary = data->secondaryVertices[i];
+        tSecondaryVert secondary = data->secondaryVert[i];
         if ((secondary.vertexMask & (u16)neighboursMask) != secondary.vertexMask)
             continue;
 
@@ -71,7 +79,6 @@ bool tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask)
 
         data->vertices[secondary.vertexIndex].position = secondary.position;
     }
-    return true;
 }
 
 static bool tMeshDataTriangleValid(const tVertexData* vertices, u32 ia, u32 ib, u32 ic)
@@ -91,8 +98,8 @@ static bool tMeshDataTriangleValid(const tVertexData* vertices, u32 ia, u32 ib, 
 
 u32* tMeshDataBuildValidIndices(const tMeshData* data)
 {
-    size_t sourceIndexCount = ArrayLength(data->indices);
-    size_t vertexCount = ArrayLength(data->vertices);
+    size_t sourceIndexCount = data->numIndices;
+    size_t vertexCount = data->numVertices;
     u32* result = ArrayCreatePrealloc(u32, sourceIndexCount);
     if (!result)
     {
@@ -159,7 +166,7 @@ bool tMeshDataContainerHasAnyData(const tMeshDataContainer* container)
     for (u32 i = 0; i < tMeshDataSlot_Count; i++)
     {
         const tMeshData* data = &container->mesh[i];
-        if (data->vertices && ArrayLength(data->vertices) > 0)
+        if (data->vertices && data->numVertices > 0)
             return true;
     }
     return false;
@@ -175,12 +182,10 @@ const tMeshData* tMeshDataContainerGetConst(const tMeshDataContainer* container,
     return &container->mesh[slot];
 }
 
-bool tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask)
+void tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask)
 {
-    bool result = true;
     for (u32 i = 0; i < tMeshDataSlot_Count; i++)
-        result = tMeshDataApplySecondaryVertices(&container->mesh[i], neighboursMask) && result;
-    return result;
+        tMeshDataApplySecondaryVertices(&container->mesh[i], neighboursMask);
 }
 
 void tMeshCopyJobClearResults(tMeshCopyJob* job)
@@ -204,8 +209,7 @@ bool tMeshCopyJobExecute(tMeshCopyJob* job)
     }
 
     tMeshCopyJobClearResults(job);
-    if (!tMeshDataContainerApplySecondaryVertices(job->meshData, job->neighboursMask))
-        return false;
+    tMeshDataContainerApplySecondaryVertices(job->meshData, job->neighboursMask);
 
     bool result = true;
     for (u32 i = 0; i < tMeshDataSlot_Count; i++)
