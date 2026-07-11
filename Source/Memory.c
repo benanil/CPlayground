@@ -560,35 +560,66 @@ static inline void CheckArenaSize(void)
     }
 }
 
-bool ArenaBeginScratch(ArenaScratch* scratch, size_t size, const char* name)
+bool ArenaScratchCreate(ArenaScratch* scratch, size_t size, const char* name)
 {
+    *scratch = (ArenaScratch){0};
     scratch->buf        = (char*)AllocateTLSFGlobal(size);
     scratch->name       = name;
     scratch->buffLen    = size;
-    scratch->currOffset = 0;
-    scratch->spillCount = 0;
-    scratch->previous   = g_CurrentScratch;
     if (!scratch->buf)
     {
-        AX_WARN("ArenaBeginScratch failed size=%llu", (u64)size);
+        AX_WARN("ArenaScratchCreate failed size=%llu", (u64)size);
         scratch->buffLen = 0;
         return false;
     }
-    g_CurrentScratch = scratch;
     return true;
 }
 
-void ArenaEndScratch(ArenaScratch* scratch)
+void ArenaScratchDestroy(ArenaScratch* scratch)
 {
-    // free any spills the scope leaked (balanced push/pop or save/restore should leave none)
+    if (!scratch) return;
     while (scratch->spillCount > 0)
         DeAllocateTLSFGlobal(scratch->spills[--scratch->spillCount].ptr);
-    g_CurrentScratch = scratch->previous;
     if (scratch->buf)
     {
         DeAllocateTLSFGlobal(scratch->buf);
         scratch->buf = NULL;
     }
+    *scratch = (ArenaScratch){0};
+}
+
+void ArenaScratchBegin(ArenaScratch* scratch)
+{
+    ASSERT(scratch && scratch->buf);
+    scratch->currOffset = 0;
+    while (scratch->spillCount > 0)
+        DeAllocateTLSFGlobal(scratch->spills[--scratch->spillCount].ptr);
+    scratch->previous = g_CurrentScratch;
+    g_CurrentScratch = scratch;
+}
+
+void ArenaScratchEnd(ArenaScratch* scratch)
+{
+    // free any spills the scope leaked (balanced push/pop or save/restore should leave none)
+    while (scratch->spillCount > 0)
+        DeAllocateTLSFGlobal(scratch->spills[--scratch->spillCount].ptr);
+    scratch->currOffset = 0;
+    g_CurrentScratch = scratch->previous;
+    scratch->previous = NULL;
+}
+
+bool ArenaBeginScratch(ArenaScratch* scratch, size_t size, const char* name)
+{
+    if (!ArenaScratchCreate(scratch, size, name))
+        return false;
+    ArenaScratchBegin(scratch);
+    return true;
+}
+
+void ArenaEndScratch(ArenaScratch* scratch)
+{
+    ArenaScratchEnd(scratch);
+    ArenaScratchDestroy(scratch);
 }
 
 void ArenaInit(Arena* a, size_t backing_buffer_length)

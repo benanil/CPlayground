@@ -118,6 +118,10 @@ void      ArenaPopGlobal(uint64_t size);
 // (current arena is left unchanged).
 bool      ArenaBeginScratch(ArenaScratch* scratch, size_t size, const char* name);
 void      ArenaEndScratch(ArenaScratch* scratch);
+bool      ArenaScratchCreate(ArenaScratch* scratch, size_t size, const char* name);
+void      ArenaScratchDestroy(ArenaScratch* scratch);
+void      ArenaScratchBegin(ArenaScratch* scratch);
+void      ArenaScratchEnd(ArenaScratch* scratch);
 uint64_t  ArenaRemainingCurrent(void);
 uint64_t  ArenaGetCurrentOffset(void);
 void      ArenaSetCurrentOffset(size_t offset);

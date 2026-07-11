@@ -1,5 +1,6 @@
 #include "RenderingInternal.h"
 #include "Include/Slug.h"
+#include "Source/Terrain/TransvoxelUnity.h"
 
 #if defined(PLATFORM_MACOSX)
 #include "Shaders/msl/SurfaceForwardFrag.msl.h"
@@ -456,8 +457,8 @@ static void InitTerrainTrianglePipeline(void)
     SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_TerrainChunkFrag_spv), .num_uniform_buffers = 1 }); CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
 
     const SDL_GPUVertexAttribute vertex_attributes[2] = {
-        { .location = 0, .buffer_slot = 0, .format = VFORMAT_FLOAT3, .offset = 0 },
-        { .location = 1, .buffer_slot = 0, .format = VFORMAT_UINT, .offset = sizeof(f32) * 3 }
+        { .location = 0, .buffer_slot = 0, .format = VFORMAT_FLOAT4, .offset = offsetof(tVertexData, position) },
+        { .location = 1, .buffer_slot = 0, .format = VFORMAT_UINT,   .offset = offsetof(tVertexData, color) }
     };
 
     g_TerrainTrianglePipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){
@@ -479,7 +480,7 @@ static void InitTerrainTrianglePipeline(void)
         .multisample_state = (SDL_GPUMultisampleState){ .sample_count = g_RenderState.sceneSampleCount },
         .vertex_input_state = (SDL_GPUVertexInputState){
             .vertex_buffer_descriptions = &(SDL_GPUVertexBufferDescription){
-                0, sizeof(ALineVertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
+                0, sizeof(tVertexData), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
             },
             .num_vertex_buffers    = 1,
             .vertex_attributes     = vertex_attributes,
@@ -516,7 +517,7 @@ static void InitTerrainTrianglePipeline(void)
         .multisample_state = (SDL_GPUMultisampleState){ .sample_count = SDL_GPU_SAMPLECOUNT_1 },
         .vertex_input_state = (SDL_GPUVertexInputState){
             .vertex_buffer_descriptions = &(SDL_GPUVertexBufferDescription){
-                0, sizeof(ALineVertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
+                0, sizeof(tVertexData), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
             },
             .num_vertex_buffers    = 1,
             .vertex_attributes     = vertex_attributes,

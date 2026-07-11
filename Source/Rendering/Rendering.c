@@ -9,7 +9,8 @@
 #include "Include/Memory.h"
 #include "Include/Scene.h"
 #include "Include/Terrain.h"
-#include "Source/Terrain/TerrainInternal.h" // TerrainVertex stride for the terrain geometry heap mirror
+#include "Source/Terrain/TerrainInternal.h"
+#include "Source/Terrain/TransvoxelUnity.h"
 
 #define RESIZE_RELEASE_DELAY 4u
 
@@ -326,13 +327,18 @@ static void UploadDirtyGeometry(void)
 
     SDL_GPUBuffer* gpuBuffers[GeometryBuffer_Count] = {
         g_RenderState.skinned.vertexBuffer, g_RenderState.surface.vertexBuffer, g_RenderState.indexBuffer,
+        NULL, NULL, NULL,
         g_RenderState.terrainChunkVertexBuffer, NULL, NULL
     };
     const u8* sources[GeometryBuffer_Count] = {
         (const u8*)gGFX.SkinnedVertexBuffer, (const u8*)gGFX.SurfaceVertexBuffer, (const u8*)gGFX.IndexBuffer,
-        (const u8*)gGFX.TerrainVertexBuffer, NULL, NULL
+        NULL, NULL, NULL,
+        (const u8*)gGFX.TerrainVertNewBuffer, NULL, NULL
     };
-    const size_t strides[GeometryBuffer_Count] = { sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), sizeof(TerrainVertex), 0u, 0u };
+    const size_t strides[GeometryBuffer_Count] = {
+        sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), 0u, 0u, 0u,
+        sizeof(tVertexData), 0u, 0u
+    };
 
     // Snapshot and clear the queue under the lock, then do the (slower) GPU copies without holding
     // it, so a baking worker thread never spins waiting on a transfer. The source ranges are stable
@@ -373,7 +379,7 @@ void InitBuffers(void)
     g_RenderState.lineBuffer           = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_LINE_COUNT   , BVertexBit     | BWriteComputeBit, "CPLineVertexBuffer");
     g_RenderState.lineDrawArgsBuffer   = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
     g_RenderState.gizmoLineBuffer      = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
-    g_RenderState.terrainChunkVertexBuffer = CreateBuffer(NULL, sizeof(TerrainVertex) * TERRAIN_MAX_VERTICES, BVertexBit, "CPTerrainChunkVertexBuffer");
+    g_RenderState.terrainChunkVertexBuffer = CreateBuffer(NULL, sizeof(tVertexData) * TERRAIN_MAX_VERTICES, BVertexBit, "CPTerrainChunkVertexBuffer");
     g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
     g_RenderState.lightBuffer          = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
     g_RenderState.lightVisibilityBuffer = CreateBuffer(NULL, sizeof(u32) * MAX_LIGHT_COUNT          , BWriteComputeBit, "CPLightVisibilityBuffer");

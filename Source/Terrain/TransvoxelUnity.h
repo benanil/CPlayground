@@ -36,9 +36,10 @@ typedef enum tChunkUpdateType_
 typedef struct tVertexData_
 {
     v128f position;
-    v128f normal;
-    v128f materials;
-    v128f blend;
+    u32 normal;    // 16+16 octahedral unorm
+    u32 materials; // rgba8 material ids
+    u32 blend;     // rgba8 material weights
+    u32 color;     // temporary debug/procedural color until material sampling lands
 } tVertexData;
 
 typedef struct tSecondaryVertexData_

@@ -7,12 +7,14 @@
 #include "Include/Scene.h"
 #include "Include/Memory.h"
 #include "Include/JobSystem.h"
+#include "Math/Bitpack.h"
 
 #define T_EXAMPLE_CHUNK_SIZE 16
 #define T_EXAMPLE_LOD_COUNT 4u
 #define T_EXAMPLE_MAX_CHUNKS (16384u)
 #define T_EXAMPLE_CHUNK_TRIANGLE_CAP (8192u * 4u)
 #define T_EXAMPLE_MAX_BUILDS_PER_FRAME 16u
+#define T_EXAMPLE_BUILD_SCRATCH_SIZE (2ull * 1024ull * 1024ull)
 #define T_EXAMPLE_MAX_PHYSICS_SYNCS_PER_FRAME 2u
 #define T_EXAMPLE_MAX_BUILD_JOBS 8u
 
@@ -22,8 +24,8 @@ typedef struct tExampleChunk_
     s32    lod;
     float3 aabbMin;
     float3 aabbMax;
-    // chunk mesh lives in the TerrainVertex geometry heap (ALineVertex payload, same
-    // 16 byte stride); the GPU mirror draws it without any per-frame copy
+    // chunk mesh lives in the tVertexData geometry heap; the GPU mirror draws it
+    // without any per-frame copy
     void* heapPtr;
     u32   heapFirst;
     u32   vertexCount;
@@ -53,8 +55,9 @@ typedef struct tExampleBuildJob_
     s32  neighboursMask;
     // per-slot scratch, initialized once (ranges in the TerrainVertNew/Second/Index2 heaps)
     tMeshDataContainer scratchMesh;
+    ArenaScratch scratchArena;
     // worker-local append state, valid only while the job runs (thread scratch arena)
-    ALineVertex* buildVertices;
+    tVertexData* buildVertices;
     u32          buildVertexCount;
     // outputs, worker; heapPtr is the parked mesh (NULL when empty or failed)
     void* heapPtr;
@@ -265,10 +268,20 @@ static s32 tColumnMask(int3 min, s32 lod)
     return mask;
 }
 
-static void tPushTriangleVertex(tExampleBuildJob* job, float3 p, u32 color)
+static v128f tUnpackNormal(u32 packed)
 {
-	ALineVertex vertex = { p.x, p.y, p.z, color };
-	job->buildVertices[job->buildVertexCount++] = vertex;
+    f32 x = (f32)((s32)(packed << 21) >> 21) * (1.0f / 1023.0f);
+    f32 y = (f32)((s32)(packed << 10) >> 21) * (1.0f / 1023.0f);
+    return OctDecode(VecSetR(x, y, 0.0f, 0.0f));
+}
+
+static void tPushTriangleVertex(tExampleBuildJob* job, v128f p, u32 normal, u32 color)
+{
+    tVertexData vertex = {0};
+    vertex.position = p;
+    vertex.normal = normal;
+    vertex.color = color;
+    job->buildVertices[job->buildVertexCount++] = vertex;
 }
 
 // runs on a worker: reads only the job's own scratch mesh and buffers, plus the
@@ -310,20 +323,20 @@ static void tAppendMeshSlotTriangles(tExampleBuildJob* job, tMeshDataSlot slot)
         float3 c = Vec3Get(pc);
         // safe normalize: secondary-vertex snapping can leave zero-length normals, a
         // plain normalize would spray NaN colors
-        float3 na = Vec3Get(Vec3NormVSafe(mesh->vertices[ia].normal));
-        float3 nb = Vec3Get(Vec3NormVSafe(mesh->vertices[ib].normal));
-        float3 nc = Vec3Get(Vec3NormVSafe(mesh->vertices[ic].normal));
-     	// todo: do color sampling in seperate loop because its branchy
-		tPushTriangleVertex(job, a, tTerrainColor(a, na));
-        tPushTriangleVertex(job, b, tTerrainColor(b, nb));
-        tPushTriangleVertex(job, c, tTerrainColor(c, nc));
+        float3 na = Vec3Get(tUnpackNormal(mesh->vertices[ia].normal));
+        float3 nb = Vec3Get(tUnpackNormal(mesh->vertices[ib].normal));
+        float3 nc = Vec3Get(tUnpackNormal(mesh->vertices[ic].normal));
+      	// todo: do color sampling in seperate loop because its branchy
+		tPushTriangleVertex(job, pa, mesh->vertices[ia].normal, tTerrainColor(a, na));
+        tPushTriangleVertex(job, pb, mesh->vertices[ib].normal, tTerrainColor(b, nb));
+        tPushTriangleVertex(job, pc, mesh->vertices[ic].normal, tTerrainColor(c, nc));
     }
 }
 
 static void tFreeChunkMesh(tExampleChunk* chunk)
 {
     if (chunk->heapPtr)
-        GeometryHeapFree(GeometryBuffer_TerrainVertex, chunk->heapPtr);
+        GeometryHeapFree(GeometryBuffer_TerrainVertNew, chunk->heapPtr);
     chunk->heapPtr = NULL;
     chunk->heapFirst = 0;
     chunk->vertexCount = 0;
@@ -332,7 +345,7 @@ static void tFreeChunkMesh(tExampleChunk* chunk)
 static void tFreePendingMesh(tExampleChunk* chunk)
 {
     if (chunk->pendingHeapPtr)
-        GeometryHeapFree(GeometryBuffer_TerrainVertex, chunk->pendingHeapPtr);
+        GeometryHeapFree(GeometryBuffer_TerrainVertNew, chunk->pendingHeapPtr);
     chunk->pendingHeapPtr = NULL;
     chunk->pendingHeapFirst = 0;
     chunk->pendingVertexCount = 0;
@@ -398,9 +411,9 @@ static void tSyncChunkPhysics(tExampleChunk* chunk)
         return;
     }
 
-    const ALineVertex* source = (const ALineVertex*)gGFX.TerrainVertexBuffer + chunk->heapFirst;
+    const tVertexData* source = (const tVertexData*)gGFX.TerrainVertNewBuffer + chunk->heapFirst;
     for (u32 i = 0; i < vertexCount; i++)
-        vertices[i] = (b3Vec3){ source[i].x, source[i].y, source[i].z };
+        vertices[i] = (b3Vec3){ VecGetX(source[i].position), VecGetY(source[i].position), VecGetZ(source[i].position) };
 
     u32 outIndexCount = 0u;
     for (u32 i = 0; i + 2u < vertexCount; i += 3u)
@@ -422,9 +435,9 @@ void tInvalidatePhysics(void)
     SDL_SetAtomicInt(&tExample.physicsInvalidated, 1);
 }
 // worker-side chunk build: density -> transvoxel mesh -> colored soup -> parked in the
-// TerrainVertex heap. touches only the job slot; the heap, upload queue, density field
+// tVertexData heap. touches only the job slot; the heap, upload queue, density field
 // and edit storage are all internally synchronized. CPU scratch (density grid, vertex
-// buffer, mesher caches via ArenaPushGlobal) comes from a private thread scratch arena
+// buffer, mesher caches via ArenaPushGlobal) comes from a reusable per-build-slot scratch arena
 static void tBuildJobRun(void* userData)
 {
     tExampleBuildJob* job = (tExampleBuildJob*)userData;
@@ -435,23 +448,18 @@ static void tBuildJobRun(void* userData)
     job->buildVertices = NULL;
     job->buildVertexCount = 0;
 
-    ArenaScratch scratch;
-    if (!ArenaBeginScratch(&scratch, 1u << 20, "terrainChunkBuild"))
-    {
-        job->failed = true;
-        return;
-    }
+    ArenaScratchBegin(&job->scratchArena);
 
     s32 densitySize = T_EXAMPLE_CHUNK_SIZE + 3;
     size_t densityCount = (size_t)densitySize * (size_t)densitySize * (size_t)densitySize;
     f32* density = (f32*)ArenaPushGlobal(sizeof(f32) * densityCount);
-    job->buildVertices = (ALineVertex*)ArenaPushGlobal(sizeof(ALineVertex) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
+    job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
     if (!density || !job->buildVertices)
     {
         AX_WARN("transvoxel example build scratch allocation failed");
         job->failed = true;
         job->buildVertices = NULL;
-        ArenaEndScratch(&scratch);
+        ArenaScratchEnd(&job->scratchArena);
         return;
     }
 
@@ -462,7 +470,7 @@ static void tBuildJobRun(void* userData)
         AX_WARN("transvoxel example chunk mesh build failed");
         job->failed = true;
         job->buildVertices = NULL;
-        ArenaEndScratch(&scratch);
+        ArenaScratchEnd(&job->scratchArena);
         return;
     }
 
@@ -478,14 +486,14 @@ static void tBuildJobRun(void* userData)
             tAppendMeshSlotTriangles(job, (tMeshDataSlot)(tMeshDataSlot_LeftTransition + bit));
     }
 
-    // park the mesh in the TerrainVertex geometry heap (ALineVertex is the same 16 byte
-    // stride) and queue the range for the shared GPU-mirror flush; empty chunks leave
+    // park the mesh in the tVertexData geometry heap and queue the range for the
+    // shared GPU-mirror flush; empty chunks leave
     // heapPtr NULL and the main thread integrates them as pendingEmpty
     u32 vertexCount = job->buildVertexCount;
     if (vertexCount > 0)
     {
         void* raw = NULL;
-        u32 first = GeometryHeapAlloc(GeometryBuffer_TerrainVertex, vertexCount, &raw);
+        u32 first = GeometryHeapAlloc(GeometryBuffer_TerrainVertNew, vertexCount, &raw);
         if (first == GEOMETRY_ALLOC_FAIL)
         {
             AX_WARN("transvoxel example terrain heap full, chunk dropped");
@@ -493,8 +501,8 @@ static void tBuildJobRun(void* userData)
         }
         else
         {
-            MemCopy((ALineVertex*)gGFX.TerrainVertexBuffer + first, job->buildVertices, vertexCount * sizeof(ALineVertex));
-            Rendering_QueueGeometryUpload(GeometryBuffer_TerrainVertex, first, first + vertexCount);
+            MemCopy((tVertexData*)gGFX.TerrainVertNewBuffer + first, job->buildVertices, vertexCount * sizeof(tVertexData));
+            Rendering_QueueGeometryUpload(GeometryBuffer_TerrainVertNew, first, first + vertexCount);
             job->heapPtr = raw;
             job->heapFirst = first;
             job->vertexCount = vertexCount;
@@ -502,7 +510,7 @@ static void tBuildJobRun(void* userData)
     }
 
     job->buildVertices = NULL;
-    ArenaEndScratch(&scratch);
+    ArenaScratchEnd(&job->scratchArena);
 }
 
 // picks a free job slot and launches the chunk build on a worker. false when the
@@ -565,7 +573,7 @@ static void tIntegrateFinishedBuilds(void)
         {
             // dropped (mesher failure / heap full); a later invalidation re-dirties it
             if (job->heapPtr)
-                GeometryHeapFree(GeometryBuffer_TerrainVertex, job->heapPtr);
+                GeometryHeapFree(GeometryBuffer_TerrainVertNew, job->heapPtr);
             job->heapPtr = NULL;
             continue;
         }
@@ -608,7 +616,7 @@ static void tDrainBuildJobs(void)
         if (!job->busy)
             continue;
         if (job->heapPtr)
-            GeometryHeapFree(GeometryBuffer_TerrainVertex, job->heapPtr);
+            GeometryHeapFree(GeometryBuffer_TerrainVertNew, job->heapPtr);
         job->heapPtr = NULL;
         job->busy = false;
         tExample.chunks[job->chunkIndex].building = false;
@@ -1019,10 +1027,15 @@ static bool tInit(void)
         return false;
     }
 
-    // one scratch mesh container per job slot so workers never share mesher output
+    // one scratch mesh container and bump arena per job slot so workers never share output
     for (u32 i = 0; i < T_EXAMPLE_MAX_BUILD_JOBS; i++)
     {
         if (!tMeshDataContainerInit(&tExample.buildJobs[i].scratchMesh, 8192, 24576, 2048))
+        {
+            tDestroy();
+            return false;
+        }
+        if (!ArenaScratchCreate(&tExample.buildJobs[i].scratchArena, T_EXAMPLE_BUILD_SCRATCH_SIZE, "terrainChunkBuild"))
         {
             tDestroy();
             return false;
@@ -1106,7 +1119,10 @@ void tDestroy(void)
     HMDestroy(&tExample.chunkLookup);
     DeAllocateTLSFGlobal(tExample.chunkDraws);
     for (u32 i = 0; i < T_EXAMPLE_MAX_BUILD_JOBS; i++)
+    {
         tMeshDataContainerDestroy(&tExample.buildJobs[i].scratchMesh);
+        ArenaScratchDestroy(&tExample.buildJobs[i].scratchArena);
+    }
     if (tExample.jobSystem)
         JobSystem_Destroy(tExample.jobSystem);
     MemSet(&tExample, 0, sizeof(tExample));

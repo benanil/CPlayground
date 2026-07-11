@@ -6,7 +6,7 @@
 
 struct VSInput
 {
-    float3 pos : POSITION0;
+    float4 pos : POSITION0;
     uint color : COLOR;
 };
 
@@ -30,8 +30,8 @@ cbuffer ps_params : register(b0, space3)
 VSOutput vert(VSInput i)
 {
     VSOutput o;
-    o.position = mul(uViewProj, float4(i.pos, 1.0));
-    o.worldPos = i.pos;
+    o.position = mul(uViewProj, float4(i.pos.xyz, 1.0));
+    o.worldPos = i.pos.xyz;
     o.color = UnpackColor3Uint(i.color);
     return o;
 }

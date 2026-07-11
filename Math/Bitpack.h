@@ -2,6 +2,7 @@
 #define A_BITPACK
 
 #include "Math.h"
+#include "Quaternion.h"
 
 #define cOneOverSqrt2 (0.70710678f)
 #define cNumBits      (9)
@@ -103,6 +104,22 @@ static inline v128f OctEncode(v128f n)
     v128f wrapped = OctWrap(n);
     v128i negZ    = VecCmpLt(VecSplatZ(n), VecZero());
     return VecBlend(n, wrapped, negZ);
+}
+
+static inline v128f OctDecode(v128f f)
+{
+    f32 x = VecGetX(f);
+    f32 y = VecGetY(f);
+    f32 z = 1.0f - Absf32(x) - Absf32(y);
+    if (z < 0.0f)
+    {
+        f32 t = -z;
+        if (x >= 0.0f) x -= t;
+        else x += t;
+        if (y >= 0.0f) y -= t;
+        else y += t;
+    }
+    return Vec3NormVSafe(VecSetR(x, y, z, 0.0f));
 }
 
 // https://www.jeremyong.com/graphics/2023/01/09/tangent-spaces-and-diamond-encoding/

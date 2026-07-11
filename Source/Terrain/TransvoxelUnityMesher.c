@@ -1,4 +1,5 @@
 #include "Include/Platform.h"
+#include "Math/Bitpack.h"
 #include "TransvoxelUnity.h"
 #include "TransvoxelTables.h"
 
@@ -205,7 +206,8 @@ static bool tMesherEmitVertex(tMeshData* meshData, float3 vertex, float3 normal,
 
     tVertexData data = {0};
     data.position = VecSetR(vertex.x * (f32)lodScale, vertex.y * (f32)lodScale, vertex.z * (f32)lodScale, 0.0f);
-    data.normal = VecSetR(normal.x, normal.y, normal.z, 0.0f);
+	v128f normVec = VecSetR(normal.x, normal.y, normal.z, 0.0f);
+	data.normal = PackNormalTangent(normVec, Vec3Cross(normVec, VecSetR(0.0f, 1.0f, 0.0f, 0.0f)));
     return tMeshDataPushVertex(meshData, data);
 }
 

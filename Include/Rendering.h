@@ -102,8 +102,8 @@ void RendererClearOutlineTarget(void);
 void RendererSetGizmoLines(const ALineVertex* vertices, u32 count);
 
 #define MAX_TERRAIN_CHUNK_DRAWS 8192u
-// static terrain chunk meshes resident in the TerrainVertex geometry heap: each draw is
-// a vertex range (ALineVertex layout, non-indexed triangles) drawn straight from the
+// static terrain chunk meshes resident in the tVertexData geometry heap: each draw is
+// a vertex range (non-indexed triangles) drawn straight from the
 // heap's GPU mirror, no per-frame copy. the ranges convert to indirect draw commands so
 // every chunk renders in one SDL_DrawGPUPrimitivesIndirect. count 0 hides the terrain.
 typedef struct TerrainChunkDraw_
