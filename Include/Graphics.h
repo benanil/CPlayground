@@ -267,7 +267,8 @@ typedef struct RenderState
     SDL_GPUBuffer*           lineDrawArgsBuffer;
     SDL_GPUBuffer*           gizmoLineBuffer;
     SDL_GPUBuffer*           terrainChunkVertexBuffer; // GPU mirror of the tVertexData geometry heap
-    SDL_GPUBuffer*           terrainDrawArgsBuffer;    // SDL_GPUIndirectDrawCommand per visible chunk
+    SDL_GPUBuffer*           terrainChunkIndexBuffer;  // GPU mirror of the terrain index heap (TerrainIndexBuffer2)
+    SDL_GPUBuffer*           terrainDrawArgsBuffer;    // SDL_GPUIndexedIndirectDrawCommand per visible chunk
     SDL_GPUBuffer*           lightBuffer;
     SDL_GPUBuffer*           pointShadowMatrixBuffer;
     SDL_GPUBuffer*           spotShadowMatrixBuffer;

@@ -35,6 +35,9 @@ typedef struct tMeshHandle_
     void* heapPtr;
     u32   heapFirst;
     u32   vertexCount;
+    void* idxHeapPtr; // index range in the TerrainIndex2 geometry heap (chunk-local values)
+    u32   idxFirst;
+    u32   indexCount;
     b3Vec3* physicsVertices;
     s32*    physicsIndices;
     u32     physicsVertexCount;
@@ -79,10 +82,8 @@ typedef struct tExampleBuildJob_
     // worker-local append state, valid only while the job runs (thread scratch arena)
     tVertexData* buildVertices;
     u32          buildVertexCount;
-    b3Vec3* physicsBuildVertices;
-    s32*    physicsBuildIndices;
-    u32     physicsBuildVertexCount;
-    u32     physicsBuildIndexCount;
+    u32*         buildIndices;
+    u32          buildIndexCount;
     // output, worker; heapPtr is the parked mesh (NULL when empty or failed)
     tMeshHandle mesh;
     bool  failed;
@@ -309,38 +310,43 @@ static void tPushTriangleVertex(tExampleBuildJob* job, v128f p, u32 normal, u32 
     job->buildVertices[job->buildVertexCount++] = vertex;
 }
 
-static void tPushPhysicsTriangle(tExampleBuildJob* job, v128f a, v128f b, v128f c)
-{
-    if (job->lod > 1 || !job->physicsBuildVertices || !job->physicsBuildIndices)
-        return;
-    if (job->physicsBuildVertexCount + 3u >= T_EXAMPLE_CHUNK_TRIANGLE_CAP)
-        return;
-
-    u32 base = job->physicsBuildVertexCount;
-    job->physicsBuildVertices[base + 0u] = (b3Vec3){ VecGetX(a), VecGetY(a), VecGetZ(a) };
-    job->physicsBuildVertices[base + 1u] = (b3Vec3){ VecGetX(b), VecGetY(b), VecGetZ(b) };
-    job->physicsBuildVertices[base + 2u] = (b3Vec3){ VecGetX(c), VecGetY(c), VecGetZ(c) };
-    job->physicsBuildIndices[job->physicsBuildIndexCount++] = (s32)(base + 0u);
-    job->physicsBuildIndices[job->physicsBuildIndexCount++] = (s32)(base + 1u);
-    job->physicsBuildIndices[job->physicsBuildIndexCount++] = (s32)(base + 2u);
-    job->physicsBuildVertexCount += 3u;
-}
-
 // runs on a worker: reads only the job's own scratch mesh and buffers, plus the
-// thread safe density/edit/params reads inside tTerrainMaterial
+// thread safe density/edit/params reads inside tTerrainMaterial. emits an indexed mesh
+// (shared source vertices materialized once, triangles reference them) so shared verts
+// are shaded once instead of once per triangle, and the GPU draws indexed
 static void tAppendMeshSlotTriangles(tExampleBuildJob* job, tMeshDataSlot slot)
 {
     const tMeshData* mesh = tMeshDataContainerGetConst(&job->scratchMesh, slot);
-    if (!mesh || !mesh->vertices || !mesh->indices || !job->buildVertices)
+    if (!mesh || !mesh->vertices || !mesh->indices || !job->buildVertices || !job->buildIndices)
         return;
 
     size_t vertexCount = (size_t)mesh->numVertices;
     size_t indexCount = (size_t)mesh->numIndices;
+    if (vertexCount == 0 || indexCount < 3)
+        return;
+    // this slot's vertices land contiguously after everything emitted so far; the source
+    // indices are local to the slot, so shift them by that base to stay chunk-local
+    if (job->buildVertexCount + vertexCount > T_EXAMPLE_CHUNK_TRIANGLE_CAP)
+        return;
+    u32 base = job->buildVertexCount;
+
     v128f offset = VecI32ToF32(VeciLoad((const u32*)&job->min.x));
+    for (size_t v = 0; v < vertexCount; v++)
+    {
+        v128f p = VecAdd(mesh->vertices[v].position, offset);
+        // safe normalize: secondary-vertex snapping can leave zero-length normals, a
+        // plain normalize would spray NaN colors
+        float3 world = Vec3Get(p);
+        float3 n = Vec3Get(tUnpackNormal(mesh->vertices[v].normal));
+        u32 m, b;
+        tTerrainMaterial(world, n, &m, &b);
+        tPushTriangleVertex(job, p, mesh->vertices[v].normal, m, b);
+    }
+
     for (size_t i = 0; i + 2 < indexCount; i += 3)
     {
-		if (job->buildVertexCount + 3u >= T_EXAMPLE_CHUNK_TRIANGLE_CAP)
-			return;
+        if (job->buildIndexCount + 3u > T_EXAMPLE_CHUNK_TRIANGLE_CAP)
+            return;
 
         u32 ia = mesh->indices[i + 0];
         u32 ib = mesh->indices[i + 1];
@@ -359,24 +365,10 @@ static void tAppendMeshSlotTriangles(tExampleBuildJob* job, tMeshDataSlot slot)
         v128f cross = Vec3Cross(ab, ac);
         if (Vec3DotfV(cross, cross) <= 1.0e-12f)
             continue;
-        tPushPhysicsTriangle(job, pa, pb, pc);
 
-        float3 a = Vec3Get(pa);
-        float3 b = Vec3Get(pb);
-        float3 c = Vec3Get(pc);
-        // safe normalize: secondary-vertex snapping can leave zero-length normals, a
-        // plain normalize would spray NaN colors
-        float3 na = Vec3Get(tUnpackNormal(mesh->vertices[ia].normal));
-        float3 nb = Vec3Get(tUnpackNormal(mesh->vertices[ib].normal));
-        float3 nc = Vec3Get(tUnpackNormal(mesh->vertices[ic].normal));
-        u32 ma, mb, mc;
-        u32 ba, bb, bc;
-        tTerrainMaterial(a, na, &ma, &ba);
-        tTerrainMaterial(b, nb, &mb, &bb);
-        tTerrainMaterial(c, nc, &mc, &bc);
-		tPushTriangleVertex(job, pa, mesh->vertices[ia].normal, ma, ba);
-        tPushTriangleVertex(job, pb, mesh->vertices[ib].normal, mb, bb);
-        tPushTriangleVertex(job, pc, mesh->vertices[ic].normal, mc, bc);
+        job->buildIndices[job->buildIndexCount++] = base + ia;
+        job->buildIndices[job->buildIndexCount++] = base + ib;
+        job->buildIndices[job->buildIndexCount++] = base + ic;
     }
 }
 
@@ -390,6 +382,8 @@ static void tFreeMeshHandle(tMeshHandle* mesh)
         else
             tExample.cacheVertices = 0u;
     }
+    if (mesh->idxHeapPtr)
+        GeometryHeapFree(GeometryBuffer_TerrainIndex2, mesh->idxHeapPtr);
     DeAllocateTLSFGlobal(mesh->physicsVertices);
     DeAllocateTLSFGlobal(mesh->physicsIndices);
     *mesh = (tMeshHandle){0};
@@ -464,10 +458,8 @@ static void tBuildJobRun(void* userData)
     job->failed = false;
     job->buildVertices = NULL;
     job->buildVertexCount = 0;
-    job->physicsBuildVertices = NULL;
-    job->physicsBuildIndices = NULL;
-    job->physicsBuildVertexCount = 0;
-    job->physicsBuildIndexCount = 0;
+    job->buildIndices = NULL;
+    job->buildIndexCount = 0;
 
     ArenaScratchBegin(&job->scratchArena);
 
@@ -475,16 +467,13 @@ static void tBuildJobRun(void* userData)
     size_t densityCount = (size_t)densitySize * (size_t)densitySize * (size_t)densitySize;
     f32* density = (f32*)ArenaPushGlobal(sizeof(f32) * densityCount);
     job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
-    if (job->lod <= 1)
-    {
-        job->physicsBuildVertices = (b3Vec3*)ArenaPushGlobal(sizeof(b3Vec3) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
-        job->physicsBuildIndices = (s32*)ArenaPushGlobal(sizeof(s32) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
-    }
-    if (!density || !job->buildVertices)
+    job->buildIndices = (u32*)ArenaPushGlobal(sizeof(u32) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
+    if (!density || !job->buildVertices || !job->buildIndices)
     {
         AX_WARN("transvoxel example build scratch allocation failed");
         job->failed = true;
         job->buildVertices = NULL;
+        job->buildIndices = NULL;
         ArenaScratchEnd(&job->scratchArena);
         return;
     }
@@ -496,6 +485,7 @@ static void tBuildJobRun(void* userData)
         AX_WARN("transvoxel example chunk mesh build failed");
         job->failed = true;
         job->buildVertices = NULL;
+        job->buildIndices = NULL;
         ArenaScratchEnd(&job->scratchArena);
         return;
     }
@@ -516,12 +506,20 @@ static void tBuildJobRun(void* userData)
     // shared GPU-mirror flush; empty chunks leave
     // heapPtr NULL and the main thread integrates them as pendingEmpty
     u32 vertexCount = job->buildVertexCount;
-    if (vertexCount > 0)
+    u32 indexCount = job->buildIndexCount;
+    if (vertexCount > 0 && indexCount > 0)
     {
         void* raw = NULL;
         u32 first = GeometryHeapAlloc(GeometryBuffer_TerrainVertNew, vertexCount, &raw);
-        if (first == GEOMETRY_ALLOC_FAIL)
+        void* idxRaw = NULL;
+        u32 idxFirst = first == GEOMETRY_ALLOC_FAIL
+            ? GEOMETRY_ALLOC_FAIL
+            : GeometryHeapAlloc(GeometryBuffer_TerrainIndex2, indexCount, &idxRaw);
+        if (first == GEOMETRY_ALLOC_FAIL || idxFirst == GEOMETRY_ALLOC_FAIL)
         {
+            // partial success leaks nothing: free whichever heap succeeded, drop the build
+            if (first != GEOMETRY_ALLOC_FAIL)
+                GeometryHeapFree(GeometryBuffer_TerrainVertNew, raw);
             SDL_SetAtomicInt(&tExample.heapPressure, 1);
             job->failed = true;
         }
@@ -529,19 +527,32 @@ static void tBuildJobRun(void* userData)
         {
             MemCopy((tVertexData*)gGFX.TerrainVertNewBuffer + first, job->buildVertices, vertexCount * sizeof(tVertexData));
             Rendering_QueueGeometryUpload(GeometryBuffer_TerrainVertNew, first, first + vertexCount);
+            MemCopy((u32*)gGFX.TerrainIndexBuffer2 + idxFirst, job->buildIndices, indexCount * sizeof(u32));
+            Rendering_QueueGeometryUpload(GeometryBuffer_TerrainIndex2, idxFirst, idxFirst + indexCount);
             job->mesh.heapPtr = raw;
             job->mesh.heapFirst = first;
             job->mesh.vertexCount = vertexCount;
-            if (job->physicsBuildIndexCount >= 3u)
+            job->mesh.idxHeapPtr = idxRaw;
+            job->mesh.idxFirst = idxFirst;
+            job->mesh.indexCount = indexCount;
+            // near chunks (lod<=1) get a collider: the render verts + indices ARE the
+            // collision mesh, just narrowed to positions (b3Vec3) and s32 indices — no
+            // separate soup. box3d wants world-space positions, which buildVertices hold
+            if (job->lod <= 1 && indexCount >= 3u)
             {
-                job->mesh.physicsVertexCount = job->physicsBuildVertexCount;
-                job->mesh.physicsIndexCount = job->physicsBuildIndexCount;
-                job->mesh.physicsVertices = (b3Vec3*)AllocateTLSFGlobal(sizeof(b3Vec3) * job->mesh.physicsVertexCount);
-                job->mesh.physicsIndices = (s32*)AllocateTLSFGlobal(sizeof(s32) * job->mesh.physicsIndexCount);
+                job->mesh.physicsVertexCount = vertexCount;
+                job->mesh.physicsIndexCount = indexCount;
+                job->mesh.physicsVertices = (b3Vec3*)AllocateTLSFGlobal(sizeof(b3Vec3) * vertexCount);
+                job->mesh.physicsIndices = (s32*)AllocateTLSFGlobal(sizeof(s32) * indexCount);
                 if (job->mesh.physicsVertices && job->mesh.physicsIndices)
                 {
-                    MemCopy(job->mesh.physicsVertices, job->physicsBuildVertices, sizeof(b3Vec3) * job->mesh.physicsVertexCount);
-                    MemCopy(job->mesh.physicsIndices, job->physicsBuildIndices, sizeof(s32) * job->mesh.physicsIndexCount);
+                    for (u32 v = 0; v < vertexCount; v++)
+                    {
+                        v128f p = job->buildVertices[v].position;
+                        job->mesh.physicsVertices[v] = (b3Vec3){ VecGetX(p), VecGetY(p), VecGetZ(p) };
+                    }
+                    for (u32 k = 0; k < indexCount; k++)
+                        job->mesh.physicsIndices[k] = (s32)job->buildIndices[k];
                 }
                 else
                 {
@@ -558,8 +569,7 @@ static void tBuildJobRun(void* userData)
     }
 
     job->buildVertices = NULL;
-    job->physicsBuildVertices = NULL;
-    job->physicsBuildIndices = NULL;
+    job->buildIndices = NULL;
     ArenaScratchEnd(&job->scratchArena);
 }
 
@@ -870,13 +880,14 @@ static s32 tAbss32(s32 value)
 // draw range (no vertex copy); the brush highlight is a terrain shader uniform now
 static bool tAppendChunkTriangles(const tExampleChunk* chunk)
 {
-    // must short-circuit: bitwise | evaluates chunk->mesh.vertexCount on a NULL chunk
-    if (!chunk || chunk->mesh.vertexCount == 0 || !chunk->mesh.heapPtr)
+    // must short-circuit: bitwise | evaluates chunk->mesh.indexCount on a NULL chunk
+    if (!chunk || chunk->mesh.indexCount == 0 || !chunk->mesh.heapPtr || !chunk->mesh.idxHeapPtr)
         return true;
 
     if (tExample.numChunkDraws >= MAX_TERRAIN_CHUNK_DRAWS)
         return false;
-    TerrainChunkDraw draw = { chunk->mesh.heapFirst, chunk->mesh.vertexCount };
+    // indexed draw: first_index into the terrain index heap, base_vertex = vertex heap offset
+    TerrainChunkDraw draw = { chunk->mesh.idxFirst, chunk->mesh.indexCount, (s32)chunk->mesh.heapFirst };
 	tExample.chunkDraws[tExample.numChunkDraws++] = draw;
     return true;
 }

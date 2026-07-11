@@ -275,11 +275,13 @@ void RenderGizmo(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
 static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
 {
     if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainChunkVertexBuffer ||
-        !g_RenderState.terrainDrawArgsBuffer) return;
+        !g_RenderState.terrainChunkIndexBuffer || !g_RenderState.terrainDrawArgsBuffer) return;
 
     SDL_GPUBufferBinding heapBinding = { g_RenderState.terrainChunkVertexBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &heapBinding, 1);
-    SDL_DrawGPUPrimitivesIndirect(pass, g_RenderState.terrainDrawArgsBuffer, 0, g_NumTerrainChunkDraws);
+    SDL_GPUBufferBinding indexBinding = { g_RenderState.terrainChunkIndexBuffer, 0 };
+    SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    SDL_DrawGPUIndexedPrimitivesIndirect(pass, g_RenderState.terrainDrawArgsBuffer, 0, g_NumTerrainChunkDraws);
 }
 
 void RenderTerrainTriangles(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)

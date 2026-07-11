@@ -209,11 +209,11 @@ void RendererSetTerrainChunkDraws(const TerrainChunkDraw* draws, u32 count)
 
     // first_instance stays 0: SDL only guarantees it with the drawIndirectFirstInstance
     // feature, and the terrain shader does not use instancing anyway
-    static SDL_GPUIndirectDrawCommand commands[MAX_TERRAIN_CHUNK_DRAWS];
+    static SDL_GPUIndexedIndirectDrawCommand commands[MAX_TERRAIN_CHUNK_DRAWS];
     for (u32 i = 0; i < count; i++)
-        commands[i] = (SDL_GPUIndirectDrawCommand){ draws[i].count, 1u, draws[i].first, 0u };
+        commands[i] = (SDL_GPUIndexedIndirectDrawCommand){ draws[i].indexCount, 1u, draws[i].firstIndex, draws[i].baseVertex, 0u };
     UpdateGPUBufferCycle(g_RenderState.terrainDrawArgsBuffer, commands,
-                         count * sizeof(SDL_GPUIndirectDrawCommand), 0, true);
+                         count * sizeof(SDL_GPUIndexedIndirectDrawCommand), 0, true);
 }
 
 void RendererSetTerrainBrush(float3 position, f32 radius)
@@ -328,16 +328,16 @@ static void UploadDirtyGeometry(void)
     SDL_GPUBuffer* gpuBuffers[GeometryBuffer_Count] = {
         g_RenderState.skinned.vertexBuffer, g_RenderState.surface.vertexBuffer, g_RenderState.indexBuffer,
         NULL, NULL, NULL,
-        g_RenderState.terrainChunkVertexBuffer, NULL, NULL
+        g_RenderState.terrainChunkVertexBuffer, NULL, g_RenderState.terrainChunkIndexBuffer
     };
     const u8* sources[GeometryBuffer_Count] = {
         (const u8*)gGFX.SkinnedVertexBuffer, (const u8*)gGFX.SurfaceVertexBuffer, (const u8*)gGFX.IndexBuffer,
         NULL, NULL, NULL,
-        (const u8*)gGFX.TerrainVertNewBuffer, NULL, NULL
+        (const u8*)gGFX.TerrainVertNewBuffer, NULL, (const u8*)gGFX.TerrainIndexBuffer2
     };
     const size_t strides[GeometryBuffer_Count] = {
         sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), 0u, 0u, 0u,
-        sizeof(tVertexData), 0u, 0u
+        sizeof(tVertexData), 0u, sizeof(u32)
     };
 
     // Snapshot and clear the queue under the lock, then do the (slower) GPU copies without holding
@@ -380,7 +380,8 @@ void InitBuffers(void)
     g_RenderState.lineDrawArgsBuffer   = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
     g_RenderState.gizmoLineBuffer      = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
     g_RenderState.terrainChunkVertexBuffer = CreateBuffer(NULL, sizeof(tVertexData) * TERRAIN_MAX_VERTICES, BVertexBit, "CPTerrainChunkVertexBuffer");
-    g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
+    g_RenderState.terrainChunkIndexBuffer  = CreateBuffer(NULL, sizeof(u32) * TERRAIN_MAX_INDICES, SDL_GPU_BUFFERUSAGE_INDEX, "CPTerrainChunkIndexBuffer");
+    g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndexedIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
     g_RenderState.lightBuffer          = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
     g_RenderState.lightVisibilityBuffer = CreateBuffer(NULL, sizeof(u32) * MAX_LIGHT_COUNT          , BWriteComputeBit, "CPLightVisibilityBuffer");
     // Forward+ tiled light grid. lightGrid holds a {offset,count} per tile; lightIndex is a
@@ -849,6 +850,7 @@ void DestroyPipeline(void)
     if (g_RenderState.lineBuffer)               SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineBuffer);
     if (g_RenderState.lineDrawArgsBuffer)       SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineDrawArgsBuffer);
     if (g_RenderState.terrainChunkVertexBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainChunkVertexBuffer);
+    if (g_RenderState.terrainChunkIndexBuffer)  SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainChunkIndexBuffer);
     if (g_RenderState.terrainDrawArgsBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainDrawArgsBuffer);
     if (g_RenderState.lightBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightBuffer);
     if (g_RenderState.lightVisibilityBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightVisibilityBuffer);
