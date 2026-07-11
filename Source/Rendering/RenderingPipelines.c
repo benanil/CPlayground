@@ -454,11 +454,13 @@ static void InitTerrainTrianglePipeline(void)
 {
     SDL_GPUShaderFormat shaderformat = AX_GPU_SHADER_FORMAT;
     SDL_GPUShader* vertex_shader   = PIPELINE_VERT_DEF(Shaders_TerrainChunkVert_spv), .num_uniform_buffers = 1 }); CHECK_CREATE(vertex_shader, "Terrain Triangle Vertex Shader")
-    SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_TerrainChunkFrag_spv), .num_uniform_buffers = 1 }); CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
+    SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_TerrainChunkFrag_spv), .num_uniform_buffers = 1, .num_samplers = 3 }); CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
 
-    const SDL_GPUVertexAttribute vertex_attributes[2] = {
+    const SDL_GPUVertexAttribute vertex_attributes[4] = {
         { .location = 0, .buffer_slot = 0, .format = VFORMAT_FLOAT4, .offset = offsetof(tVertexData, position) },
-        { .location = 1, .buffer_slot = 0, .format = VFORMAT_UINT,   .offset = offsetof(tVertexData, color) }
+        { .location = 1, .buffer_slot = 0, .format = VFORMAT_UINT,   .offset = offsetof(tVertexData, normal) },
+        { .location = 2, .buffer_slot = 0, .format = VFORMAT_UINT,   .offset = offsetof(tVertexData, materials) },
+        { .location = 3, .buffer_slot = 0, .format = VFORMAT_UINT,   .offset = offsetof(tVertexData, blend) }
     };
 
     g_TerrainTrianglePipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){

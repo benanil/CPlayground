@@ -149,6 +149,12 @@ purefn u32 VCALL PackNormalTangent(v128f normal, v128f tangent)
     return packedOct | (packedDiamond << 22) | (handedness << 31);
 }
 
+purefn u32 VCALL PackNormalOCT(v128f normal)
+{
+    v128f oct = OctEncode(normal);
+    return PackXY11Z10SnormToU32(VecSetR(VecGetX(oct), VecGetY(oct), 0.0f, 0.0f)) & 0x3FFFFFu;
+}
+
 // 9 bit per channel xyz, and 2 bit for max index, and 1 bit for max val sign, reconstruct w afterwards
 static u32 VCALL PackQuat(v128f v)
 {

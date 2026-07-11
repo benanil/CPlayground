@@ -1471,6 +1471,14 @@ bool Terrain_HasDraws(void)
     return g_Terrain.initialized && g_Terrain.enabled && g_Terrain.numDrawable > 0u;
 }
 
+bool Terrain_GetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** normal, SDL_GPUTexture** arm)
+{
+    if (albedo) *albedo = g_Terrain.albedoLayers.handle;
+    if (normal) *normal = g_Terrain.normalLayers.handle;
+    if (arm)    *arm    = g_Terrain.armLayers.handle;
+    return g_Terrain.albedoLayers.handle && g_Terrain.normalLayers.handle && g_Terrain.armLayers.handle;
+}
+
 static void TerrainFillVSParams(TerrainVSParams* params, const TerrainChunk* chunk, mat4x4 viewProj)
 {
     f32 size = TerrainChunkWorldSize(chunk->lod);
@@ -1903,12 +1911,21 @@ static Texture TerrainLoadGrassArray(void)
     return TerrainLoadTextureArray(grassPaths, 2u, TERRAIN_GRASS_SIZE, true, "TerrainGrass", "grass");
 }
 
-static void TerrainInitTextures(void)
+static void TerrainInitMaterialTextures(void)
 {
+    if (g_Terrain.albedoLayers.handle && g_Terrain.normalLayers.handle && g_Terrain.armLayers.handle)
+        return;
     u64 start = SDL_GetTicks();
     g_Terrain.albedoLayers = TerrainLoadLayerArray(albedoPaths, TERRAIN_LAYER_COUNT, TERRAIN_ALBEDO_SIZE, true, "TerrainAlbedo");
     g_Terrain.normalLayers = TerrainLoadLayerArray(normalPaths, TERRAIN_LAYER_COUNT, TERRAIN_DETAIL_SIZE, false, "TerrainNormal");
     g_Terrain.armLayers    = TerrainLoadLayerArray(metallicRoughnessPaths, TERRAIN_LAYER_COUNT, TERRAIN_DETAIL_SIZE, false, "TerrainARM");
+    AX_LOG("terrain material textures loaded in %llu ms (png decode, consider baking)", (unsigned long long)(SDL_GetTicks() - start));
+}
+
+static void TerrainInitTextures(void)
+{
+    u64 start = SDL_GetTicks();
+    TerrainInitMaterialTextures();
     g_Terrain.grassLayers  = TerrainLoadGrassArray();
     AX_LOG("terrain textures loaded in %llu ms (png decode, consider baking)", (unsigned long long)(SDL_GetTicks() - start));
 }
@@ -1947,6 +1964,7 @@ void Terrain_Init(void)
     g_Terrain.genParams = Terrain_DefaultGenParams();
     TerrainAuthoringDefaults(&g_Terrain.authoring);
     TerrainDensity_SetParams(&g_Terrain.genParams);
+    TerrainInitMaterialTextures();
     TerrainEdit_Init();
     tvPortInitialized = true;
     return;
@@ -2057,6 +2075,9 @@ void Terrain_Destroy(void)
         DeAllocateTLSFGlobal(g_Terrain.grassTileFree);
         tvGrassReady = false;
     }
+    ReleaseTexture(&g_Terrain.albedoLayers);
+    ReleaseTexture(&g_Terrain.normalLayers);
+    ReleaseTexture(&g_Terrain.armLayers);
     TerrainEdit_Destroy();
     tvPortInitialized = false;
     tvWorldEnabled = false;

@@ -285,10 +285,32 @@ static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
 void RenderTerrainTriangles(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
     if (g_NumTerrainChunkDraws == 0 || !g_TerrainTrianglePipeline) return;
+    SDL_GPUTexture* albedo = NULL;
+    SDL_GPUTexture* normal = NULL;
+    SDL_GPUTexture* arm = NULL;
+    if (!Terrain_GetMaterialTextures(&albedo, &normal, &arm)) return;
 
     SDL_BindGPUGraphicsPipeline(pass, g_TerrainTrianglePipeline);
+    SDL_GPUTextureSamplerBinding samplers[3] = {
+        { .texture = albedo, .sampler = g_RenderState.sampler },
+        { .texture = normal, .sampler = g_RenderState.sampler },
+        { .texture = arm,    .sampler = g_RenderState.sampler }
+    };
+    SDL_BindGPUFragmentSamplers(pass, 0, samplers, SDL_arraysize(samplers));
     SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
-    SDL_PushGPUFragmentUniformData(cmd, 0, &g_TerrainBrushPosRadius, sizeof(g_TerrainBrushPosRadius));
+    float3 sunDirection = GetRenderSunDirection();
+    struct {
+        f32 brushPosRadius[4];
+        f32 sunDirection[4];
+    } fragmentParams = {0};
+    fragmentParams.brushPosRadius[0] = g_TerrainBrushPosRadius[0];
+    fragmentParams.brushPosRadius[1] = g_TerrainBrushPosRadius[1];
+    fragmentParams.brushPosRadius[2] = g_TerrainBrushPosRadius[2];
+    fragmentParams.brushPosRadius[3] = g_TerrainBrushPosRadius[3];
+    fragmentParams.sunDirection[0] = sunDirection.x;
+    fragmentParams.sunDirection[1] = sunDirection.y;
+    fragmentParams.sunDirection[2] = sunDirection.z;
+    SDL_PushGPUFragmentUniformData(cmd, 0, &fragmentParams, sizeof(fragmentParams));
     RenderTerrainChunkRanges(pass);
 }
 

@@ -171,6 +171,14 @@ void UnpackNormalTangent(uint packed, out f16_3 normal, out f16_3 tangent)
     tangent     = DecodeTangent(normal, diamond);
 }
 
+f16_3 UnpackNormal(uint packed)
+{
+    f16_2 oct = f16_2(
+        f16((int)(packed << 21) >> 21) * f16(1.0 / 1023.0),
+        f16((int)(packed << 10) >> 21) * f16(1.0 / 1023.0));
+    return OctDecode(oct);
+}
+
 f16 UnpackTangentHandedness(uint packed)
 {
     return (packed & 0x80000000u) != 0u ? f16(-1.0) : f16(1.0);
