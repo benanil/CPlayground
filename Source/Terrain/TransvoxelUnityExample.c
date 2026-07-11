@@ -6,6 +6,7 @@
 #include "Include/Platform.h"
 #include "Include/Scene.h"
 #include "Include/Memory.h"
+#include "Include/JobSystem.h"
 
 #define T_EXAMPLE_CHUNK_SIZE 16
 #define T_EXAMPLE_LOD_COUNT 4u
@@ -20,6 +21,7 @@ typedef struct tExampleChunk_
     s32    lod;
     float3 aabbMin;
     float3 aabbMax;
+	ALineVertex* buildVertices;  // per-build arena scratch, valid only inside tExampleBuildChunk
     // chunk mesh lives in the TerrainVertex geometry heap (ALineVertex payload, same
     // 16 byte stride); the GPU mirror draws it without any per-frame copy
     void* heapPtr;
@@ -40,14 +42,14 @@ typedef struct tTransvoxelExample_
 {
     tDensityGenerator generator;
     tMeshDataContainer scratchMesh;
+	JobSystem* jobSystem;
     f32* densityData;
-    ALineVertex* buildVertices;  // per-build scratch, copied into the geometry heap
     TerrainChunkDraw* chunkDraws; // per-frame heap ranges, one indirect multidraw
     tExampleChunk chunks[T_EXAMPLE_MAX_CHUNKS];
     HashMap chunkLookup; // key: tExampleChunkKey, value: u32 index into chunks
-    u32 chunkCount;
+	u32 numChunkDraws;
+	u32 chunkCount;
     u32 builtThisFrame;
-    u32 submittedChunks;
     u32 culledChunks;
     u32 emptyChunks;
     u32 physicsSyncCursor;
@@ -155,17 +157,9 @@ static u32 tExampleTerrainColor(float3 worldPos, float3 normal)
     return tExamplePackColor(F3MulF(color, shade));
 }
 
-static bool tExampleBuildDensity(int3 chunkMin, s32 lod)
+static void tExampleBuildDensity(int3 chunkMin, s32 lod)
 {
     s32 densitySize = T_EXAMPLE_CHUNK_SIZE + 3;
-    size_t densityCount = (size_t)densitySize * (size_t)densitySize * (size_t)densitySize;
-    if (!tExample.densityData || ArrayCapacity(tExample.densityData) < densityCount)
-    {
-        AX_WARN("transvoxel example density scratch missing");
-        return false;
-    }
-    ArrayFieldSet(tExample.densityData, ArrayField_Length, densityCount);
-
     s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
     s32 cx = chunkMin.x / step;
     s32 cy = chunkMin.y / step;
@@ -182,8 +176,6 @@ static bool tExampleBuildDensity(int3 chunkMin, s32 lod)
         size_t src = ((size_t)z * (size_t)densitySize + (size_t)y) * (size_t)densitySize + (size_t)x;
         tExample.densityData[dst] = (f32)samples[src] * invScale;
     }
-
-    return true;
 }
 
 static const f32 tExampleLODDistance[T_EXAMPLE_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };
@@ -242,31 +234,25 @@ static s32 tExampleColumnMask(int3 min, s32 lod)
     return mask;
 }
 
-static bool tExamplePushTriangleVertex(ALineVertex** vertices, float3 p, u32 color)
+static void tExamplePushTriangleVertex(tExampleChunk* chunk, float3 p, u32 color)
 {
-    if (!vertices || !*vertices)
-        return false;
-    if (ArrayLength(*vertices) >= ArrayCapacity(*vertices))
-        return false;
-
-    ALineVertex vertex = { p.x, p.y, p.z, color };
-    ArrayPush(*vertices, vertex);
-    return true;
+	ALineVertex vertex = { p.x, p.y, p.z, color };
+	chunk->buildVertices[chunk->pendingVertexCount++] = vertex;
 }
 
-static void tExampleAppendMeshSlotTriangles(const tExampleChunk* chunk, tMeshDataSlot slot)
+static void tExampleAppendMeshSlotTriangles(tExampleChunk* chunk, tMeshDataSlot slot)
 {
     const tMeshData* mesh = tMeshDataContainerGetConst(&tExample.scratchMesh, slot);
-    if (!mesh || !mesh->vertices || !mesh->indices || !tExample.buildVertices)
+    if (!mesh || !mesh->vertices || !mesh->indices || !chunk->buildVertices)
         return;
 
     size_t vertexCount = (size_t)mesh->numVertices;
     size_t indexCount = (size_t)mesh->numIndices;
-    float3 offset = ToFloat3(chunk->min);
+    v128f offset = VecI32ToF32(VeciLoad((const u32*)&chunk->min.x));
     for (size_t i = 0; i + 2 < indexCount; i += 3)
     {
-        if (ArrayLength(tExample.buildVertices) + 3u > ArrayCapacity(tExample.buildVertices))
-            return;
+		if (chunk->pendingVertexCount + 3u >= T_EXAMPLE_CHUNK_TRIANGLE_CAP)
+			return;
 
         u32 ia = mesh->indices[i + 0];
         u32 ib = mesh->indices[i + 1];
@@ -274,24 +260,30 @@ static void tExampleAppendMeshSlotTriangles(const tExampleChunk* chunk, tMeshDat
         if ((size_t)ia >= vertexCount || (size_t)ib >= vertexCount || (size_t)ic >= vertexCount)
             continue;
 
-        float3 a = F3Add(Vec3Get(mesh->vertices[ia].position), offset);
-        float3 b = F3Add(Vec3Get(mesh->vertices[ib].position), offset);
-        float3 c = F3Add(Vec3Get(mesh->vertices[ic].position), offset);
+        v128f pa = VecAdd(mesh->vertices[ia].position, offset);
+        v128f pb = VecAdd(mesh->vertices[ib].position, offset);
+        v128f pc = VecAdd(mesh->vertices[ic].position, offset);
 
         // secondary-vertex snapping and transition cells produce degenerate triangles
         // (verts collapse onto each other); skip them here instead of shading zero-area
-        float3 ab = F3Sub(b, a);
-        float3 ac = F3Sub(c, a);
-        float3 cross = F3Cross(&ab, &ac);
-        if (F3Dot(cross, cross) <= 1.0e-12f)
+        v128f ab = VecSub(pb, pa);
+        v128f ac = VecSub(pc, pa);
+        v128f cross = Vec3Cross(ab, ac);
+        if (Vec3DotfV(cross, cross) <= 1.0e-12f)
             continue;
 
-        float3 na = F3NormSafe(Vec3Get(mesh->vertices[ia].normal));
-        float3 nb = F3NormSafe(Vec3Get(mesh->vertices[ib].normal));
-        float3 nc = F3NormSafe(Vec3Get(mesh->vertices[ic].normal));
-        if (!tExamplePushTriangleVertex(&tExample.buildVertices, a, tExampleTerrainColor(a, na))) return;
-        if (!tExamplePushTriangleVertex(&tExample.buildVertices, b, tExampleTerrainColor(b, nb))) return;
-        if (!tExamplePushTriangleVertex(&tExample.buildVertices, c, tExampleTerrainColor(c, nc))) return;
+        float3 a = Vec3Get(pa);
+        float3 b = Vec3Get(pb);
+        float3 c = Vec3Get(pc);
+        // safe normalize: secondary-vertex snapping can leave zero-length normals, a
+        // plain normalize would spray NaN colors
+        float3 na = Vec3Get(Vec3NormVSafe(mesh->vertices[ia].normal));
+        float3 nb = Vec3Get(Vec3NormVSafe(mesh->vertices[ib].normal));
+        float3 nc = Vec3Get(Vec3NormVSafe(mesh->vertices[ic].normal));
+     	// todo: do color sampling in seperate loop because its branchy
+		tExamplePushTriangleVertex(chunk, a, tExampleTerrainColor(a, na));
+        tExamplePushTriangleVertex(chunk, b, tExampleTerrainColor(b, nb));
+        tExamplePushTriangleVertex(chunk, c, tExampleTerrainColor(c, nc));
     }
 }
 
@@ -317,13 +309,13 @@ static void tExampleFreePendingMesh(tExampleChunk* chunk)
 
 static f32 tExampleTriangleAreaSq(const b3Vec3* vertices, u32 a, u32 b, u32 c)
 {
-    float3 v0 = { vertices[a].x, vertices[a].y, vertices[a].z };
-    float3 v1 = { vertices[b].x, vertices[b].y, vertices[b].z };
-    float3 v2 = { vertices[c].x, vertices[c].y, vertices[c].z };
-    float3 ab = F3Sub(v1, v0);
-    float3 ac = F3Sub(v2, v0);
-    float3 cross = F3Cross(&ab, &ac);
-    return F3Dot(cross, cross);
+    v128f v0 = Vec3Load(&vertices[a].x);
+    v128f v1 = Vec3Load(&vertices[b].x);
+    v128f v2 = Vec3Load(&vertices[c].x);
+    v128f ab = VecSub(v1, v0);
+    v128f ac = VecSub(v2, v0);
+    v128f cross = Vec3Cross(ab, ac);
+    return Vec3DotfV(cross, cross);
 }
 
 static void tExampleDestroyChunkPhysics(u32 chunkIndex)
@@ -346,8 +338,8 @@ static void tExampleSyncChunkPhysics(u32 chunkIndex, const tExampleChunk* chunk)
 
     u32 vertexCount = chunk->vertexCount - (chunk->vertexCount % 3u);
     ArenaMark mark = ArenaSave(&GlobalArena);
-    b3Vec3* vertices = (b3Vec3*)ArenaAllocGlobal(vertexCount * sizeof(b3Vec3));
-    s32* indices = (s32*)ArenaAllocGlobal(vertexCount * sizeof(s32));
+    b3Vec3* vertices = (b3Vec3*)ArenaPushGlobal(vertexCount * sizeof(b3Vec3));
+    s32* indices = (s32*)ArenaPushGlobal(vertexCount * sizeof(s32));
     if (!vertices || !indices)
     {
         ArenaRestore(&GlobalArena, mark);
@@ -384,8 +376,7 @@ static bool tExampleBuildChunk(u32 chunkIndex, tExampleChunk* chunk)
     chunk->aabbMin = ToFloat3(chunk->min);
     chunk->aabbMax = F3AddF(chunk->aabbMin, (f32)worldSize);
 
-    if (!tExampleBuildDensity(chunk->min, chunk->lod))
-        return false;
+	tExampleBuildDensity(chunk->min, chunk->lod);
 
     if (!tTransvoxelMesherMesh(&tExample.generator, chunk->min, T_EXAMPLE_CHUNK_SIZE, tExample.densityData,
                                chunk->lod, chunk->neighboursMask, &tExample.scratchMesh, NULL))
@@ -393,13 +384,21 @@ static bool tExampleBuildChunk(u32 chunkIndex, tExampleChunk* chunk)
         AX_WARN("transvoxel example chunk mesh build failed");
         return false;
     }
+	const size_t VertexCapacity = sizeof(ALineVertex) * T_EXAMPLE_CHUNK_TRIANGLE_CAP;
+    chunk->buildVertices = (ALineVertex*)ArenaPushGlobal(VertexCapacity);
+    if (!chunk->buildVertices)
+    {
+        AX_WARN("transvoxel example build scratch allocation failed");
+        return false;
+    }
+    // pendingVertexCount doubles as the append cursor until the mesh parks in the heap
+    chunk->pendingVertexCount = 0;
 
     // lod stitching: snap boundary vertices to their secondary positions (shrinks the
     // regular mesh half a cell inward on faces with a finer neighbour) and fill the gap
     // with that face's transition cell strip. faces without a finer neighbour keep
     // primary positions and skip their transition slot
     tMeshDataContainerApplySecondaryVertices(&tExample.scratchMesh, chunk->neighboursMask);
-    ArrayFieldSet(tExample.buildVertices, ArrayField_Length, 0);
     tExampleAppendMeshSlotTriangles(chunk, tMeshDataSlot_Main);
     for (u32 bit = 0; bit < 6u; bit++)
     {
@@ -407,7 +406,7 @@ static bool tExampleBuildChunk(u32 chunkIndex, tExampleChunk* chunk)
             tExampleAppendMeshSlotTriangles(chunk, (tMeshDataSlot)(tMeshDataSlot_LeftTransition + bit));
     }
 
-    u32 vertexCount = (u32)ArrayLength(tExample.buildVertices);
+    u32 vertexCount = chunk->pendingVertexCount;
     tExample.builtThisFrame++;
     chunk->built = true;
     if (vertexCount == 0)
@@ -425,6 +424,8 @@ static bool tExampleBuildChunk(u32 chunkIndex, tExampleChunk* chunk)
         tExample.emptyChunks++;
         chunk->built = true;
         chunk->dirty = false;
+		ArenaPopGlobal(VertexCapacity);
+        chunk->buildVertices = NULL;
         return true;
     }
 
@@ -435,12 +436,16 @@ static bool tExampleBuildChunk(u32 chunkIndex, tExampleChunk* chunk)
     if (first == GEOMETRY_ALLOC_FAIL)
     {
         AX_WARN("transvoxel example terrain heap full, chunk dropped");
-        return false;
+		ArenaPopGlobal(VertexCapacity);
+		chunk->buildVertices = NULL;
+		return false;
     }
 
-    MemCopy((ALineVertex*)gGFX.TerrainVertexBuffer + first, tExample.buildVertices, vertexCount * sizeof(ALineVertex));
+    MemCopy((ALineVertex*)gGFX.TerrainVertexBuffer + first, chunk->buildVertices, vertexCount * sizeof(ALineVertex));
     Rendering_QueueGeometryUpload(GeometryBuffer_TerrainVertex, first, first + vertexCount);
     tExampleFreePendingMesh(chunk);
+	ArenaPopGlobal(VertexCapacity);
+    chunk->buildVertices = NULL;
     chunk->pendingHeapPtr = raw;
     chunk->pendingHeapFirst = first;
     chunk->pendingVertexCount = vertexCount;
@@ -587,14 +592,14 @@ static s32 tExampleAbss32(s32 value)
 // draw range (no vertex copy); the brush highlight is a terrain shader uniform now
 static bool tExampleAppendChunkTriangles(const tExampleChunk* chunk)
 {
+    // must short-circuit: bitwise | evaluates chunk->vertexCount on a NULL chunk
     if (!chunk || chunk->vertexCount == 0 || !chunk->heapPtr)
         return true;
 
-    if (ArrayLength(tExample.chunkDraws) >= ArrayCapacity(tExample.chunkDraws))
+    if (tExample.numChunkDraws >= MAX_TERRAIN_CHUNK_DRAWS)
         return false;
     TerrainChunkDraw draw = { chunk->heapFirst, chunk->vertexCount };
-    ArrayPush(tExample.chunkDraws, draw);
-    tExample.submittedChunks++;
+	tExample.chunkDraws[tExample.numChunkDraws++] = draw;
     return true;
 }
 
@@ -806,12 +811,13 @@ static void tExampleSubmitTerrain(f32 lodFactor, const FrustumPlanes* frustum, b
 
 static void tExampleLogStats(void)
 {
+	return;
     u64 now = SDL_GetTicks();
     if (now - tExample.lastStatsTicks < 1000u)
         return;
     tExample.lastStatsTicks = now;
-    AX_LOG("transvoxel example: draws=%u chunks=%u built=%u cached=%u culled=%u empty=%u",
-           (u32)ArrayLength(tExample.chunkDraws), tExample.submittedChunks, tExample.builtThisFrame,
+    AX_LOG("transvoxel example: draws=%u built=%u cached=%u culled=%u empty=%u",
+           tExample.numChunkDraws, tExample.builtThisFrame,
            tExample.chunkCount, tExample.culledChunks, tExample.emptyChunks);
 }
 
@@ -819,18 +825,20 @@ static bool tExampleInit(void)
 {
     if (tExample.initialized)
         return true;
+    MemSet(&tExample, 0, sizeof(tExample));
+	
+	tExample.jobSystem = JobSystem_Create(0, 0);
+	if (!tExample.jobSystem) { AX_WARN("terrain job system create failed!"); return false; } // should never happen though
 
-    SDL_memset(&tExample, 0, sizeof(tExample));
     tExample.generator.noise3D = tExampleDensityNoise;
     tExample.generator.noise3DStrength = 1.0f;
 
     size_t densitySize = T_EXAMPLE_CHUNK_SIZE + 3u;
     size_t densityCount = densitySize * densitySize * densitySize;
-    tExample.densityData = ArrayCreatePrealloc(f32, densityCount);
-    tExample.buildVertices = ArrayCreatePrealloc(ALineVertex, T_EXAMPLE_CHUNK_TRIANGLE_CAP);
-    tExample.chunkDraws = ArrayCreatePrealloc(TerrainChunkDraw, MAX_TERRAIN_CHUNK_DRAWS);
-    tExample.chunkLookup = HMCreate(T_EXAMPLE_MAX_CHUNKS, sizeof(u32));
-    if (!tExample.densityData || !tExample.buildVertices || !tExample.chunkDraws)
+    tExample.densityData   = (f32*)AllocateTLSFGlobal(sizeof(f32) * densityCount);
+    tExample.chunkDraws    = (TerrainChunkDraw*)AllocateTLSFGlobal(sizeof(TerrainChunkDraw) * MAX_TERRAIN_CHUNK_DRAWS);
+    tExample.chunkLookup   = HMCreate(T_EXAMPLE_MAX_CHUNKS, sizeof(u32));
+    if (!tExample.densityData || !tExample.chunkDraws)
     {
         AX_WARN("transvoxel example allocation failed");
         tTransvoxelExampleDestroy();
@@ -856,9 +864,8 @@ void tTransvoxelExampleUpdate(void)
     }
 
     tExamplePromotePendingMeshes();
-    ArrayFieldSet(tExample.chunkDraws, ArrayField_Length, 0);
+    tExample.numChunkDraws = 0;
     tExample.builtThisFrame = 0;
-    tExample.submittedChunks = 0;
     tExample.culledChunks = 0;
     tExample.emptyChunks = 0;
     mat4x4 viewProj = M44Multiply(g_Camera.view, g_Camera.projection);
@@ -869,12 +876,12 @@ void tTransvoxelExampleUpdate(void)
     tExample.lodFactor = lodFactor;
     tExample.fixedArea = genParams && genParams->fixedArea;
     tExampleSubmitTerrain(lodFactor, &frustum, true);
-    if (ArrayLength(tExample.chunkDraws) == 0)
+    if (tExample.numChunkDraws == 0)
         tExampleSubmitTerrain(lodFactor, &frustum, false);
 
     tExampleSyncDirtyPhysics();
     tExampleLogStats();
-    RendererSetTerrainChunkDraws(tExample.chunkDraws, (u32)ArrayLength(tExample.chunkDraws));
+    RendererSetTerrainChunkDraws(tExample.chunkDraws, tExample.numChunkDraws);
     RendererSetTerrainBrush(tExample.brushPos, tExample.brushActive ? tExample.brushRadius : 0.0f);
 }
 
@@ -918,9 +925,10 @@ void tTransvoxelExampleDestroy(void)
     RendererSetTerrainChunkDraws(NULL, 0);
     tExampleClearChunkCache();
     HMDestroy(&tExample.chunkLookup);
-    ArrayDestroy(tExample.densityData);
-    ArrayDestroy(tExample.buildVertices);
-    ArrayDestroy(tExample.chunkDraws);
+    DeAllocateTLSFGlobal(tExample.densityData);
+    DeAllocateTLSFGlobal(tExample.chunkDraws);
     tMeshDataContainerDestroy(&tExample.scratchMesh);
-    SDL_memset(&tExample, 0, sizeof(tExample));
+    if (tExample.jobSystem)
+        JobSystem_Destroy(tExample.jobSystem);
+    MemSet(&tExample, 0, sizeof(tExample));
 }

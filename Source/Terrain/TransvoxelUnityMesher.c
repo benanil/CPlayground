@@ -218,21 +218,18 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
         return false;
 
     size_t cacheCount = (size_t)chunkSize * (size_t)chunkSize * 4u;
-    s32* currentCache = ArrayCreatePrealloc(s32, cacheCount);
-    s32* previousCache = ArrayCreatePrealloc(s32, cacheCount);
+    s32* currentCache = (s32*)ArenaPushGlobal(sizeof(s32) * cacheCount);
+    s32* previousCache = (s32*)ArenaPushGlobal(sizeof(s32) * cacheCount);
     if (!currentCache || !previousCache)
     {
         AX_WARN("transvoxel unity mesher regular failed: allocation failed");
-        ArrayDestroy(currentCache);
-        ArrayDestroy(previousCache);
+        if (previousCache) ArenaPopGlobal(sizeof(s32) * cacheCount);
+        if (currentCache)  ArenaPopGlobal(sizeof(s32) * cacheCount);
         return false;
     }
-    ArrayFieldSet(currentCache, ArrayField_Length, cacheCount);
-    ArrayFieldSet(previousCache, ArrayField_Length, cacheCount);
     tMesherFillS32(currentCache, cacheCount, -1);
     tMesherFillS32(previousCache, cacheCount, -1);
 
-	s32 numIndices  = 0;
     bool result = true;
     for (s32 y = 0; y < chunkSize; y++)
     {
@@ -384,12 +381,12 @@ static bool tMesherRegular(tTransvoxelMesher* mesher)
         previousCache = temp;
     }
 
-    ArrayDestroy(currentCache);
-    ArrayDestroy(previousCache);
-    return 1;
+    ArenaPopGlobal(cacheCount * sizeof(s32));
+    ArenaPopGlobal(cacheCount * sizeof(s32));
+    return result;
 }
 
-static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTransitionDirection direction)
+static void tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTransitionDirection direction)
 {
     const s32 padding = 1;
     const s32 chunkSize = mesher->chunkSize;
@@ -613,7 +610,6 @@ static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
 
     ArenaPopGlobal(sizeof(s32) * cacheCount);
     ArenaPopGlobal(sizeof(s32) * cacheCount);
-    return 1;
 }
 
 bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, s32 chunkSize, const f32* densityData,
@@ -638,11 +634,11 @@ bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, s3
 
     tMeshDataContainerClear(meshData);
     bool result = tMesherRegular(&mesher);
-    result = tMesherTransition(&mesher, tMeshDataSlot_LeftTransition,    tTransitionDirection_XMin) && result;
-    result = tMesherTransition(&mesher, tMeshDataSlot_DownTransition,    tTransitionDirection_YMin) && result;
-    result = tMesherTransition(&mesher, tMeshDataSlot_BackTransition,    tTransitionDirection_ZMin) && result;
-    result = tMesherTransition(&mesher, tMeshDataSlot_RightTransition,   tTransitionDirection_XMax) && result;
-    result = tMesherTransition(&mesher, tMeshDataSlot_UpTransition,      tTransitionDirection_YMax) && result;
-    result = tMesherTransition(&mesher, tMeshDataSlot_ForwardTransition, tTransitionDirection_ZMax) && result;
+    tMesherTransition(&mesher, tMeshDataSlot_LeftTransition,    tTransitionDirection_XMin);
+    tMesherTransition(&mesher, tMeshDataSlot_DownTransition,    tTransitionDirection_YMin);
+    tMesherTransition(&mesher, tMeshDataSlot_BackTransition,    tTransitionDirection_ZMin);
+    tMesherTransition(&mesher, tMeshDataSlot_RightTransition,   tTransitionDirection_XMax);
+    tMesherTransition(&mesher, tMeshDataSlot_UpTransition,      tTransitionDirection_YMax);
+    tMesherTransition(&mesher, tMeshDataSlot_ForwardTransition, tTransitionDirection_ZMax);
     return result;
 }

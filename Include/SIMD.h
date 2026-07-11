@@ -258,6 +258,8 @@ purefn f32 VCALL Vec3DotfImpl(v128f a, v128f b) {
 #define Vec3DotV(a, b)           Vec3DotVImpl(a, b)
 #define Vec3DotfV(a, b)          Vec3DotfImpl(a, b)
 #define Vec3NormV(v)             _mm_div_ps(v, _mm_sqrt_ps(Vec3DotVImpl(v, v)))
+// epsilon in the denominator like F3NormSafe: zero-length input returns ~zero instead of NaN
+#define Vec3NormVSafe(v)         _mm_div_ps(v, _mm_add_ps(_mm_sqrt_ps(Vec3DotVImpl(v, v)), _mm_set1_ps(0.0001f)))
 #define Vec3NormEstV(v)          _mm_mul_ps(_mm_rsqrt_ps(Vec3DotVImpl(v, v)), v)
 #define Vec3LenfV(v)             _mm_cvtss_f32(_mm_sqrt_ss(Vec3DotVImpl(v, v)))
 #define Vec3LenV(v)              _mm_sqrt_ps(Vec3DotVImpl(v, v))
@@ -533,6 +535,7 @@ typedef uint32x4_t v128u;
 #define Vec3DotV(a, b)              ARMVector3Dot(a, b)
 #define Vec3DotfV(a, b)             VecGetX(ARMVector3Dot(a, b))
 #define Vec3NormV(v)                ARMVector3Norm(v)
+#define Vec3NormVSafe(v)            ARMVector3Norm(v) // already zero-safe (zero select)
 #define Vec3NormEstV(v)             ARMVector3NormEst(v)
 #define Vec3LenfV(v)                VecGetX(ARMVector3Length(v))
 #define Vec3LenV(v)                 ARMVector3Length(v)

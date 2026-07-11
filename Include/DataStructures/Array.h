@@ -27,6 +27,7 @@ void*  ArrayResizeRaw(void* arr);
 void*  ArrayPushRaw(void* arr, const void* value);
 void   ArrayPopRaw(void* arr, void* out);
 
+#define ArrayDef(type) type* /* not required */
 #define ArrayCreate(type)                    ((type*)ArrayCreateRaw(ARRAY_DEFAULT_CAPACITY, sizeof(type)))
 #define ArrayCreatePrealloc(type, capacity)  ((type*)ArrayCreateRaw((capacity), sizeof(type)))
 #define ArrayDestroy(arr)                    ArrayDestroyRaw(arr)
