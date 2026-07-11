@@ -79,6 +79,7 @@ typedef struct tTransvoxelExample_
     u32 culledChunks;
     u32 emptyChunks;
     u32 physicsSyncCursor;
+    SDL_AtomicInt physicsInvalidated;
     // free-list of scene terrain collider slots; only near lod0/1 chunks hold one
     u16 physicsSlotPool[MAX_TERRAIN_PHYSICS_CHUNKS];
     u32 physicsSlotCount;
@@ -416,6 +417,10 @@ static void tSyncChunkPhysics(tExampleChunk* chunk)
     ArenaRestore(&GlobalArena, mark);
 }
 
+void tInvalidatePhysics(void)
+{
+    SDL_SetAtomicInt(&tExample.physicsInvalidated, 1);
+}
 // worker-side chunk build: density -> transvoxel mesh -> colored soup -> parked in the
 // TerrainVertex heap. touches only the job slot; the heap, upload queue, density field
 // and edit storage are all internally synchronized. CPU scratch (density grid, vertex
@@ -668,6 +673,17 @@ static void tPromotePendingMeshes(void)
 
 static void tSyncDirtyPhysics(void)
 {
+    if (SDL_GetAtomicInt(&tExample.physicsInvalidated) != 0)
+    {
+        SDL_SetAtomicInt(&tExample.physicsInvalidated, 0);
+        for (u32 i = 0; i < tExample.chunkCount; i++)
+        {
+            tExampleChunk* chunk = &tExample.chunks[i];
+            if (chunk->physicsSlot >= 0 || (chunk->lod <= 1 && chunk->heapPtr && chunk->vertexCount >= 3u))
+                chunk->physicsDirty = true;
+        }
+    }
+
     if (tExample.chunkCount == 0u)
         return;
 

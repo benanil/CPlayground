@@ -150,6 +150,11 @@ void tUpdate(void);
 void tDestroy(void);
 void tInvalidateAll(void);
 void tInvalidateRegion(float3 mn, float3 mx);
+// re-create every live chunk collider: Scene_BuildStaticColliders destroys ALL terrain
+// physics bodies (PhysicsDestroyLiveStaticColliders) and runs async on scene load, so
+// colliders synced before it lands are silently wiped. safe from any thread, the actual
+// resync happens on the next tUpdate
+void tInvalidatePhysics(void);
 void tSetBrushCursor(float3 position, f32 radius, bool active);
 
 #if defined(__cplusplus)

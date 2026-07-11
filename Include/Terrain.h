@@ -113,6 +113,12 @@ void Terrain_Update(const Camera* camera);
 void Terrain_SetEnabled(bool enabled);
 bool Terrain_GetEnabled(void);
 
+// re-creates every live terrain chunk collider on the next terrain update. call after
+// anything that destroys the scene's terrain physics bodies wholesale (the async
+// static-collider rebuild on scene load does), otherwise the wiped colliders stay gone.
+// safe from any thread
+void Terrain_InvalidatePhysics(void);
+
 // casts a world space ray against the resident terrain meshes (the same set that
 // draws: live, not hidden, retiring included). dir must be normalized, hits beyond
 // maxDist are rejected. only chunks with lod <= maxLod are tested, lower values make

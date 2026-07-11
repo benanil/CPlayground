@@ -1927,7 +1927,7 @@ static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
 		CopyString(authoring->layers[i].metallicRoughness, sizeof(authoring->layers[i].metallicRoughness), metallicRoughnessPaths[i]);
 	}
 
-    authoring->grassDensity  = 1.0f;
+    authoring->grassDensity  = 4.0f;
     authoring->grassScaleMin = 0.6f;
     authoring->grassScaleMax = 1.2f;
     authoring->grassViewDistance = 300.0f;
@@ -2180,6 +2180,13 @@ bool Terrain_GetEnabled(void)
     return tvWorldEnabled;
 #endif
     return g_Terrain.initialized && g_Terrain.enabled;
+}
+
+void Terrain_InvalidatePhysics(void)
+{
+#if TERRAIN_OLD_RUNTIME_DISABLED
+    tInvalidatePhysics();
+#endif
 }
 
 // frees every resident chunk. in flight worker jobs are marked dying and release

@@ -1,5 +1,6 @@
 #include "Include/Scene.h"
 #include "Include/Platform.h"
+#include "Include/Terrain.h"
 #include "Include/JobSystem.h"
 #include "Include/Graphics.h"
 #include "Include/Memory.h"
@@ -783,6 +784,9 @@ void Scene_BuildStaticColliders(Scene* scene)
 
 	BuildCollidersForSet(scene, &scene->surfaceSet, false);
 	BuildCollidersForSet(scene, &scene->transparentSurfaceSet, true);
+	// the wholesale destroy above also dropped every terrain chunk collider; tell the
+	// terrain to re-create them on its next update (this can run on the async loader)
+	Terrain_InvalidatePhysics();
 	AX_LOG("physics: built %u static collider meshes\n", PhysicsCountMeshes(scene, false) + PhysicsCountMeshes(scene, true));
 }
 
