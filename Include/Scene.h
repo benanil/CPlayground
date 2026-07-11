@@ -86,15 +86,15 @@ typedef struct Scene_
     TextureSystem    textureSystem;
     AnimationSystem  animSystem;
 
-    SceneBundleRef* bundleRefs;     // fixed MAX_SCENE_BUNDLES allocation. bundle indices are stable
-                                     // handles, removing one never shifts the others
-    u64*            bundleSlots;     // MAX_SCENE_BUNDLES bits, 1 means occupied
-    u32             numBundles;      // watermark: highest used bundle slot + 1, slots below may be empty
-    u64*            materialSlots;   // MAX_GPU_MATERIALS bits, 1 means occupied
+    SceneBundleRef*  bundleRefs;   // fixed MAX_SCENE_BUNDLES allocation. bundle indices are stable
+                                   // handles, removing one never shifts the others
+    u64*             bundleSlots;  // MAX_SCENE_BUNDLES bits, 1 means occupied
+    u64*             materialSlots;// MAX_GPU_MATERIALS bits, 1 means occupied
 
-    LightGPU* lights;    // tlsf, MAX_SCENE_LIGHTS, authored lights pushed by Scene_SubmitLights
-    u32       numLights;
+    LightGPU*        lights;    // tlsf, MAX_SCENE_LIGHTS, authored lights pushed by Scene_SubmitLights
+    u32              numLights;
 
+    u32 numBundles;      // watermark: highest used bundle slot + 1, slots below may be empty
     u32 numMaterials;    // material slot watermark, offsets stay stable while occupied
     u32 renderDataDirty; // static render set buffers need re-upload, consumed by Render
     u32 texturesBaked;   // pages came from a baked atlas, packer state is unusable until a repack
@@ -105,10 +105,10 @@ typedef struct Scene_
 	// reference these (box3d does not copy mesh data), so they must outlive the world.
 	struct b3MeshData*   surfacePhysicsMeshes[MAX_GROUP];
 	struct b3MeshData*   transparentPhysicsMeshes[MAX_GROUP];
-	b3BodyId* surfacePhysicsBodies;
-	b3BodyId* transparentPhysicsBodies;
-	struct b3MeshData* terrainPhysicsMeshes[MAX_TERRAIN_PHYSICS_CHUNKS];
-	b3BodyId           terrainPhysicsBodies[MAX_TERRAIN_PHYSICS_CHUNKS];
+	b3BodyId*            surfacePhysicsBodies;
+	b3BodyId*            transparentPhysicsBodies;
+	struct b3MeshData*   terrainPhysicsMeshes[MAX_TERRAIN_PHYSICS_CHUNKS];
+	b3BodyId             terrainPhysicsBodies[MAX_TERRAIN_PHYSICS_CHUNKS];
 
 	// physics overrides parsed from a .scene file, applied once the async collider
 	// build finishes (bodies do not exist until then). tlsf-owned, freed on apply.
@@ -182,8 +182,8 @@ void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback);
 void Scene_BuildStaticColliders(Scene* scene);
 void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity);
 bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
-                                       const b3Vec3* vertices, u32 vertexCount,
-                                       const s32* indices, u32 indexCount);
+                                       b3Vec3* vertices, u32 vertexCount,
+                                       s32* indices, u32 indexCount);
 const b3MeshData* Scene_GetTerrainMeshData(Scene* scene, s32 slot);
 void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot);
 // Swaps the collider shape of the entity's body in place. b3_meshShape restores the

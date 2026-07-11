@@ -42,13 +42,6 @@ typedef struct TerrainEditChunkFileRecord_
     u16 material[TERRAIN_EDIT_VALUES];
 } TerrainEditChunkFileRecord;
 
-typedef struct TerrainEditChunkFileRecordV1_
-{
-    s32 x, y, z;
-    s8  delta[TERRAIN_EDIT_VALUES];
-    u16 material[TERRAIN_EDIT_VALUES];
-} TerrainEditChunkFileRecordV1;
-
 typedef struct TerrainEditState_
 {
     bool      initialized;
@@ -426,11 +419,10 @@ bool TerrainEdit_LoadChunks(const char* path)
     TerrainEditChunkFileHeader* header = (TerrainEditChunkFileHeader*)bytes;
     if (ok)
         ok = header->magic == TERRAIN_EDIT_CHUNKS_MAGIC &&
-             (header->version == 1u || header->version == TERRAIN_EDIT_CHUNKS_VERSION) &&
+             header->version == TERRAIN_EDIT_CHUNKS_VERSION &&
              header->valuesPerChunk == TERRAIN_EDIT_VALUES;
-    size_t recordSize = header->version == 1u ? sizeof(TerrainEditChunkFileRecordV1) : sizeof(TerrainEditChunkFileRecord);
     if (ok)
-        ok = header->rawSize == (u64)header->chunkCount * recordSize &&
+        ok = header->rawSize == (u64)header->chunkCount * sizeof(TerrainEditChunkFileRecord) &&
              fileSize == sizeof(TerrainEditChunkFileHeader) + header->compressedSize;
 
     if (!ok)
@@ -463,36 +455,16 @@ bool TerrainEdit_LoadChunks(const char* path)
     SDL_LockMutex(g_TerrainEdit.lock);
     for (u32 i = 0; i < header->chunkCount && ok; i++)
     {
-        s32 x, y, z;
-        const u16* material;
-        if (header->version == 1u)
-        {
-            const TerrainEditChunkFileRecordV1* record = &((const TerrainEditChunkFileRecordV1*)records)[i];
-            x = record->x; y = record->y; z = record->z;
-            material = record->material;
-        }
-        else
-        {
-            const TerrainEditChunkFileRecord* record = &((const TerrainEditChunkFileRecord*)records)[i];
-            x = record->x; y = record->y; z = record->z;
-            material = record->material;
-        }
+        const TerrainEditChunkFileRecord* record = &((const TerrainEditChunkFileRecord*)records)[i];
+        s32 x = record->x;
+        s32 y = record->y;
+        s32 z = record->z;
 
         TerrainEditChunk* chunk = TerrainEditGetOrCreate(x, y, z);
         ok = chunk != NULL;
         if (!ok) break;
-        if (header->version == 1u)
-        {
-            const s8* delta = ((const TerrainEditChunkFileRecordV1*)records)[i].delta;
-            for (u32 d = 0; d < TERRAIN_EDIT_VALUES; d++)
-                chunk->delta[d] = (s16)delta[d];
-        }
-        else
-        {
-            const TerrainEditChunkFileRecord* record = &((const TerrainEditChunkFileRecord*)records)[i];
-            MemCopy(chunk->delta, record->delta, sizeof(record->delta));
-        }
-        MemCopy(chunk->material, material, sizeof(chunk->material));
+        MemCopy(chunk->delta, record->delta, sizeof(record->delta));
+        MemCopy(chunk->material, record->material, sizeof(record->material));
         s32 mn[3] = { x * 16, y * 16, z * 16 };
         s32 mx[3] = { x * 16 + 15, y * 16 + 15, z * 16 + 15 };
         TerrainEditGrowBounds(mn, mx);

@@ -391,6 +391,9 @@ SDL_GPUTexture* CreateTexture2DArray(u32 width, u32 height, u32 layers,
                                      SDL_GPUTextureUsageFlags usage,
                                      const char* label);
 
+Texture LoadTextureArray(const char* const* paths, u32 count, s32 size, bool srgb,
+						 const char* label, const char* errorLabel);
+
 void rDeleteTexture(Texture texture);
 
 void UploadTextureRegion(Texture texture, u32 layer, u32 x, u32 y, u32 width, u32 height, u32 srcWidth, u32 srcHeight, const void* data);

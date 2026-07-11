@@ -13,7 +13,7 @@ cbuffer vs_params : register(b0, space1)
     float4x4 uView;
     float4x4 uProj;
     float4   uCameraTime;  // xyz: camera world pos, w: time seconds (wind phase)
-    float4   uGrassParams; // x: view distance (meters)
+    float4   uGrassParams; // x: view distance, y/z: scale min/max
 };
 
 cbuffer ps_params : register(b0, space3)
@@ -94,8 +94,8 @@ VSOutput vert(VSInput input)
     // local billboard geometry, adapted from the unity BillboardVertex
     float2 local = corner;
     local.y += step(0.55, corner.y) * Rand1(worldPos.x) * 0.23;   // tip jitter
-    float scaleMul = max(EaseOutCubic(rnd), 0.33);
-    local *= 0.8 * scaleMul;
+    float scaleMul = lerp(uGrassParams.y, uGrassParams.z, EaseOutCubic(rnd));
+    local *= scaleMul;
     local.x += corner.y * sin(time + worldPos.x + sin(worldPos.z + 123.33)) * 0.1; // wind sway, tip bends most
 
     float4 camPos = mul(uView, float4(worldPos, 1.0));

@@ -1,11 +1,6 @@
 #ifndef TRANSVOXEL_UNITY_H
 #define TRANSVOXEL_UNITY_H
 
-#include "Include/Common.h"
-#include "Include/DataStructures/Array.h"
-#include "Include/DataStructures/HashMap.h"
-#include "Include/JobSystem.h"
-#include "Include/ParallelFor.h"
 #include "Math/Vector.h"
 
 #if defined(__cplusplus)
@@ -25,13 +20,6 @@ typedef enum tMeshDataSlot_
 	tMeshDataSlot_ForwardTransition,
 	tMeshDataSlot_Count
 } tMeshDataSlot;
-
-typedef enum tChunkUpdateType_
-{
-    tChunkUpdateType_Remove,
-    tChunkUpdateType_Create,
-    tChunkUpdateType_Update
-} tChunkUpdateType;
 
 typedef struct tVertexData_
 {
@@ -66,39 +54,6 @@ typedef struct tMeshDataContainer_
 {
     tMeshData mesh[tMeshDataSlot_Count];
 } tMeshDataContainer;
-
-typedef struct tChunkUpdate_
-{
-    tChunkUpdateType updateType;
-    int3             chunkPosition;
-    s32              lod;
-    s32              neighboursMask;
-} tChunkUpdate;
-
-typedef struct tChunk_
-{
-    tMeshDataContainer meshData;
-    u32*               validIndices[tMeshDataSlot_Count];
-    int3               position;
-    s32                lod;
-    s32                neighboursMask;
-} tChunk;
-
-typedef struct tWorldSettings_
-{
-    s32 worldSize;
-    s32 chunkSize;
-} tWorldSettings;
-
-typedef struct tDensityDataValue_
-{
-    f32* values; // Array.h storage, one float density sample per entry
-} tDensityDataValue;
-
-typedef struct tDensityData_
-{
-    HashMap dataByChunkPosition; // key: tChunkPositionKey(position), value: tDensityDataValue
-} tDensityData;
 
 typedef f32 (*tNoise2DFn)(f32 x, f32 z, void* userData);
 typedef f32 (*tNoise3DFn)(f32 x, f32 y, f32 z, void* userData);
@@ -136,13 +91,6 @@ const tMeshData* tMeshDataContainerGetConst(const tMeshDataContainer* container,
 void tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask);
 
 u64  tChunkPositionKey(int3 position);
-
-bool tDensityDataInit(tDensityData* densityData, u32 reserveCount);
-void tDensityDataDestroy(tDensityData* densityData);
-void tDensityDataStoreDataUnchecked(tDensityData* densityData, int3 chunkPosition, f32* values);
-f32* tDensityDataGetDataUnchecked(const tDensityData* densityData, int3 chunkPosition);
-bool tDensityDataRemoveData(tDensityData* densityData, int3 chunkPosition);
-bool tDensityDataTakeData(tDensityData* densityData, int3 chunkPosition, f32** outValues);
 
 bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, s32 chunkSize, const f32* densityData,
                            s32 lod, s32 neighboursMask, tMeshDataContainer* meshData, void* userData);

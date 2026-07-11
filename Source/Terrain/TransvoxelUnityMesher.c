@@ -1,4 +1,5 @@
 #include "Include/Platform.h"
+#include "Include/Memory.h"
 #include "Math/Bitpack.h"
 #include "TransvoxelUnity.h"
 #include "TransvoxelTables.h"
@@ -394,8 +395,8 @@ static void tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
     const s32 chunkSize = mesher->chunkSize;
     tMeshData* meshData = tMeshDataContainerGet(mesher->meshData, slot);
     const size_t cacheCount = (size_t)chunkSize * 10u;
-    s32* currentCache  = ArenaPushGlobal(sizeof(s32) * cacheCount);
-    s32* previousCache = ArenaPushGlobal(sizeof(s32) * cacheCount);
+    s32* currentCache  = (s32*)ArenaPushGlobal(sizeof(s32) * cacheCount);
+    s32* previousCache = (s32*)ArenaPushGlobal(sizeof(s32) * cacheCount);
 
     for (s32 y = 0; y < chunkSize; y++)
     {

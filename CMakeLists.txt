@@ -118,7 +118,8 @@ target_sources(${EXECUTABLE_NAME} PRIVATE
     Source/DemoScene.c
     Source/Physics.c
 
-	Source/Terrain/Terrain.c
+    Source/Terrain/TerrainPort.c
+    Source/Terrain/TerrainFoliage.c
     Source/Terrain/TerrainDensity.c
     Source/Terrain/TerrainEdit.c
     Source/Terrain/TransvoxelMesher.c

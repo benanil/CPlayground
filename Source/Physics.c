@@ -184,7 +184,7 @@ static b3BodyId* PhysicsBodies(Scene* scene, bool transparent)
 
 // Resolves the body slot for an entity, or NULL when the entity/slot is out of
 // range. The slot's body may still be null (no body created yet).
-static b3BodyId* PhysicsEntitySlot(const Scene* scene, bool transparent, const Entity* entity)
+static b3BodyId* PhysicsEntitySlot(Scene* scene, bool transparent, const Entity* entity)
 {
 	if (!scene || !entity || entity->sparseIdx == INVALID_ENTITY) return NULL;
 	b3BodyId* bodies = PhysicsBodies(scene, transparent);
@@ -429,8 +429,8 @@ const b3MeshData* Scene_GetTerrainMeshData(Scene* scene, s32 slot)
 }
 
 bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
-                                       const b3Vec3* vertices, u32 vertexCount,
-                                       const s32* indices, u32 indexCount)
+                                       b3Vec3* vertices, u32 vertexCount,
+                                       s32* indices, u32 indexCount)
 {
 	if (!scene || B3_IS_NULL(scene->physicsWorldID)) return false;
 	if (chunkSlot >= MAX_TERRAIN_PHYSICS_CHUNKS) return false;

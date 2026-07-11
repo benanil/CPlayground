@@ -7,44 +7,50 @@
 #include "Include/Scene.h"
 #include "Include/Memory.h"
 #include "Include/JobSystem.h"
+#include "Include/DataStructures/HashMap.h"
+#include "Include/Bitset.h"
 #include "Math/Bitpack.h"
 
-#define T_EXAMPLE_CHUNK_SIZE 16
-#define T_EXAMPLE_LOD_COUNT 4u
-#define T_EXAMPLE_MAX_CHUNKS (16384u)
-#define T_EXAMPLE_CHUNK_TRIANGLE_CAP (8192u * 4u)
-#define T_EXAMPLE_MAX_BUILDS_PER_FRAME 16u
-#define T_EXAMPLE_BUILD_SCRATCH_SIZE (3ull * 1024ull * 1024ull)
-#define T_EXAMPLE_MAX_PHYSICS_SYNCS_PER_FRAME 2u
-#define T_EXAMPLE_MAX_BUILD_JOBS 8u
-#define T_EXAMPLE_VERTEX_CACHE_BUDGET (TERRAIN_MAX_VERTICES / 2u)
-#define T_EXAMPLE_VERTEX_CACHE_TARGET (TERRAIN_MAX_VERTICES / 3u)
-#define T_EXAMPLE_CACHE_KEEP_FRAMES 2u
+#define TRANSVOXEL_CHUNK_SIZE           16
+#define TRANSVOXEL_LOD_COUNT            4u
+#define TRANSVOXEL_MAX_CHUNKS          (16384u)
+#define TRANSVOXEL_CHUNK_BITSET_WORDS ((TRANSVOXEL_MAX_CHUNKS + 63u) / 64u)
+#define TRANSVOXEL_CHUNK_TRIANGLE_CAP  (8192u * 4u)
+#define TRANSVOXEL_MAX_BUILDS_PER_FRAME 16u
+#define TRANSVOXEL_BUILD_SCRATCH_SIZE  (3ull * 1024ull * 1024ull)
+#define TRANSVOXEL_MAX_PHYSICS_SYNCS_PER_FRAME 2u
+#define TRANSVOXEL_MAX_BUILD_JOBS 8u
+#define TRANSVOXEL_VERTEX_CACHE_BUDGET (TERRAIN_MAX_VERTICES / 2u)
+#define TRANSVOXEL_VERTEX_CACHE_TARGET (TERRAIN_MAX_VERTICES / 3u)
+#define TRANSVOXEL_INDEX_CACHE_BUDGET  (TERRAIN_MAX_INDICES / 2u)
+#define TRANSVOXEL_INDEX_CACHE_TARGET  (TERRAIN_MAX_INDICES / 3u)
+#define TRANSVOXEL_HEAP_PRESSURE_EVICT_CHUNKS 32u
+#define TRANSVOXEL_CACHE_KEEP_FRAMES 2u
 
-#define T_EXAMPLE_GRASS_LAYER 0u
-#define T_EXAMPLE_DIRT_LAYER  1u
-#define T_EXAMPLE_ROCK_LAYER  2u
-#define T_EXAMPLE_SAND_LAYER  3u
-#define T_EXAMPLE_SAND_TOP    2.0f
-#define T_EXAMPLE_SAND_FADE   2.0f
-#define T_EXAMPLE_GRASS_START 3.0f
-#define T_EXAMPLE_GRASS_FADE  8.0f
+#define TRANSVOXEL_GRASS_LAYER 0u
+#define TRANSVOXEL_DIRT_LAYER  1u
+#define TRANSVOXEL_ROCK_LAYER  2u
+#define TRANSVOXEL_SAND_LAYER  3u
+#define TRANSVOXEL_SAND_TOP    2.0f
+#define TRANSVOXEL_SAND_FADE   2.0f
+#define TRANSVOXEL_GRASS_START 3.0f
+#define TRANSVOXEL_GRASS_FADE  8.0f
 
 typedef struct tMeshHandle_
 {
-    void* heapPtr;
-    u32   heapFirst;
-    u32   vertexCount;
-    void* idxHeapPtr; // index range in the TerrainIndex2 geometry heap (chunk-local values)
-    u32   idxFirst;
-    u32   indexCount;
+    void*   heapPtr;
+    u32     heapFirst;
+    u32     vertexCount;
+    void*   idxHeapPtr; // index range in the TerrainIndex2 geometry heap (chunk-local values)
+    u32     idxFirst;
+    u32     indexCount;
     b3Vec3* physicsVertices;
     s32*    physicsIndices;
     u32     physicsVertexCount;
     u32     physicsIndexCount;
 } tMeshHandle;
 
-typedef struct tExampleChunk_
+typedef struct tRuntimeChunk_
 {
     int3   min;
     s32    lod;
@@ -64,12 +70,12 @@ typedef struct tExampleChunk_
     bool  dirty;
     bool  physicsDirty;
     bool  pendingEmpty;
-} tExampleChunk;
+} tChunk;
 
 // one in-flight chunk build on a JobSystem worker. the main thread fills the inputs,
 // launches the job and reads the outputs after JobSystem_IsJobDone; exactly one job
 // ever touches a chunk (chunk->building), so no locks on chunk state are needed
-typedef struct tExampleBuildJob_
+typedef struct tBuildJob_
 {
     // inputs, main thread
     u32  chunkIndex;
@@ -85,48 +91,51 @@ typedef struct tExampleBuildJob_
     u32*         buildIndices;
     u32          buildIndexCount;
     // output, worker; heapPtr is the parked mesh (NULL when empty or failed)
-    tMeshHandle mesh;
-    bool  failed;
-    JobHandle handle;
-    bool  busy;
-} tExampleBuildJob;
+    tMeshHandle  mesh;
+    JobHandle    handle;
+    bool         failed;
+    bool         busy;
+} tBuildJob;
 
-typedef struct tTransvoxelExample_
+typedef struct tTransvoxelState_
 {
     tDensityGenerator generator;
 	JobSystem* jobSystem;
-    tExampleBuildJob buildJobs[T_EXAMPLE_MAX_BUILD_JOBS];
+    tBuildJob  buildJobs[TRANSVOXEL_MAX_BUILD_JOBS];
     TerrainChunkDraw* chunkDraws; // per-frame heap ranges, one indirect multidraw
-    tExampleChunk chunks[T_EXAMPLE_MAX_CHUNKS];
+    tChunk  chunks[TRANSVOXEL_MAX_CHUNKS];
     HashMap chunkLookup; // key: tChunkKey, value: u32 index into chunks
-    u32 numChunkDraws;
-	u32 chunkCount;
-    u32 builtThisFrame; // jobs scheduled this frame, capped by T_EXAMPLE_MAX_BUILDS_PER_FRAME
-    u32 cacheVertices;  // live + pending chunk vertices resident in GeometryBuffer_TerrainVertNew
-    u32 frameIndex;
-    u32 culledChunks;
-    u32 emptyChunks;
-    u32 physicsSyncCursor;
+    u64*    unusedChunksBitset; // bit set means slot is occupied; name kept for old code/searches
+    u32     numChunkDraws;
+	u32     chunkCount;
+    u32     builtThisFrame; // jobs scheduled this frame, capped by TRANSVOXEL_MAX_BUILDS_PER_FRAME
+    u32     cacheVertices;  // live + pending chunk vertices resident in GeometryBuffer_TerrainVertNew
+    u32     cacheIndices;   // live + pending chunk indices resident in GeometryBuffer_TerrainIndex2
+    u32     frameIndex;
+    u32     culledChunks;
+    u32     emptyChunks;
+    u32     physicsSyncCursor;
     SDL_AtomicInt physicsInvalidated;
     SDL_AtomicInt heapPressure;
     // free-list of scene terrain collider slots; only near lod0/1 chunks hold one
-    u16 physicsSlotPool[MAX_TERRAIN_PHYSICS_CHUNKS];
-    u32 physicsSlotCount;
-    f32 lodFactor;   // this frame's lod distance scale, read by the mask computation
-    bool fixedArea;  // fixed-area worlds are lod0-only: no lod seams, masks stay 0
-    u64 lastStatsTicks;
+    u16    physicsSlotPool[MAX_TERRAIN_PHYSICS_CHUNKS];
+    u32    physicsSlotCount;
+    f32    lodFactor;   // this frame's lod distance scale, read by the mask computation
+    bool   fixedArea;  // fixed-area worlds are lod0-only: no lod seams, masks stay 0
+    u64    lastStatsTicks;
     float3 brushPos;
-    f32 brushRadius;
-    bool brushActive;
-    bool initialized;
-} tTransvoxelExample;
+    f32    brushRadius;
+    bool   brushActive;
+    bool   initialized;
+} tTransvoxelState;
 
 extern Camera g_Camera;
 extern Graphics gGFX; // geometry heap CPU mirrors (defined in Graphics.c)
 
-static tTransvoxelExample tExample;
+static tTransvoxelState tTransvoxel;
 
-static void tPruneChunkCache(u32 targetVertices);
+static void tPruneChunkCache(u32 targetVertices, u32 targetIndices, bool respectKeepFrames);
+static void tClearChunkCache(void);
 
 // the engine density field (TerrainDensity.c noise) plugged into the port's generator
 // contract: tDensityGeneratorGetValue returns -y + noise3D, and the port treats
@@ -147,7 +156,7 @@ static void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32
     f32 steepRock = 1.0f - Saturatef32((slope - 0.55f) * 4.0f);
     f32 highBlend = Saturatef32((worldPos.y - 34.0f) * 0.08f);
     f32 rockBlend = Maxf32(steepRock, highBlend);
-    f32 grassHeight = Saturatef32((worldPos.y - seaLevel - T_EXAMPLE_GRASS_START) * (1.0f / T_EXAMPLE_GRASS_FADE));
+    f32 grassHeight = Saturatef32((worldPos.y - seaLevel - TRANSVOXEL_GRASS_START) * (1.0f / TRANSVOXEL_GRASS_FADE));
     f32 grassAmount = (1.0f - rockBlend) * grassHeight;
     float3 layerWeight = {
         grassAmount * (1.0f - rockBlend),
@@ -156,26 +165,26 @@ static void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32
     };
 
     f32 procWeights[3] = { layerWeight.x, layerWeight.y, layerWeight.z };
-    u32 procA = T_EXAMPLE_GRASS_LAYER;
+    u32 procA = TRANSVOXEL_GRASS_LAYER;
     if (layerWeight.y > layerWeight.x)
-        procA = T_EXAMPLE_DIRT_LAYER;
-    u32 procB = T_EXAMPLE_DIRT_LAYER;
-    if (procA == T_EXAMPLE_DIRT_LAYER)
+        procA = TRANSVOXEL_DIRT_LAYER;
+    u32 procB = TRANSVOXEL_DIRT_LAYER;
+    if (procA == TRANSVOXEL_DIRT_LAYER)
     {
-        procB = T_EXAMPLE_GRASS_LAYER;
+        procB = TRANSVOXEL_GRASS_LAYER;
         if (layerWeight.z > layerWeight.x)
-            procB = T_EXAMPLE_ROCK_LAYER;
+            procB = TRANSVOXEL_ROCK_LAYER;
     }
     else if (layerWeight.z > layerWeight.y)
     {
-        procB = T_EXAMPLE_ROCK_LAYER;
+        procB = TRANSVOXEL_ROCK_LAYER;
     }
 
     f32 procWeightAF = procWeights[procA];
     f32 procWeightBF = procWeights[procB];
     f32 procTotal = procWeightAF + procWeightBF;
     u32 procWeightA = (u32)Clampf32(procWeightAF / Maxf32(procTotal, 1.0e-4f) * 255.0f + 0.5f, 0.0f, 255.0f);
-    f32 sandBlend = Saturatef32((seaLevel + T_EXAMPLE_SAND_TOP - worldPos.y) * (1.0f / T_EXAMPLE_SAND_FADE));
+    f32 sandBlend = Saturatef32((seaLevel + TRANSVOXEL_SAND_TOP - worldPos.y) * (1.0f / TRANSVOXEL_SAND_FADE));
 
     u8 matIndex[2];
     u8 matWeight[2];
@@ -189,8 +198,8 @@ static void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32
     {
         if (sandBlend > 0.002f)
         {
-            idxA = T_EXAMPLE_SAND_LAYER;
-            idxB = T_EXAMPLE_DIRT_LAYER;
+            idxA = TRANSVOXEL_SAND_LAYER;
+            idxB = TRANSVOXEL_DIRT_LAYER;
             wA = (u32)(sandBlend * 255.0f + 0.5f);
         }
         else
@@ -204,10 +213,10 @@ static void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32
     {
         idxA = procDominant;
         if (matIndex[0] != 0u)
-            idxA = Minu32((u32)matIndex[0] - 1u, T_EXAMPLE_SAND_LAYER);
+            idxA = Minu32((u32)matIndex[0] - 1u, TRANSVOXEL_SAND_LAYER);
         idxB = procDominant;
         if (matIndex[1] != 0u)
-            idxB = Minu32((u32)matIndex[1] - 1u, T_EXAMPLE_SAND_LAYER);
+            idxB = Minu32((u32)matIndex[1] - 1u, TRANSVOXEL_SAND_LAYER);
         wA = matWeight[0];
     }
 
@@ -218,8 +227,8 @@ static void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32
 // thread safe: TerrainDensity_SampleChunk is pure + edit overlay is mutex guarded
 static void tBuildDensity(int3 chunkMin, s32 lod, f32* out)
 {
-    s32 densitySize = T_EXAMPLE_CHUNK_SIZE + 3;
-    s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
+    s32 densitySize = TRANSVOXEL_CHUNK_SIZE + 3;
+    s32 step = TRANSVOXEL_CHUNK_SIZE << lod;
     s32 cx = chunkMin.x / step;
     s32 cy = chunkMin.y / step;
     s32 cz = chunkMin.z / step;
@@ -237,7 +246,7 @@ static void tBuildDensity(int3 chunkMin, s32 lod, f32* out)
     }
 }
 
-static const f32 tLODDistance[T_EXAMPLE_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };
+static const f32 tLODDistance[TRANSVOXEL_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };
 
 // true when the quadtree node at (nodeX, nodeZ, lod) splits into finer children:
 // the closest point of its XZ box lies inside the next-finer lod's distance ring.
@@ -246,7 +255,7 @@ static bool tNodeSplits(s32 nodeX, s32 nodeZ, s32 lod, f32 lodFactor)
 {
     if (lod <= 0)
         return false;
-    s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
+    s32 step = TRANSVOXEL_CHUNK_SIZE << lod;
     f32 minX = (f32)(nodeX * step);
     f32 minZ = (f32)(nodeZ * step);
     f32 dx = Clampf32(g_Camera.position.x, minX, minX + (f32)step) - g_Camera.position.x;
@@ -262,7 +271,7 @@ static bool tNeighbourFiner(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor)
 {
     if (lod == 0)
         return false;
-    for (s32 l = (s32)T_EXAMPLE_LOD_COUNT - 1; l >= lod; l--)
+    for (s32 l = (s32)TRANSVOXEL_LOD_COUNT - 1; l >= lod; l--)
     {
         // arithmetic shift floors negative chunk coords onto the coarser grid
         s32 nodeX = chunkX >> (l - lod);
@@ -279,12 +288,12 @@ static bool tNeighbourFiner(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor)
 // vertical neighbours share the column and lod, so the y bits are never set
 static s32 tColumnMask(int3 min, s32 lod)
 {
-    if (tExample.fixedArea || lod == 0)
+    if (tTransvoxel.fixedArea || lod == 0)
         return 0;
-    s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
+    s32 step = TRANSVOXEL_CHUNK_SIZE << lod;
     s32 chunkX = FloorDiv(min.x, step);
     s32 chunkZ = FloorDiv(min.z, step);
-    f32 lodFactor = tExample.lodFactor;
+    f32 lodFactor = tTransvoxel.lodFactor;
     s32 mask = 0;
     if (tNeighbourFiner(chunkX - 1, chunkZ, lod, lodFactor)) mask |= 1;  // -x
     if (tNeighbourFiner(chunkX + 1, chunkZ, lod, lodFactor)) mask |= 8;  // +x
@@ -300,7 +309,7 @@ static v128f tUnpackNormal(u32 packed)
     return OctDecode(VecSetR(x, y, 0.0f, 0.0f));
 }
 
-static void tPushTriangleVertex(tExampleBuildJob* job, v128f p, u32 normal, u32 materials, u32 blend)
+static void tPushTriangleVertex(tBuildJob* job, v128f p, u32 normal, u32 materials, u32 blend)
 {
     tVertexData vertex = {0};
     vertex.position = p;
@@ -314,7 +323,7 @@ static void tPushTriangleVertex(tExampleBuildJob* job, v128f p, u32 normal, u32 
 // thread safe density/edit/params reads inside tTerrainMaterial. emits an indexed mesh
 // (shared source vertices materialized once, triangles reference them) so shared verts
 // are shaded once instead of once per triangle, and the GPU draws indexed
-static void tAppendMeshSlotTriangles(tExampleBuildJob* job, tMeshDataSlot slot)
+static void tAppendMeshSlotTriangles(tBuildJob* job, tMeshDataSlot slot)
 {
     const tMeshData* mesh = tMeshDataContainerGetConst(&job->scratchMesh, slot);
     if (!mesh || !mesh->vertices || !mesh->indices || !job->buildVertices || !job->buildIndices)
@@ -326,7 +335,7 @@ static void tAppendMeshSlotTriangles(tExampleBuildJob* job, tMeshDataSlot slot)
         return;
     // this slot's vertices land contiguously after everything emitted so far; the source
     // indices are local to the slot, so shift them by that base to stay chunk-local
-    if (job->buildVertexCount + vertexCount > T_EXAMPLE_CHUNK_TRIANGLE_CAP)
+    if (job->buildVertexCount + vertexCount > TRANSVOXEL_CHUNK_TRIANGLE_CAP)
         return;
     u32 base = job->buildVertexCount;
 
@@ -345,7 +354,7 @@ static void tAppendMeshSlotTriangles(tExampleBuildJob* job, tMeshDataSlot slot)
 
     for (size_t i = 0; i + 2 < indexCount; i += 3)
     {
-        if (job->buildIndexCount + 3u > T_EXAMPLE_CHUNK_TRIANGLE_CAP)
+        if (job->buildIndexCount + 3u > TRANSVOXEL_CHUNK_TRIANGLE_CAP)
             return;
 
         u32 ia = mesh->indices[i + 0];
@@ -377,24 +386,30 @@ static void tFreeMeshHandle(tMeshHandle* mesh)
     if (mesh->heapPtr)
     {
         GeometryHeapFree(GeometryBuffer_TerrainVertNew, mesh->heapPtr);
-        if (tExample.cacheVertices >= mesh->vertexCount)
-            tExample.cacheVertices -= mesh->vertexCount;
+        if (tTransvoxel.cacheVertices >= mesh->vertexCount)
+            tTransvoxel.cacheVertices -= mesh->vertexCount;
         else
-            tExample.cacheVertices = 0u;
+            tTransvoxel.cacheVertices = 0u;
     }
     if (mesh->idxHeapPtr)
+    {
         GeometryHeapFree(GeometryBuffer_TerrainIndex2, mesh->idxHeapPtr);
+        if (tTransvoxel.cacheIndices >= mesh->indexCount)
+            tTransvoxel.cacheIndices -= mesh->indexCount;
+        else
+            tTransvoxel.cacheIndices = 0u;
+    }
     DeAllocateTLSFGlobal(mesh->physicsVertices);
     DeAllocateTLSFGlobal(mesh->physicsIndices);
     *mesh = (tMeshHandle){0};
 }
 
-static void tFreeChunkMesh(tExampleChunk* chunk)
+static void tFreeChunkMesh(tChunk* chunk)
 {
     tFreeMeshHandle(&chunk->mesh);
 }
 
-static void tFreePendingMesh(tExampleChunk* chunk)
+static void tFreePendingMesh(tChunk* chunk)
 {
     tFreeMeshHandle(&chunk->pendingMesh);
     chunk->pendingFrames = 0;
@@ -404,18 +419,18 @@ static void tFreePendingMesh(tExampleChunk* chunk)
 // releases the chunk's collider slot back to the pool. chunk indices are NOT valid
 // collider slots (the chunk pool is 16384, the scene only has MAX_TERRAIN_PHYSICS_CHUNKS
 // collider slots), so every physics call goes through the pooled chunk->physicsSlot
-static void tDestroyChunkPhysics(tExampleChunk* chunk)
+static void tDestroyChunkPhysics(tChunk* chunk)
 {
     if (!chunk || chunk->physicsSlot < 0)
         return;
     Scene* scene = Scene_GetActive();
     if (scene)
         Scene_PhysicsDestroyTerrainChunk(scene, (u32)chunk->physicsSlot);
-    tExample.physicsSlotPool[tExample.physicsSlotCount++] = (u16)chunk->physicsSlot;
+    tTransvoxel.physicsSlotPool[tTransvoxel.physicsSlotCount++] = (u16)chunk->physicsSlot;
     chunk->physicsSlot = -1;
 }
 
-static void tSyncChunkPhysics(tExampleChunk* chunk)
+static void tSyncChunkPhysics(tChunk* chunk)
 {
     Scene* scene = Scene_GetActive();
     if (!scene)
@@ -429,12 +444,12 @@ static void tSyncChunkPhysics(tExampleChunk* chunk)
 
     if (chunk->physicsSlot < 0)
     {
-        if (tExample.physicsSlotCount == 0u)
+        if (tTransvoxel.physicsSlotCount == 0u)
         {
-            AX_WARN("transvoxel example terrain physics slots exhausted");
+            AX_WARN("transvoxel terrain physics slots exhausted");
             return;
         }
-        chunk->physicsSlot = (s32)tExample.physicsSlotPool[--tExample.physicsSlotCount];
+        chunk->physicsSlot = (s32)tTransvoxel.physicsSlotPool[--tTransvoxel.physicsSlotCount];
     }
 
     if (!Scene_PhysicsSyncTerrainChunkMesh(scene, (u32)chunk->physicsSlot,
@@ -445,7 +460,7 @@ static void tSyncChunkPhysics(tExampleChunk* chunk)
 
 void tInvalidatePhysics(void)
 {
-    SDL_SetAtomicInt(&tExample.physicsInvalidated, 1);
+    SDL_SetAtomicInt(&tTransvoxel.physicsInvalidated, 1);
 }
 // worker-side chunk build: density -> transvoxel mesh -> colored soup -> parked in the
 // tVertexData heap. touches only the job slot; the heap, upload queue, density field
@@ -453,7 +468,7 @@ void tInvalidatePhysics(void)
 // buffer, mesher caches via ArenaPushGlobal) comes from a reusable per-build-slot scratch arena
 static void tBuildJobRun(void* userData)
 {
-    tExampleBuildJob* job = (tExampleBuildJob*)userData;
+    tBuildJob* job = (tBuildJob*)userData;
     job->mesh = (tMeshHandle){0};
     job->failed = false;
     job->buildVertices = NULL;
@@ -463,14 +478,14 @@ static void tBuildJobRun(void* userData)
 
     ArenaScratchBegin(&job->scratchArena);
 
-    s32 densitySize = T_EXAMPLE_CHUNK_SIZE + 3;
+    s32 densitySize = TRANSVOXEL_CHUNK_SIZE + 3;
     size_t densityCount = (size_t)densitySize * (size_t)densitySize * (size_t)densitySize;
     f32* density = (f32*)ArenaPushGlobal(sizeof(f32) * densityCount);
-    job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
-    job->buildIndices = (u32*)ArenaPushGlobal(sizeof(u32) * T_EXAMPLE_CHUNK_TRIANGLE_CAP);
+    job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * TRANSVOXEL_CHUNK_TRIANGLE_CAP);
+    job->buildIndices = (u32*)ArenaPushGlobal(sizeof(u32) * TRANSVOXEL_CHUNK_TRIANGLE_CAP);
     if (!density || !job->buildVertices || !job->buildIndices)
     {
-        AX_WARN("transvoxel example build scratch allocation failed");
+        AX_WARN("transvoxel build scratch allocation failed");
         job->failed = true;
         job->buildVertices = NULL;
         job->buildIndices = NULL;
@@ -479,10 +494,10 @@ static void tBuildJobRun(void* userData)
     }
 
     tBuildDensity(job->min, job->lod, density);
-    if (!tTransvoxelMesherMesh(&tExample.generator, job->min, T_EXAMPLE_CHUNK_SIZE, density,
+    if (!tTransvoxelMesherMesh(&tTransvoxel.generator, job->min, TRANSVOXEL_CHUNK_SIZE, density,
                                job->lod, job->neighboursMask, &job->scratchMesh, NULL))
     {
-        AX_WARN("transvoxel example chunk mesh build failed");
+        AX_WARN("transvoxel chunk mesh build failed");
         job->failed = true;
         job->buildVertices = NULL;
         job->buildIndices = NULL;
@@ -520,7 +535,7 @@ static void tBuildJobRun(void* userData)
             // partial success leaks nothing: free whichever heap succeeded, drop the build
             if (first != GEOMETRY_ALLOC_FAIL)
                 GeometryHeapFree(GeometryBuffer_TerrainVertNew, raw);
-            SDL_SetAtomicInt(&tExample.heapPressure, 1);
+            SDL_SetAtomicInt(&tTransvoxel.heapPressure, 1);
             job->failed = true;
         }
         else
@@ -536,8 +551,8 @@ static void tBuildJobRun(void* userData)
             job->mesh.idxFirst = idxFirst;
             job->mesh.indexCount = indexCount;
             // near chunks (lod<=1) get a collider: the render verts + indices ARE the
-            // collision mesh, just narrowed to positions (b3Vec3) and s32 indices — no
-            // separate soup. box3d wants world-space positions, which buildVertices hold
+            // collision mesh, just narrowed to positions (b3Vec3) and s32 indices
+			// box3d wants world-space positions, which buildVertices hold
             if (job->lod <= 1 && indexCount >= 3u)
             {
                 job->mesh.physicsVertexCount = vertexCount;
@@ -556,7 +571,7 @@ static void tBuildJobRun(void* userData)
                 }
                 else
                 {
-                    AX_WARN("transvoxel example terrain physics mesh allocation failed");
+                    AX_WARN("transvoxel terrain physics mesh allocation failed");
                     DeAllocateTLSFGlobal(job->mesh.physicsVertices);
                     DeAllocateTLSFGlobal(job->mesh.physicsIndices);
                     job->mesh.physicsVertices = NULL;
@@ -576,19 +591,22 @@ static void tBuildJobRun(void* userData)
 // picks a free job slot and launches the chunk build on a worker. false when the
 // per-frame cap is hit, every slot is busy, or the job queue is full; the chunk keeps
 // its dirty flag in those cases and retries next frame
-static bool tScheduleBuild(u32 chunkIndex, tExampleChunk* chunk)
+static bool tScheduleBuild(u32 chunkIndex, tChunk* chunk)
 {
-    if (tExample.builtThisFrame >= T_EXAMPLE_MAX_BUILDS_PER_FRAME)
+    if (tTransvoxel.builtThisFrame >= TRANSVOXEL_MAX_BUILDS_PER_FRAME)
         return false;
-    if (tExample.cacheVertices > T_EXAMPLE_VERTEX_CACHE_BUDGET)
-        tPruneChunkCache(T_EXAMPLE_VERTEX_CACHE_TARGET);
-
-    tExampleBuildJob* job = NULL;
-    for (u32 i = 0; i < T_EXAMPLE_MAX_BUILD_JOBS; i++)
+    if (tTransvoxel.cacheVertices > TRANSVOXEL_VERTEX_CACHE_BUDGET ||
+        tTransvoxel.cacheIndices > TRANSVOXEL_INDEX_CACHE_BUDGET)
     {
-        if (!tExample.buildJobs[i].busy)
+        tPruneChunkCache(TRANSVOXEL_VERTEX_CACHE_TARGET, TRANSVOXEL_INDEX_CACHE_TARGET, true);
+    }
+
+    tBuildJob* job = NULL;
+    for (u32 i = 0; i < TRANSVOXEL_MAX_BUILD_JOBS; i++)
+    {
+        if (!tTransvoxel.buildJobs[i].busy)
         {
-            job = &tExample.buildJobs[i];
+            job = &tTransvoxel.buildJobs[i];
             break;
         }
     }
@@ -604,7 +622,7 @@ static bool tScheduleBuild(u32 chunkIndex, tExampleChunk* chunk)
     // and the chunk reschedules after integration, so stale results self-heal
     chunk->dirty = false;
     chunk->building = true;
-    job->handle = JobSystem_Execute(tExample.jobSystem, tBuildJobRun, job);
+    job->handle = JobSystem_Execute(tTransvoxel.jobSystem, tBuildJobRun, job);
     if (job->handle == 0)
     {
         job->busy = false;
@@ -612,7 +630,7 @@ static bool tScheduleBuild(u32 chunkIndex, tExampleChunk* chunk)
         chunk->building = false;
         return false;
     }
-    tExample.builtThisFrame++;
+    tTransvoxel.builtThisFrame++;
     return true;
 }
 
@@ -620,13 +638,13 @@ static bool tScheduleBuild(u32 chunkIndex, tExampleChunk* chunk)
 // into the chunks' pending slots so they run through the usual 2-frame promote
 static void tIntegrateFinishedBuilds(void)
 {
-    for (u32 i = 0; i < T_EXAMPLE_MAX_BUILD_JOBS; i++)
+    for (u32 i = 0; i < TRANSVOXEL_MAX_BUILD_JOBS; i++)
     {
-        tExampleBuildJob* job = &tExample.buildJobs[i];
-        if (!job->busy || !JobSystem_IsJobDone(tExample.jobSystem, job->handle))
+        tBuildJob* job = &tTransvoxel.buildJobs[i];
+        if (!job->busy || !JobSystem_IsJobDone(tTransvoxel.jobSystem, job->handle))
             continue;
 
-        tExampleChunk* chunk = &tExample.chunks[job->chunkIndex];
+        tChunk* chunk = &tTransvoxel.chunks[job->chunkIndex];
         chunk->building = false;
         chunk->built = true;
         job->busy = false;
@@ -651,13 +669,14 @@ static void tIntegrateFinishedBuilds(void)
             {
                 tDestroyChunkPhysics(chunk);
             }
-            tExample.emptyChunks++;
+            tTransvoxel.emptyChunks++;
             continue;
         }
 
         chunk->pendingMesh = job->mesh;
         chunk->pendingFrames = 2u;
-        tExample.cacheVertices += job->mesh.vertexCount;
+        tTransvoxel.cacheVertices += job->mesh.vertexCount;
+        tTransvoxel.cacheIndices += job->mesh.indexCount;
         job->mesh = (tMeshHandle){0};
     }
 }
@@ -666,17 +685,17 @@ static void tIntegrateFinishedBuilds(void)
 // must run before anything invalidates chunk indices or tears the system down
 static void tDrainBuildJobs(void)
 {
-    if (!tExample.jobSystem)
+    if (!tTransvoxel.jobSystem)
         return;
-    JobSystem_Wait(tExample.jobSystem);
-    for (u32 i = 0; i < T_EXAMPLE_MAX_BUILD_JOBS; i++)
+    JobSystem_Wait(tTransvoxel.jobSystem);
+    for (u32 i = 0; i < TRANSVOXEL_MAX_BUILD_JOBS; i++)
     {
-        tExampleBuildJob* job = &tExample.buildJobs[i];
+        tBuildJob* job = &tTransvoxel.buildJobs[i];
         if (!job->busy)
             continue;
         tFreeMeshHandle(&job->mesh);
         job->busy = false;
-        tExample.chunks[job->chunkIndex].building = false;
+        tTransvoxel.chunks[job->chunkIndex].building = false;
     }
 }
 
@@ -689,78 +708,147 @@ static u64 tChunkKey(int3 position, s32 lod)
 		| ((u64)((u32)(position.z + 0x100000) & 0x1FFFFFu) << 3) | (u64)(u32)lod;
 }
 
+static void tRemapBuildJobChunkIndex(u32 oldIndex, u32 newIndex)
+{
+    for (u32 i = 0; i < TRANSVOXEL_MAX_BUILD_JOBS; i++)
+    {
+        tBuildJob* job = &tTransvoxel.buildJobs[i];
+        if (job->busy && job->chunkIndex == oldIndex)
+            job->chunkIndex = newIndex;
+    }
+}
+
+static void tFreeChunkSlot(u32 index)
+{
+    if (index >= tTransvoxel.chunkCount)
+        return;
+
+    tChunk* chunk = &tTransvoxel.chunks[index];
+    HMErase(&tTransvoxel.chunkLookup, tChunkKey(chunk->min, chunk->lod));
+    tDestroyChunkPhysics(chunk);
+    tFreeChunkMesh(chunk);
+    tFreePendingMesh(chunk);
+
+    u32 lastIndex = tTransvoxel.chunkCount - 1u;
+    if (index != lastIndex)
+    {
+        tTransvoxel.chunks[index] = tTransvoxel.chunks[lastIndex];
+        u64 movedKey = tChunkKey(tTransvoxel.chunks[index].min, tTransvoxel.chunks[index].lod);
+        HMInsertOrAssign(&tTransvoxel.chunkLookup, movedKey, &index);
+        tRemapBuildJobChunkIndex(lastIndex, index);
+    }
+
+    MemsetZero(&tTransvoxel.chunks[lastIndex], sizeof(tTransvoxel.chunks[lastIndex]));
+    BitsetReset(tTransvoxel.unusedChunksBitset, (s32)lastIndex);
+    tTransvoxel.chunkCount--;
+    if (tTransvoxel.physicsSyncCursor >= tTransvoxel.chunkCount)
+        tTransvoxel.physicsSyncCursor = 0u;
+}
+
+static bool tFreeOldestChunkSlot(bool requireMesh, bool respectKeepFrames)
+{
+    u32 evictIndex = UINT32_MAX;
+    u32 oldestFrame = UINT32_MAX;
+    for (u32 i = 0; i < tTransvoxel.chunkCount; i++)
+    {
+        tChunk* chunk = &tTransvoxel.chunks[i];
+        if (chunk->building)
+            continue;
+        if (requireMesh && !chunk->mesh.heapPtr && !chunk->pendingMesh.heapPtr)
+            continue;
+        if (respectKeepFrames && chunk->lastTouchedFrame + TRANSVOXEL_CACHE_KEEP_FRAMES >= tTransvoxel.frameIndex)
+            continue;
+        if (chunk->lastTouchedFrame < oldestFrame)
+        {
+            oldestFrame = chunk->lastTouchedFrame;
+            evictIndex = i;
+        }
+    }
+
+    if (evictIndex == UINT32_MAX)
+        return false;
+    tFreeChunkSlot(evictIndex);
+    return true;
+}
+
+static u32 tAllocChunkSlot(void)
+{
+    if (tTransvoxel.chunkCount >= TRANSVOXEL_MAX_CHUNKS)
+    {
+        if (!tFreeOldestChunkSlot(false, false))
+        {
+            tClearChunkCache();
+            AX_LOG("transvoxel chunk cache reset");
+        }
+    }
+
+    s32 index = BitsetFindFirstEmpty(tTransvoxel.unusedChunksBitset, (s32)TRANSVOXEL_MAX_CHUNKS);
+    if (index < 0)
+        return UINT32_MAX;
+    if ((u32)index != tTransvoxel.chunkCount)
+        AX_WARN("transvoxel chunk slot allocator repaired non-dense slot state");
+
+    index = (s32)tTransvoxel.chunkCount;
+    if ((u32)index >= TRANSVOXEL_MAX_CHUNKS)
+        return UINT32_MAX;
+
+    BitsetSet(tTransvoxel.unusedChunksBitset, index);
+    tTransvoxel.chunkCount++;
+    return (u32)index;
+}
+
 static void tClearChunkCache(void)
 {
     tDrainBuildJobs();
     RendererSetTerrainChunkDraws(NULL, 0);
-    for (u32 i = 0; i < tExample.chunkCount; i++)
+    for (u32 i = 0; i < tTransvoxel.chunkCount; i++)
     {
-        tDestroyChunkPhysics(&tExample.chunks[i]);
-        tFreeChunkMesh(&tExample.chunks[i]);
-        tFreePendingMesh(&tExample.chunks[i]);
+        tDestroyChunkPhysics(&tTransvoxel.chunks[i]);
+        tFreeChunkMesh(&tTransvoxel.chunks[i]);
+        tFreePendingMesh(&tTransvoxel.chunks[i]);
     }
-    tExample.chunkCount = 0;
-    tExample.cacheVertices = 0u;
-    tExample.physicsSyncCursor = 0;
-    HMClear(&tExample.chunkLookup);
+    tTransvoxel.chunkCount = 0;
+    tTransvoxel.cacheVertices = 0u;
+    tTransvoxel.cacheIndices = 0u;
+    tTransvoxel.physicsSyncCursor = 0;
+    if (tTransvoxel.unusedChunksBitset)
+        MemsetZero(tTransvoxel.unusedChunksBitset, TRANSVOXEL_CHUNK_BITSET_WORDS * sizeof(u64));
+    HMClear(&tTransvoxel.chunkLookup);
 }
 
-static void tEvictChunkMesh(tExampleChunk* chunk)
+static void tPruneChunkCache(u32 targetVertices, u32 targetIndices, bool respectKeepFrames)
 {
-    tDestroyChunkPhysics(chunk);
-    tFreeChunkMesh(chunk);
-    tFreePendingMesh(chunk);
-    chunk->built = false;
-    chunk->dirty = true;
-    chunk->pendingEmpty = false;
-}
-
-static bool tChunkEvictable(const tExampleChunk* chunk)
-{
-    if (!chunk || chunk->building)
-        return false;
-    if (!chunk->mesh.heapPtr && !chunk->pendingMesh.heapPtr)
-        return false;
-    return chunk->lastTouchedFrame + T_EXAMPLE_CACHE_KEEP_FRAMES < tExample.frameIndex;
-}
-
-static void tPruneChunkCache(u32 targetVertices)
-{
-    while (tExample.cacheVertices > targetVertices)
+    while (tTransvoxel.cacheVertices > targetVertices || tTransvoxel.cacheIndices > targetIndices)
     {
-        u32 evictIndex = UINT32_MAX;
-        u32 oldestFrame = UINT32_MAX;
-        for (u32 i = 0; i < tExample.chunkCount; i++)
-        {
-            tExampleChunk* chunk = &tExample.chunks[i];
-            if (!tChunkEvictable(chunk))
-                continue;
-            if (chunk->lastTouchedFrame < oldestFrame)
-            {
-                oldestFrame = chunk->lastTouchedFrame;
-                evictIndex = i;
-            }
-        }
-        if (evictIndex == UINT32_MAX)
+        if (!tFreeOldestChunkSlot(true, respectKeepFrames))
             break;
-        tEvictChunkMesh(&tExample.chunks[evictIndex]);
+    }
+}
+
+static void tEvictOldestChunkSlots(u32 count, bool respectKeepFrames)
+{
+    for (u32 i = 0; i < count; i++)
+    {
+        if (!tFreeOldestChunkSlot(true, respectKeepFrames))
+            break;
     }
 }
 
 static void tResolveHeapPressure(void)
 {
-    if (SDL_GetAtomicInt(&tExample.heapPressure) == 0)
+    if (SDL_GetAtomicInt(&tTransvoxel.heapPressure) == 0)
         return;
-    SDL_SetAtomicInt(&tExample.heapPressure, 0);
-    AX_WARN("transvoxel example terrain heap pressure; clearing chunk cache");
-    tClearChunkCache();
+    SDL_SetAtomicInt(&tTransvoxel.heapPressure, 0);
+    AX_WARN("transvoxel terrain heap pressure; pruning chunk cache");
+    tPruneChunkCache(TRANSVOXEL_VERTEX_CACHE_TARGET / 2u, TRANSVOXEL_INDEX_CACHE_TARGET / 2u, false);
+    tEvictOldestChunkSlots(TRANSVOXEL_HEAP_PRESSURE_EVICT_CHUNKS, false);
 }
 
 static void tPromotePendingMeshes(void)
 {
-    for (u32 i = 0; i < tExample.chunkCount; i++)
+    for (u32 i = 0; i < tTransvoxel.chunkCount; i++)
     {
-        tExampleChunk* chunk = &tExample.chunks[i];
+        tChunk* chunk = &tTransvoxel.chunks[i];
         if (!chunk->pendingMesh.heapPtr && !chunk->pendingEmpty)
             continue;
         if (chunk->pendingFrames > 0u)
@@ -786,30 +874,30 @@ static void tPromotePendingMeshes(void)
 
 static void tSyncDirtyPhysics(void)
 {
-    if (SDL_GetAtomicInt(&tExample.physicsInvalidated) != 0)
+    if (SDL_GetAtomicInt(&tTransvoxel.physicsInvalidated) != 0)
     {
-        SDL_SetAtomicInt(&tExample.physicsInvalidated, 0);
-        for (u32 i = 0; i < tExample.chunkCount; i++)
+        SDL_SetAtomicInt(&tTransvoxel.physicsInvalidated, 0);
+        for (u32 i = 0; i < tTransvoxel.chunkCount; i++)
         {
-            tExampleChunk* chunk = &tExample.chunks[i];
+            tChunk* chunk = &tTransvoxel.chunks[i];
             if (chunk->physicsSlot >= 0 || (chunk->lod <= 1 && chunk->mesh.heapPtr && chunk->mesh.vertexCount >= 3u))
                 chunk->physicsDirty = true;
         }
     }
 
-    if (tExample.chunkCount == 0u)
+    if (tTransvoxel.chunkCount == 0u)
         return;
 
     u32 synced = 0u;
     u32 visited = 0u;
-    while (visited < tExample.chunkCount && synced < T_EXAMPLE_MAX_PHYSICS_SYNCS_PER_FRAME)
+    while (visited < tTransvoxel.chunkCount && synced < TRANSVOXEL_MAX_PHYSICS_SYNCS_PER_FRAME)
     {
-        u32 i = tExample.physicsSyncCursor++;
-        if (tExample.physicsSyncCursor >= tExample.chunkCount)
-            tExample.physicsSyncCursor = 0u;
+        u32 i = tTransvoxel.physicsSyncCursor++;
+        if (tTransvoxel.physicsSyncCursor >= tTransvoxel.chunkCount)
+            tTransvoxel.physicsSyncCursor = 0u;
         visited++;
 
-        tExampleChunk* chunk = &tExample.chunks[i];
+        tChunk* chunk = &tTransvoxel.chunks[i];
         if (!chunk->physicsDirty)
             continue;
 
@@ -819,14 +907,14 @@ static void tSyncDirtyPhysics(void)
     }
 }
 
-static tExampleChunk* tGetChunk(int3 min, s32 lod)
+static tChunk* tGetChunk(int3 min, s32 lod)
 {
     s32 neighboursMask = tColumnMask(min, lod);
-    u32* found = (u32*)HMFind(&tExample.chunkLookup, tChunkKey(min, lod));
-    tExampleChunk* chunk = found ? &tExample.chunks[*found] : NULL;
+    u32* found = (u32*)HMFind(&tTransvoxel.chunkLookup, tChunkKey(min, lod));
+    tChunk* chunk = found ? &tTransvoxel.chunks[*found] : NULL;
     if (chunk)
     {
-        chunk->lastTouchedFrame = tExample.frameIndex;
+        chunk->lastTouchedFrame = tTransvoxel.frameIndex;
         // a neighbour crossed a lod ring: this chunk's boundary shrink + transition
         // strips no longer match, remesh with the new mask (old mesh keeps drawing
         // until the pending rebuild promotes, so the seam heals without a flash).
@@ -842,20 +930,24 @@ static tExampleChunk* tGetChunk(int3 min, s32 lod)
         return chunk;
     }
 
-    if (tExample.chunkCount >= T_EXAMPLE_MAX_CHUNKS)
+    u32 index = tAllocChunkSlot();
+    if (index == UINT32_MAX)
     {
-        tClearChunkCache();
-        AX_LOG("transvoxel example chunk cache reset");
+        AX_WARN("transvoxel chunk allocation failed");
+        return NULL;
     }
-
-    u32 index = tExample.chunkCount++;
-    chunk = &tExample.chunks[index];
-    *chunk = (tExampleChunk){ .min = min, .lod = lod, .neighboursMask = neighboursMask, .physicsSlot = -1 };
-    chunk->lastTouchedFrame = tExample.frameIndex;
-    s32 worldSize = T_EXAMPLE_CHUNK_SIZE << lod;
+    chunk = &tTransvoxel.chunks[index];
+    *chunk = (tChunk){
+        .min = min,
+        .lod = lod,
+        .neighboursMask = neighboursMask,
+        .physicsSlot = -1,
+    };
+    chunk->lastTouchedFrame = tTransvoxel.frameIndex;
+    s32 worldSize = TRANSVOXEL_CHUNK_SIZE << lod;
     chunk->aabbMin = ToFloat3(min);
     chunk->aabbMax = F3AddF(chunk->aabbMin, (f32)worldSize);
-    HMInsert(&tExample.chunkLookup, tChunkKey(min, lod), &index);
+    HMInsert(&tTransvoxel.chunkLookup, tChunkKey(min, lod), &index);
     // built stays false until the worker result integrates; scheduling is capped per
     // frame and by free job slots, missed chunks retry on later frames
     chunk->dirty = true;
@@ -870,25 +962,20 @@ static bool tAABBVisible(float3 aabbMin, float3 aabbMax, const FrustumPlanes* fr
     return CheckAABBCulled(min, max, frustum->planes);
 }
 
-static s32 tAbss32(s32 value)
-{
-    return value < 0 ? -value : value;
-}
-
 // returns false only when the draw list is full; empty chunks are a successful no-op so
 // one air/solid chunk does not abort the rest of the LOD ring. every chunk submits a heap
 // draw range (no vertex copy); the brush highlight is a terrain shader uniform now
-static bool tAppendChunkTriangles(const tExampleChunk* chunk)
+static bool tAppendChunkTriangles(const tChunk* chunk)
 {
     // must short-circuit: bitwise | evaluates chunk->mesh.indexCount on a NULL chunk
     if (!chunk || chunk->mesh.indexCount == 0 || !chunk->mesh.heapPtr || !chunk->mesh.idxHeapPtr)
         return true;
 
-    if (tExample.numChunkDraws >= MAX_TERRAIN_CHUNK_DRAWS)
+    if (tTransvoxel.numChunkDraws >= MAX_TERRAIN_CHUNK_DRAWS)
         return false;
     // indexed draw: first_index into the terrain index heap, base_vertex = vertex heap offset
     TerrainChunkDraw draw = { chunk->mesh.idxFirst, chunk->mesh.indexCount, (s32)chunk->mesh.heapFirst };
-	tExample.chunkDraws[tExample.numChunkDraws++] = draw;
+	tTransvoxel.chunkDraws[tTransvoxel.numChunkDraws++] = draw;
     return true;
 }
 
@@ -896,7 +983,7 @@ static bool tAppendChunkTriangles(const tExampleChunk* chunk)
 // or is genuinely empty. a fresh build whose mesh still sits in the pending slot is NOT
 // presentable: it has no drawable geometry until tPromotePendingMeshes swaps it
 // in, and treating it as ready made the LOD descend draw nothing for the promote frames.
-static bool tChunkPresentable(const tExampleChunk* chunk)
+static bool tChunkPresentable(const tChunk* chunk)
 {
     if (!chunk || !chunk->built)
         return false;
@@ -929,7 +1016,7 @@ static void tChildColumn(s32 chunkX, s32 chunkZ, u32 i, s32* outX, s32* outZ)
 // fallback checks and bails on the first absent chunk
 static bool tColumnReady(s32 chunkX, s32 chunkZ, s32 lod, bool requestBuilds)
 {
-    s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
+    s32 step = TRANSVOXEL_CHUNK_SIZE << lod;
     s32 chunkYMin, chunkYMax;
     tChunkYRange(step, &chunkYMin, &chunkYMax);
 
@@ -937,15 +1024,15 @@ static bool tColumnReady(s32 chunkX, s32 chunkZ, s32 lod, bool requestBuilds)
     for (s32 y = chunkYMin; y <= chunkYMax; y++)
     {
         int3 min = { chunkX * step, y * step, chunkZ * step };
-        const tExampleChunk* chunk;
+        const tChunk* chunk;
         if (requestBuilds)
         {
             chunk = tGetChunk(min, lod);
         }
         else
         {
-            u32* found = (u32*)HMFind(&tExample.chunkLookup, tChunkKey(min, lod));
-            chunk = found ? &tExample.chunks[*found] : NULL;
+            u32* found = (u32*)HMFind(&tTransvoxel.chunkLookup, tChunkKey(min, lod));
+            chunk = found ? &tTransvoxel.chunks[*found] : NULL;
         }
         if (!tChunkPresentable(chunk))
         {
@@ -964,7 +1051,7 @@ static bool tColumnReady(s32 chunkX, s32 chunkZ, s32 lod, bool requestBuilds)
 // buffer is full and traversal must stop.
 static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, const FrustumPlanes* frustum, bool useFrustum)
 {
-    s32 step = T_EXAMPLE_CHUNK_SIZE << lod;
+    s32 step = TRANSVOXEL_CHUNK_SIZE << lod;
     f32 minX = (f32)(chunkX * step);
     f32 minZ = (f32)(chunkZ * step);
     f32 closestX = Clampf32(g_Camera.position.x, minX, minX + (f32)step);
@@ -975,7 +1062,7 @@ static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, const Fr
 
     // global draw distance, applied only at the tree root: inner nodes always emit
     // or split so a split parent can never leave uncovered children
-    if (lod == (s32)T_EXAMPLE_LOD_COUNT - 1)
+    if (lod == (s32)TRANSVOXEL_LOD_COUNT - 1)
     {
         f32 drawDistance = tLODDistance[lod] * lodFactor;
         if (distanceSq >= drawDistance * drawDistance)
@@ -1050,11 +1137,11 @@ static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, const Fr
         float3 aabbMax = F3AddF(aabbMin, (f32)step);
         if (useFrustum && !tAABBVisible(aabbMin, aabbMax, frustum))
         {
-            tExample.culledChunks++;
+            tTransvoxel.culledChunks++;
             continue;
         }
 
-        tExampleChunk* chunk = tGetChunk(min, lod);
+        tChunk* chunk = tGetChunk(min, lod);
         if (!chunk || !chunk->built)
             continue;
         if (!tAppendChunkTriangles(chunk))
@@ -1071,20 +1158,20 @@ static void tSubmitTerrain(f32 lodFactor, const FrustumPlanes* frustum, bool use
     {
         s32 fixedSize = Clamps32((s32)params->fixedWorldSize, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE);
         s32 halfSize = fixedSize / 2;
-        s32 minChunkX = FloorDiv(-halfSize, T_EXAMPLE_CHUNK_SIZE);
-        s32 maxChunkX = FloorDiv(fixedSize - halfSize - 1, T_EXAMPLE_CHUNK_SIZE);
+        s32 minChunkX = FloorDiv(-halfSize, TRANSVOXEL_CHUNK_SIZE);
+        s32 maxChunkX = FloorDiv(fixedSize - halfSize - 1, TRANSVOXEL_CHUNK_SIZE);
         s32 minChunkZ = minChunkX;
         s32 maxChunkZ = maxChunkX;
 
         s32 chunkYMin, chunkYMax;
-        tChunkYRange(T_EXAMPLE_CHUNK_SIZE, &chunkYMin, &chunkYMax);
+        tChunkYRange(TRANSVOXEL_CHUNK_SIZE, &chunkYMin, &chunkYMax);
 
         for (s32 z = minChunkZ; z <= maxChunkZ; z++)
         for (s32 x = minChunkX; x <= maxChunkX; x++)
         for (s32 y = chunkYMin; y <= chunkYMax; y++)
         {
-            int3 min = { x * T_EXAMPLE_CHUNK_SIZE, y * T_EXAMPLE_CHUNK_SIZE, z * T_EXAMPLE_CHUNK_SIZE };
-            tExampleChunk* chunk = tGetChunk(min, 0);
+            int3 min = { x * TRANSVOXEL_CHUNK_SIZE, y * TRANSVOXEL_CHUNK_SIZE, z * TRANSVOXEL_CHUNK_SIZE };
+            tChunk* chunk = tGetChunk(min, 0);
             if (!chunk || !chunk->built)
                 continue;
             if (!tAppendChunkTriangles(chunk))
@@ -1093,8 +1180,8 @@ static void tSubmitTerrain(f32 lodFactor, const FrustumPlanes* frustum, bool use
         return;
     }
 
-    const s32 rootLOD = (s32)T_EXAMPLE_LOD_COUNT - 1;
-    s32 rootStep = T_EXAMPLE_CHUNK_SIZE << rootLOD;
+    const s32 rootLOD = (s32)TRANSVOXEL_LOD_COUNT - 1;
+    s32 rootStep = TRANSVOXEL_CHUNK_SIZE << rootLOD;
     f32 drawDistance = tLODDistance[rootLOD] * lodFactor;
     s32 centerX = (s32)Floorf32(g_Camera.position.x / (f32)rootStep);
     s32 centerZ = (s32)Floorf32(g_Camera.position.z / (f32)rootStep);
@@ -1107,7 +1194,7 @@ static void tSubmitTerrain(f32 lodFactor, const FrustumPlanes* frustum, bool use
         {
             for (s32 x = -shell; x <= shell; x++)
             {
-                if (Maxs32(tAbss32(x), tAbss32(z)) != shell)
+                if (Maxs32(Abss32(x), Abss32(z)) != shell)
                     continue;
                 if (!tSubmitNode(centerX + x, centerZ + z, rootLOD, lodFactor, frustum, useFrustum))
                     return;
@@ -1120,55 +1207,57 @@ static void tLogStats(void)
 {
 	return;
     u64 now = SDL_GetTicks();
-    if (now - tExample.lastStatsTicks < 1000u)
+    if (now - tTransvoxel.lastStatsTicks < 1000u)
         return;
-    tExample.lastStatsTicks = now;
-    AX_LOG("transvoxel example: draws=%u built=%u cached=%u culled=%u empty=%u",
-           tExample.numChunkDraws, tExample.builtThisFrame,
-           tExample.chunkCount, tExample.culledChunks, tExample.emptyChunks);
+    tTransvoxel.lastStatsTicks = now;
+    AX_LOG("transvoxel : draws=%u built=%u cached=%u culled=%u empty=%u",
+           tTransvoxel.numChunkDraws, tTransvoxel.builtThisFrame,
+           tTransvoxel.chunkCount, tTransvoxel.culledChunks, tTransvoxel.emptyChunks);
 }
 
 static bool tInit(void)
 {
-    if (tExample.initialized)
+    if (tTransvoxel.initialized)
         return true;
-    MemSet(&tExample, 0, sizeof(tExample));
+    MemSet(&tTransvoxel, 0, sizeof(tTransvoxel));
 	
-	tExample.jobSystem = JobSystem_Create(0, 0);
-	if (!tExample.jobSystem) { AX_WARN("terrain job system create failed!"); return false; } // should never happen though
+	tTransvoxel.jobSystem = JobSystem_Create(0, 0);
+	if (!tTransvoxel.jobSystem) { AX_WARN("terrain job system create failed!"); return false; } // should never happen though
 
-    tExample.generator.noise3D = tDensityNoise;
-    tExample.generator.noise3DStrength = 1.0f;
+    tTransvoxel.generator.noise3D = tDensityNoise;
+    tTransvoxel.generator.noise3DStrength = 1.0f;
 
     for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
-        tExample.physicsSlotPool[i] = (u16)i;
-    tExample.physicsSlotCount = MAX_TERRAIN_PHYSICS_CHUNKS;
+        tTransvoxel.physicsSlotPool[i] = (u16)i;
+    tTransvoxel.physicsSlotCount = MAX_TERRAIN_PHYSICS_CHUNKS;
 
-    tExample.chunkDraws    = (TerrainChunkDraw*)AllocateTLSFGlobal(sizeof(TerrainChunkDraw) * MAX_TERRAIN_CHUNK_DRAWS);
-    tExample.chunkLookup   = HMCreate(T_EXAMPLE_MAX_CHUNKS, sizeof(u32));
-    if (!tExample.chunkDraws)
+    tTransvoxel.chunkDraws = (TerrainChunkDraw*)AllocateTLSFGlobal(sizeof(TerrainChunkDraw) * MAX_TERRAIN_CHUNK_DRAWS);
+    tTransvoxel.unusedChunksBitset = (u64*)AllocateTLSFGlobal(TRANSVOXEL_CHUNK_BITSET_WORDS * sizeof(u64));
+    tTransvoxel.chunkLookup = HMCreate(TRANSVOXEL_MAX_CHUNKS, sizeof(u32));
+    if (!tTransvoxel.chunkDraws || !tTransvoxel.unusedChunksBitset)
     {
-        AX_WARN("transvoxel example allocation failed");
+        AX_WARN("transvoxel allocation failed");
         tDestroy();
         return false;
     }
+    MemsetZero(tTransvoxel.unusedChunksBitset, TRANSVOXEL_CHUNK_BITSET_WORDS * sizeof(u64));
 
     // one scratch mesh container and bump arena per job slot so workers never share output
-    for (u32 i = 0; i < T_EXAMPLE_MAX_BUILD_JOBS; i++)
+    for (u32 i = 0; i < TRANSVOXEL_MAX_BUILD_JOBS; i++)
     {
-        if (!tMeshDataContainerInit(&tExample.buildJobs[i].scratchMesh, 8192, 24576, 2048))
+        if (!tMeshDataContainerInit(&tTransvoxel.buildJobs[i].scratchMesh, 8192, 24576, 2048))
         {
             tDestroy();
             return false;
         }
-        if (!ArenaScratchCreate(&tExample.buildJobs[i].scratchArena, T_EXAMPLE_BUILD_SCRATCH_SIZE, "terrainChunkBuild"))
+        if (!ArenaScratchCreate(&tTransvoxel.buildJobs[i].scratchArena, TRANSVOXEL_BUILD_SCRATCH_SIZE, "terrainChunkBuild"))
         {
             tDestroy();
             return false;
         }
     }
 
-    tExample.initialized = true;
+    tTransvoxel.initialized = true;
     return true;
 }
 
@@ -1183,43 +1272,45 @@ void tUpdate(void)
     tIntegrateFinishedBuilds();
     tResolveHeapPressure();
     tPromotePendingMeshes();
-    tExample.frameIndex++;
-    tPruneChunkCache(T_EXAMPLE_VERTEX_CACHE_TARGET);
-    tExample.numChunkDraws = 0;
-    tExample.builtThisFrame = 0;
-    tExample.culledChunks = 0;
-    tExample.emptyChunks = 0;
+    tTransvoxel.frameIndex++;
+    tPruneChunkCache(TRANSVOXEL_VERTEX_CACHE_TARGET, TRANSVOXEL_INDEX_CACHE_TARGET, true);
+    tTransvoxel.numChunkDraws = 0;
+    tTransvoxel.builtThisFrame = 0;
+    tTransvoxel.culledChunks = 0;
+    tTransvoxel.emptyChunks = 0;
     mat4x4 viewProj = M44Multiply(g_Camera.view, g_Camera.projection);
     FrustumPlanes frustum = CreateFrustumPlanesRevZ(viewProj);
 
     f32 lodFactor = Maxf32(g_RenderSettings.terrainLodFactor, 0.25f);
     const TerrainGenParams* genParams = Terrain_GetGenParams();
-    tExample.lodFactor = lodFactor;
-    tExample.fixedArea = genParams && genParams->fixedArea;
+    tTransvoxel.lodFactor = lodFactor;
+    tTransvoxel.fixedArea = genParams && genParams->fixedArea;
     tSubmitTerrain(lodFactor, &frustum, true);
-    if (tExample.numChunkDraws == 0)
+    if (tTransvoxel.numChunkDraws == 0)
+    {
         tSubmitTerrain(lodFactor, &frustum, false);
+    }
 
     tSyncDirtyPhysics();
     tLogStats();
-    RendererSetTerrainChunkDraws(tExample.chunkDraws, tExample.numChunkDraws);
-    RendererSetTerrainBrush(tExample.brushPos, tExample.brushActive ? tExample.brushRadius : 0.0f);
+    RendererSetTerrainChunkDraws(tTransvoxel.chunkDraws, tTransvoxel.numChunkDraws);
+    RendererSetTerrainBrush(tTransvoxel.brushPos, tTransvoxel.brushActive ? tTransvoxel.brushRadius : 0.0f);
 }
 
 void tInvalidateAll(void)
 {
-    if (tExample.initialized)
+    if (tTransvoxel.initialized)
         tClearChunkCache();
 }
 
 void tInvalidateRegion(float3 mn, float3 mx)
 {
-    if (!tExample.initialized)
+    if (!tTransvoxel.initialized)
         return;
 
-    for (u32 i = 0; i < tExample.chunkCount; i++)
+    for (u32 i = 0; i < tTransvoxel.chunkCount; i++)
     {
-        tExampleChunk* chunk = &tExample.chunks[i];
+        tChunk* chunk = &tTransvoxel.chunks[i];
         // the chunk's 19^3 sample grid reaches one voxel below aabbMin and two above
         // aabbMax, and gradients read one more; pad like TerrainRemeshRegion does
         f32 pad = 2.0f * (f32)(1 << chunk->lod);
@@ -1236,23 +1327,24 @@ void tInvalidateRegion(float3 mn, float3 mx)
 
 void tSetBrushCursor(float3 position, f32 radius, bool active)
 {
-    tExample.brushPos = position;
-    tExample.brushRadius = radius;
-    tExample.brushActive = active && radius > 0.0f;
+    tTransvoxel.brushPos = position;
+    tTransvoxel.brushRadius = radius;
+    tTransvoxel.brushActive = active && radius > 0.0f;
 }
 
 void tDestroy(void)
 {
     RendererSetTerrainChunkDraws(NULL, 0);
     tClearChunkCache(); // drains in-flight builds first
-    HMDestroy(&tExample.chunkLookup);
-    DeAllocateTLSFGlobal(tExample.chunkDraws);
-    for (u32 i = 0; i < T_EXAMPLE_MAX_BUILD_JOBS; i++)
+    HMDestroy(&tTransvoxel.chunkLookup);
+    DeAllocateTLSFGlobal(tTransvoxel.chunkDraws);
+    DeAllocateTLSFGlobal(tTransvoxel.unusedChunksBitset);
+    for (u32 i = 0; i < TRANSVOXEL_MAX_BUILD_JOBS; i++)
     {
-        tMeshDataContainerDestroy(&tExample.buildJobs[i].scratchMesh);
-        ArenaScratchDestroy(&tExample.buildJobs[i].scratchArena);
+        tMeshDataContainerDestroy(&tTransvoxel.buildJobs[i].scratchMesh);
+        ArenaScratchDestroy(&tTransvoxel.buildJobs[i].scratchArena);
     }
-    if (tExample.jobSystem)
-        JobSystem_Destroy(tExample.jobSystem);
-    MemSet(&tExample, 0, sizeof(tExample));
+    if (tTransvoxel.jobSystem)
+        JobSystem_Destroy(tTransvoxel.jobSystem);
+    MemSet(&tTransvoxel, 0, sizeof(tTransvoxel));
 }

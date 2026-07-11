@@ -2,7 +2,9 @@
 #define TERRAIN_INTERNAL_H
 
 #include "Include/Common.h"
+#include "Include/Graphics.h"
 #include "Math/Vector.h"
+#include "Math/Matrix.h"
 
 // chunk grid: 16^3 cells, 17^3 cell corners, one extra sample on every side for
 // central difference gradients -> 19^3 samples. sample (x,y,z) maps to corner (x-1,y-1,z-1)
@@ -26,6 +28,8 @@
 // element COUNT (not bytes) of the shared grass instance heap. only near lod0 chunks
 // grow grass, so a fraction of MAX_CHUNKS * GRASS_PER_CHUNK is plenty. ~1M * 8B = 8 MB
 #define TERRAIN_MAX_GRASS      (1u << 20)
+#define TERRAIN_GRASS_MAX_SLOTS (TERRAIN_MAX_GRASS / GRASS_PER_CHUNK)
+#define TERRAIN_GRASS_MAX_DRAWS 4096u
 
 // densities are clamped signed distance in meters, negative inside the solid, scaled so
 // that +-TERRAIN_SDF_CLAMP maps to +-127. the scale is world fixed (NOT per lod): the
@@ -68,6 +72,35 @@ typedef struct GrassInstance_
 	u32 positionXY;         // fp16 x | fp16 y  (chunk-relative)
 	u32 positionZChunkIndex; // fp16 z (low 16) | u16 terrain chunk slot index (high 16)
 } GrassInstance;
+
+typedef struct TerrainGrassChunkInfo_
+{
+    f32 origin[4];
+} TerrainGrassChunkInfo;
+
+typedef struct TerrainGrassChunk_
+{
+    u32 slot;
+    u32 count;
+    float3 origin;
+    float3 aabbMin;
+    float3 aabbMax;
+} TerrainGrassChunk;
+
+typedef struct TerrainFoliageState_
+{
+    SDL_GPUGraphicsPipeline* pipeline;
+    SDL_GPUBuffer* grassBuffer;
+    SDL_GPUBuffer* chunkBuffer;
+    SDL_GPUBuffer* indirectBuffer;
+    Texture grassLayers;
+    FrustumPlanes frustum;
+    SDL_GPUIndirectDrawCommand draws[TERRAIN_GRASS_MAX_DRAWS];
+    u16 freeSlots[TERRAIN_GRASS_MAX_SLOTS];
+    u32 drawCount;
+    u32 freeCount;
+    bool initialized;
+} TerrainFoliageState;
 
 typedef struct TerrainMeshOut_
 {
@@ -168,5 +201,17 @@ void TerrainEdit_PaintSphere(float3 center, f32 radius, u8 material, f32 strengt
 // 16^3 s8 density deltas and 16^3 u16 packed material values.
 bool TerrainEdit_SaveChunks(const char* path);
 bool TerrainEdit_LoadChunks(const char* path);
+
+// density-driven grass helpers. TransvoxelUnityExample owns the state and chunk lifetime;
+// this file owns only placement, GPU upload, draw submission, and shader binding.
+u32  TerrainFoliage_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* outMin, float3* outMax);
+bool TerrainFoliage_Init(TerrainFoliageState* tf);
+void TerrainFoliage_BeginFrame(TerrainFoliageState* tf, const FrustumPlanes* frustum);
+bool TerrainFoliage_UploadChunk(TerrainFoliageState* tf, TerrainGrassChunk* chunk, const GrassInstance* src);
+void TerrainFoliage_FreeChunk(TerrainFoliageState* tf, TerrainGrassChunk* chunk);
+void TerrainFoliage_AppendDraw(TerrainFoliageState* tf, const TerrainGrassChunk* chunk);
+void TerrainFoliage_EndFrame(TerrainFoliageState* tf);
+void TerrainFoliage_Clear(TerrainFoliageState* tf);
+void TerrainFoliage_Destroy(TerrainFoliageState* tf);
 
 #endif // TERRAIN_INTERNAL_H

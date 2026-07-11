@@ -649,6 +649,37 @@ Texture rImportTexture(const char* path, TexFlags flags, const char* label)
     return texture;
 }
 
+Texture LoadTextureArray(const char* const* paths, u32 count, s32 size, bool srgb,
+						 const char* label, const char* errorLabel)
+{
+    Texture tex = rCreateTexture2DArray(size, size, count, NULL, TEX_FMT_8UNORM4,
+                                        TexFlags_MipMap, TEX_SAMPLER | TEX_COLOR_TARGET, label);
+    for (s32 layer = 0; layer < (s32)count; layer++)
+    {
+        int w, h, channels;
+        u8* image = stbi_load(paths[layer], &w, &h, &channels, 4);
+        if (!image)
+        {
+            AX_ERROR("%s texture missing: %s", errorLabel, paths[layer]);
+            continue;
+        }
+        u8* upload = image;
+        u8* resized = NULL;
+        if (w != size || h != size)
+        {
+            resized = (u8*)SDL_malloc((size_t)size * size * 4u);
+            if (srgb) stbir_resize_uint8_srgb(image, w, h, 0, resized, size, size, 0, STBIR_RGBA);
+            else      stbir_resize_uint8_linear(image, w, h, 0, resized, size, size, 0, STBIR_RGBA);
+            upload = resized;
+        }
+        UploadTextureRegion(tex, (u32)layer, 0, 0, (u32)size, (u32)size, (u32)size, (u32)size, upload);
+        if (resized) SDL_free(resized);
+        stbi_image_free(image);
+    }
+    GenerateTextureMips(tex);
+    return tex;
+}
+
 static Texture rCreateTextureEx(
     int width,
     int height,
