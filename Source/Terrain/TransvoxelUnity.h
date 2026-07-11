@@ -146,11 +146,11 @@ bool tDensityDataTakeData(tDensityData* densityData, int3 chunkPosition, f32** o
 bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, s32 chunkSize, const f32* densityData,
                            s32 lod, s32 neighboursMask, tMeshDataContainer* meshData, void* userData);
 
-void tTransvoxelExampleUpdate(void);
-void tTransvoxelExampleDestroy(void);
-void tTransvoxelExampleInvalidateAll(void);
-void tTransvoxelExampleInvalidateRegion(float3 mn, float3 mx);
-void tTransvoxelExampleSetBrushCursor(float3 position, f32 radius, bool active);
+void tUpdate(void);
+void tDestroy(void);
+void tInvalidateAll(void);
+void tInvalidateRegion(float3 mn, float3 mx);
+void tSetBrushCursor(float3 position, f32 radius, bool active);
 
 #if defined(__cplusplus)
 }

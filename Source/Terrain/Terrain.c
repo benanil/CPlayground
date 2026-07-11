@@ -2204,7 +2204,7 @@ void Terrain_ApplyGenParams(const TerrainGenParams* params)
     g_Terrain.genParams = *params;
     g_Terrain.genParams.fixedWorldSize = (u32)Clamps32((s32)g_Terrain.genParams.fixedWorldSize, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE);
     TerrainDensity_SetParams(&g_Terrain.genParams);
-    tTransvoxelExampleInvalidateAll();
+    tInvalidateAll();
     if (tvGrassReady)
     {
         // the surface changed everywhere; drop every grass tile so the ring rebuilds
@@ -2266,7 +2266,7 @@ void Terrain_DeleteWorld(void)
 #if TERRAIN_OLD_RUNTIME_DISABLED
     tvWorldEnabled = false;
     TerrainEdit_Clear();
-    tTransvoxelExampleInvalidateAll();
+    tInvalidateAll();
     return;
 #endif
     if (!g_Terrain.initialized) return;
@@ -2286,7 +2286,7 @@ void Terrain_SetBrushCursor(float3 position, f32 radius, bool active)
     (void)radius;
     (void)active;
 #if TERRAIN_OLD_RUNTIME_DISABLED
-    tTransvoxelExampleSetBrushCursor(position, radius, active);
+    tSetBrushCursor(position, radius, active);
     return;
 #endif
     if (!g_Terrain.initialized) return;
@@ -2326,7 +2326,7 @@ void Terrain_SculptSphere(float3 center, f32 radius, f32 strength, f32 softness)
     if (!tvWorldEnabled) return;
     float3 tvMn, tvMx;
     TerrainEdit_SculptSphere(center, radius, strength, softness, &tvMn, &tvMx);
-    tTransvoxelExampleInvalidateRegion(tvMn, tvMx);
+    tInvalidateRegion(tvMn, tvMx);
     if (tvGrassReady)
     {
         // grass sits on the sculpted surface; dirty the touched columns so they rescatter
@@ -2365,7 +2365,7 @@ void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32
     if (!tvWorldEnabled) return;
     float3 tvMn, tvMx;
     TerrainEdit_PaintSphere(center, radius, (u8)Clamps32((s32)layer + 1, 1, 15), strength, softness, &tvMn, &tvMx);
-    tTransvoxelExampleInvalidateRegion(tvMn, tvMx);
+    tInvalidateRegion(tvMn, tvMx);
     return;
 #endif
     if (!g_Terrain.initialized || !g_Terrain.enabled) return;

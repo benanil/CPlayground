@@ -58,7 +58,7 @@ static void MainLoopTick(void)
     PlatformUpdate();
     CameraUpdate(&g_Camera, PlatformCtx.DeltaTime, EditorSceneInteractAllowed());
     // builtin transvoxel terrain disabled while testing the transvoxel-unity port
-    // (tTransvoxelExampleUpdate below); re-enable once the port replaces it for real
+    // (tUpdate below); re-enable once the port replaces it for real
     // Terrain_Update(&g_Camera);
     DemoScene_Update(PlatformCtx.DeltaTime);
     Scene_SubmitLights();
@@ -69,7 +69,7 @@ static void MainLoopTick(void)
     if (!TerrainEditorUpdate(&g_Camera) && !EditorGizmoUpdate(&g_Camera) && !EditorLightGizmoUpdate(&g_Camera))
         EditorPickingUpdate(&g_Camera);
 
-    tTransvoxelExampleUpdate();
+    tUpdate();
 
     if (!done) Render();
     // else emscripten_cancel_main_loop();
@@ -151,7 +151,7 @@ static void SDLCALL MainAppQuit(void* appstate, SDL_AppResult result)
 {
     (void)appstate;
     (void)result;
-    tTransvoxelExampleDestroy();
+    tDestroy();
 }
 
 s32 main(s32 argc, char* argv[])

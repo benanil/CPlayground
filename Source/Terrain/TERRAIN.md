@@ -174,9 +174,24 @@ Self-contained slice in `Terrain.c`, revived for the port:
 - Vertices read back from the heap CPU mirror; zero-area triangles filtered before
   `Scene_PhysicsSyncTerrainChunkMesh` (box3d static triangle mesh).
 
+## Threading
+
+Chunk builds run on JobSystem workers (`tExample.jobSystem`, one job = one chunk):
+`tExampleScheduleBuild` snapshots min/lod/neighboursMask into one of 8 job slots
+(`T_EXAMPLE_MAX_BUILD_JOBS`), the worker (`tExampleBuildJobRun`) samples density,
+meshes into the slot's own `tMeshDataContainer` (TerrainVertNew/Second/Index2 heaps),
+bakes colors, and parks the soup in the TerrainVertex heap — heap alloc, CPU-mirror
+write and `Rendering_QueueGeometryUpload` are all spinlock-guarded. Worker CPU scratch
+(density grid, vertex buffer, mesher caches) lives in a per-thread `ArenaBeginScratch`
+arena. The main thread integrates finished slots at the top of `tTransvoxelExampleUpdate`
+into the chunks' pending slots (usual 2-frame promote), owns the chunk map, and drains
+all jobs (`tExampleDrainBuildJobs`) before any cache clear or teardown. A chunk in
+flight keeps drawing its old mesh; `dirty` clears at schedule time so edits landing
+mid-build self-heal with a reschedule.
+
 ## Known gaps
 
 - `tVoxelWorld` async pipeline (octree + job tasks) is ported but not wired; the
-  example path builds synchronously on the main thread under a 16-builds/frame budget.
+  example path uses its own simpler job-slot scheme described above.
 - Heap-full recovery is warn + drop chunk (retries next frame).
 - Grass first run pays a PNG decode for the blade texture.
