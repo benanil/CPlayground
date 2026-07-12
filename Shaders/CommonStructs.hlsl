@@ -43,26 +43,38 @@ typedef struct Entity_
 
 typedef struct PrimitiveGroup_
 {
-    uint entityOffset;
-    uint numEntities;
-    uint capacity;
-    uint animatedVertexOffset;
-    uint numIndices;
-    uint indexOffset;
-    uint vertexOffset;
-    uint meshIndex;
-    uint primitiveIndex;
-    uint materialIndex;
-    uint bundleIdx; // cpu-only owning bundle slot, unused on the gpu
-    uint numVertices;
     float4 aabbMin;
     float4 aabbMax;
-    uint4 lodIndexOffset;
-    uint4 lodNumIndices;
-    uint4 lodVertexOffset;
-    uint4 lodNumVertices;
-    uint4 lodAnimatedVertexOffset;
+    uint4 lodIndexOffset;  // w u16 entityOffset, numEntities
+    uint4 lodNumIndices;   // w u16 capacity, meshIndex
+    uint4 lodVertexOffset; // w u16 primitiveIndex, materialIndex
+    uint4 lodNumVertices;  
 } PrimitiveGroup;
+
+uint PrimitiveGroup_EntityOffset(PrimitiveGroup group)
+{
+    return group.lodIndexOffset.w & 0xFFFFu;
+}
+
+uint PrimitiveGroup_NumEntities(PrimitiveGroup group)
+{
+    return group.lodIndexOffset.w >> 16u;
+}
+
+uint PrimitiveGroup_MaterialIndex(PrimitiveGroup group)
+{
+    return group.lodVertexOffset.w >> 16u;
+}
+
+float3 PrimitiveGroup_AABBMin(PrimitiveGroup group)
+{
+    return group.aabbMin.xyz;
+}
+
+float3 PrimitiveGroup_AABBMax(PrimitiveGroup group)
+{
+    return group.aabbMax.xyz;
+}
 
 // Animated vertex cache format, 8 bytes per vertex (position only).
 // packed0/packed1: bounds-normalized model-space skinned position, 16/16/16 unorm against the

@@ -56,15 +56,17 @@ VSOutput vert(VSInput input,
     uint lod          = drawID - primitiveIdx * MESH_LOD_COUNT;
 
     PrimitiveGroup group  = sPrimitiveGroups[primitiveIdx];
-    uint denseIdx         = sDrawSparseIndices[lod * uint(MAX_ANIM_INSTANCES) + group.entityOffset + entityInstanceID];
+    uint denseIdx         = sDrawSparseIndices[lod * uint(MAX_ANIM_INSTANCES) + PrimitiveGroup_EntityOffset(group) + entityInstanceID];
     uint localVertex      = vertexId - group.lodVertexOffset[lod];
     uint sparse           = sEntities[denseIdx].sparse;
     uint animatedVertex   = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + group.lodAnimatedVertexOffset[lod] + localVertex;
     AnimatedVert animated = sAnimatedVert[animatedVertex];
     Entity entity  = sEntities[denseIdx];
+    float3 aabbMin = PrimitiveGroup_AABBMin(group);
+    float3 aabbMax = PrimitiveGroup_AABBMax(group);
     f16_4 insRot = normalize(UnpackRGBA16Snorm(entity.rotation[0], entity.rotation[1]));
     f16_3 insScale = UnpackRGBA16Unorm(entity.scale).xyz * f16(10.0);
-    float3 modelPos = UnpackAnimatedModelPos(uint2(animated.packed0, animated.packed1), group.aabbMin.xyz, group.aabbMax.xyz);
+    float3 modelPos = UnpackAnimatedModelPos(uint2(animated.packed0, animated.packed1), aabbMin, aabbMax);
     float3 finalWorldPos = AnimatedWorldPos(modelPos, float4(insRot), float3(insScale), entity.position.xyz);
     float4 clip = MulPointShadowSide(sPointShadowSides[uShadowSideIndex + face], float4(finalWorldPos, 1.0));
     return MakeAtlasOutput(clip, face);

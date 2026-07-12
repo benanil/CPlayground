@@ -146,7 +146,7 @@ u32 RenderSet_CountTriangles(const RenderSet* set)
     for (u32 i = 0u; i < set->numGroups; i++)
     {
         const PrimitiveGroup* group = &set->primitiveGroups[i];
-        triangles += (u64)(group->numIndices / 3u) * group->numEntities;
+        triangles += (u64)(group->lodNumIndices[0] / 3u) * group->numEntities;
     }
     return (u32)Minu64(triangles, 0xFFFFFFFFull);
 }
@@ -274,25 +274,21 @@ u32 RenderSet_AddSceneBundle(RenderSet* set, const SceneBundle* sceneBundle, u32
             PrimitiveGroup* group = set->primitiveGroups + primitiveStart + totalPrimitives + (s32)p;
             group->numEntities    = 0;
             group->capacity       = 0;
-            group->animatedVertexOffset = set->skinned ? (u32)primitive->lodAnimatedVertexOffset[0] : localVertexOffset;
-            group->numIndices     = (u32)primitive->numIndices;
-            group->indexOffset    = (u32)primitive->indexOffset;
-            group->vertexOffset   = set->skinned ? (u32)primitive->lodVertexOffset[0] : vertexBase + localVertexOffset;
-            group->meshIndex      = m;
-            group->primitiveIndex = p;
-            group->materialIndex  = materialOffset + (u32)primitive->material;
-            group->bundleIdx      = INVALID_BUNDLE; // owner-assigned bundle handle, stamped by the caller
-            group->numVertices    = (u32)primitive->numVertices;
-            group->entityOffset   = set->numEntities;
+            group->meshIndex      = (u16)m;
+            group->primitiveIndex = (u16)p;
+            group->materialIndex  = (u16)(materialOffset + (u32)primitive->material);
+            group->bundleIdx      = (u16)INVALID_BUNDLE; // owner-assigned bundle handle, stamped by the caller
+            group->entityOffset   = (u16)set->numEntities;
             
-            group->aabbMin = set->skinned ? skinnedMin : VecLoad(primitive->min);
-            group->aabbMax = set->skinned ? skinnedMax : VecLoad(primitive->max);
+            v128f aabbMin = set->skinned ? skinnedMin : VecLoad(primitive->min);
+            v128f aabbMax = set->skinned ? skinnedMax : VecLoad(primitive->max);
+            PrimitiveGroup_SetAABB(group, aabbMin, aabbMax);
             
             for (u32 lod = 0; lod < MESH_LOD_COUNT; lod++)
             {
                 group->lodIndexOffset[lod] = (u32)primitive->lodIndexOffset[lod];
                 group->lodNumIndices[lod]  = (u32)primitive->lodNumIndices[lod];
-                group->lodVertexOffset[lod] = (u32)primitive->lodVertexOffset[lod];
+                group->lodVertexOffset[lod] = set->skinned ? (u32)primitive->lodVertexOffset[lod] : vertexBase + (u32)primitive->lodVertexOffset[lod];
                 group->lodNumVertices[lod] = (u32)primitive->lodNumVertices[lod];
                 group->lodAnimatedVertexOffset[lod] = (u32)primitive->lodAnimatedVertexOffset[lod];
             }
@@ -365,7 +361,7 @@ static u32 LeaveSpaceForEntities(RenderSet* set, u32 primitiveIdx, u32 numAdded)
     }
 
     for (u32 i = primitiveIdx + 1u; i < set->numGroups; i++)
-        set->primitiveGroups[i].entityOffset += numAdded;
+        set->primitiveGroups[i].entityOffset = (u16)(set->primitiveGroups[i].entityOffset + numAdded);
 
     set->numEntities += numAdded;
     return entityStart;
@@ -519,7 +515,7 @@ u32 RenderSet_AddScene(RenderSet* set, u32 bundleIdx, v128f position, v128f rota
                 set->sparseID[sparseIdx] = dst;
         }
 
-        group->entityOffset = newOffset;
+        group->entityOffset = (u16)newOffset;
     }
 
     for (u32 p = 0; p < numPrimitives; p++)
@@ -610,7 +606,7 @@ void RenderSet_CompactEntities(RenderSet* set)
         u32 oldOffset = group->entityOffset;
         u32 oldCount = group->numEntities;
 
-        group->entityOffset = writeEntity;
+        group->entityOffset = (u16)writeEntity;
         for (u32 i = 0; i < oldCount; i++)
         {
             Entity entity = set->entities[oldOffset + i];
@@ -730,7 +726,7 @@ u32 RenderSet_RemoveEntities(RenderSet* set, u32 groupIdx, u32 localStartIdx, u3
     group->capacity = group->numEntities;
 
     for (u32 i = groupIdx + 1; i < set->numGroups; i++)
-        set->primitiveGroups[i].entityOffset -= count;
+        set->primitiveGroups[i].entityOffset = (u16)(set->primitiveGroups[i].entityOffset - count);
 
     return count;
 }
@@ -775,7 +771,7 @@ u32 RenderSet_RemoveSceneBundle(RenderSet* set, u32 bundleIdx)
     for (u32 i = firstGroup + groupCount; i < set->numGroups; i++)
     {
         PrimitiveGroup moved = set->primitiveGroups[i];
-        moved.entityOffset -= entityCount;
+        moved.entityOffset = (u16)(moved.entityOffset - entityCount);
         set->primitiveGroups[i - groupCount] = moved;
         for (u32 e = 0; e < moved.numEntities; e++)
             set->entities[moved.entityOffset + e].primitiveIdx = i - groupCount;

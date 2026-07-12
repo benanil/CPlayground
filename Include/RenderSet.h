@@ -66,26 +66,27 @@ typedef struct RenderSet_
 
 struct PrimitiveGroup_
 {
-    u32 entityOffset;
-    u32 numEntities;
-    u32 capacity;
-    u32 animatedVertexOffset;
-    u32 numIndices;
-    u32 indexOffset;
-    u32 vertexOffset;
-    u32 meshIndex;
-    u32 primitiveIndex;
-    u32 materialIndex;
-    u32 bundleIdx; // owner-assigned bundle handle (scene bundle index), enables O(1) group -> bundle lookup
-    u32 numVertices;
     v128f aabbMin;
     v128f aabbMax;
-    u32 lodIndexOffset[4];
-    u32 lodNumIndices[4];
-    u32 lodVertexOffset[4];
-    u32 lodNumVertices[4];
-    u32 lodAnimatedVertexOffset[4];
+    u32 lodIndexOffset[3];
+	u16 entityOffset, numEntities;
+    u32 lodNumIndices[3];
+    u16 capacity, meshIndex;
+    u32 lodVertexOffset[3];
+    u16 primitiveIndex, materialIndex; 
+	u32 lodNumVertices[3];
+	u16 bundleIdx, padding0;
+    u32 lodAnimatedVertexOffset[3];
+    u32 padding;
 };
+
+STATIC_ASSERT(sizeof(PrimitiveGroup) == 112, "PrimitiveGroup CPU/GPU stride mismatch");
+
+static inline void PrimitiveGroup_SetAABB(PrimitiveGroup* group, v128f aabbMin, v128f aabbMax)
+{
+    group->aabbMin = aabbMin;
+    group->aabbMax = aabbMax;
+}
 
 v128f EntityUnpackScale01(u64 packed);
 v128f EntityUnpackWorldScale(u64 packed);

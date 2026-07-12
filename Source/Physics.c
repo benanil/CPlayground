@@ -295,7 +295,7 @@ static b3MeshData* Scene_PhysicsEnsureGroupMesh(Scene* scene, bool transparent, 
 	if (meshes[groupIdx]) return meshes[groupIdx];
 
 	PrimitiveGroup* group = &set->primitiveGroups[groupIdx];
-	if (group->numIndices < 3 || group->numVertices == 0) return NULL;
+    if (group->lodNumIndices[0] < 3 || group->lodNumVertices[0] == 0) return NULL;
 	if (group->bundleIdx >= scene->numBundles || !scene->bundleRefs[group->bundleIdx].bundle)
 	{
 		AX_WARN("physics: missing bundle for collider group %u", groupIdx);
@@ -763,7 +763,7 @@ static void BuildCollidersForSet(Scene* scene, const RenderSet* set, bool transp
 		for (u32 g = range.start; g < range.start + range.count; g++)
 		{
 			PrimitiveGroup* group = &set->primitiveGroups[g];
-			if (group->numEntities == 0 || group->numIndices < 3 || group->numVertices == 0)
+			if (group->numEntities == 0 || group->lodNumIndices[0] < 3 || group->lodNumVertices[0] == 0)
 				continue;
 			if (!Scene_PhysicsEnsureGroupMesh(scene, transparent, g)) continue;
 

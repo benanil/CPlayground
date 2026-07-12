@@ -78,7 +78,7 @@ static void Scene_StampGroupBundle(RenderSet* set, u32 renderIdx, u32 sceneIdx)
 {
     Range range = set->bundlePrimitiveRange[renderIdx];
     for (u32 g = 0; g < range.count; g++)
-        set->primitiveGroups[range.start + g].bundleIdx = sceneIdx;
+        set->primitiveGroups[range.start + g].bundleIdx = (u16)sceneIdx;
 }
 
 void Scene_Init(Scene* scene)

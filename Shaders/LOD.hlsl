@@ -37,8 +37,8 @@ uint SelectLODFromScreenDiameter(float screenDiameter, uint lodCount)
 
 void BuildWorldAABB(Entity entity, PrimitiveGroup group, out float3 worldCenter, out float3 worldExtent, out float3 worldMin, out float3 worldMax)
 {
-    float3 localMin = group.aabbMin.xyz;
-    float3 localMax = group.aabbMax.xyz;
+    float3 localMin = PrimitiveGroup_AABBMin(group);
+    float3 localMax = PrimitiveGroup_AABBMax(group);
     float3 localCenter = (localMin + localMax) * 0.5f;
     float3 localExtent = (localMax - localMin) * 0.5f;
 

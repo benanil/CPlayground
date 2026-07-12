@@ -87,6 +87,26 @@ void ArenaRestore(Arena* a, ArenaMark mark) { (void)a; (void)mark; }
 
 #include "Source/Rendering/RenderSet.c"
 
+void RenderSet_AddEntitiesCallback(RenderSet* set, u32 groupIdx, u32 localStartIdx, u32 count)
+{
+    (void)set; (void)groupIdx; (void)localStartIdx; (void)count;
+}
+
+void RenderSet_RemoveRangeCallback(RenderSet* set, u32 groupIdx, u32 localStartIdx, u32 count)
+{
+    (void)set; (void)groupIdx; (void)localStartIdx; (void)count;
+}
+
+void RenderSet_RemoveGroupsCallback(RenderSet* set, u32 firstGroup, u32 groupCount)
+{
+    (void)set; (void)firstGroup; (void)groupCount;
+}
+
+void RenderSet_ClearEntitiesCallback(RenderSet* set)
+{
+    (void)set;
+}
+
 static AVertex gSurfaceVertices[1024];
 static ASkinedVertex gSkinnedVertices[1024];
 static u32 gIndices[4096];
@@ -374,9 +394,9 @@ static void TestBundleRegistration(void)
     CHECK(set.primitiveGroups[0].materialIndex == 10, "group0 material=%u", set.primitiveGroups[0].materialIndex);
     CHECK(set.primitiveGroups[1].materialIndex == 11, "group1 material=%u", set.primitiveGroups[1].materialIndex);
     CHECK(set.primitiveGroups[2].materialIndex == 20, "group2 material=%u", set.primitiveGroups[2].materialIndex);
-    CHECK(set.primitiveGroups[0].vertexOffset == 100, "group0 vertexOffset=%u", set.primitiveGroups[0].vertexOffset);
-    CHECK(set.primitiveGroups[1].vertexOffset == 108, "group1 vertexOffset=%u", set.primitiveGroups[1].vertexOffset);
-    CHECK(set.primitiveGroups[2].vertexOffset == 200, "group2 vertexOffset=%u", set.primitiveGroups[2].vertexOffset);
+    CHECK(set.primitiveGroups[0].lodVertexOffset[0] == 100, "group0 vertexOffset=%u", set.primitiveGroups[0].lodVertexOffset[0]);
+    CHECK(set.primitiveGroups[1].lodVertexOffset[0] == 108, "group1 vertexOffset=%u", set.primitiveGroups[1].lodVertexOffset[0]);
+    CHECK(set.primitiveGroups[2].lodVertexOffset[0] == 200, "group2 vertexOffset=%u", set.primitiveGroups[2].lodVertexOffset[0]);
     CHECK(RenderSet_Validate(&set, "registration"), "validation failed");
 }
 

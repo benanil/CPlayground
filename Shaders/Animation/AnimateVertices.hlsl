@@ -62,11 +62,11 @@ void main(uint3 globalID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint
 
     Entity baseEntity = sEntities[baseDenseIdx];
     PrimitiveGroup baseGroup = sPrimitiveGroups[baseEntity.primitiveIdx];
-    uint instanceSlot = baseDenseIdx - baseGroup.entityOffset;
-    if (instanceSlot >= group.numEntities)
+    uint instanceSlot = baseDenseIdx - PrimitiveGroup_EntityOffset(baseGroup);
+    if (instanceSlot >= PrimitiveGroup_NumEntities(group))
         return;
 
-    uint denseIdx = group.entityOffset + instanceSlot;
+    uint denseIdx = PrimitiveGroup_EntityOffset(group) + instanceSlot;
     Entity entity = sEntities[denseIdx];
     if (entity.sparse != sparse)
         return;
@@ -81,8 +81,10 @@ void main(uint3 globalID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint
     // Skin in model space (entity rotation/scale are applied per vertex shader) and accumulate in a
     // bounds-local frame: the bone translation is shifted by the bounds center so skinned positions
     // stay near 0, where fp16 keeps full precision. Result is packed as 11/11/10 unorm.
-    float3 boundsCenter = AnimatedBoundsCenter(group.aabbMin.xyz, group.aabbMax.xyz);
-    float3 boundsExtent = AnimatedBoundsExtent(group.aabbMin.xyz, group.aabbMax.xyz);
+    float3 aabbMin = PrimitiveGroup_AABBMin(group);
+    float3 aabbMax = PrimitiveGroup_AABBMax(group);
+    float3 boundsCenter = AnimatedBoundsCenter(aabbMin, aabbMax);
+    float3 boundsExtent = AnimatedBoundsExtent(aabbMin, aabbMax);
 
     [loop]
     for (uint vertexOffset = 0; vertexOffset < 32u; vertexOffset++)

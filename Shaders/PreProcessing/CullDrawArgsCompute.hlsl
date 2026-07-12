@@ -364,7 +364,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             ProjectAABB(proj, worldMin, worldMax, viewProjection, hiZSize);
 
 		// objects that has more index will swap lod earlier
-		float indexCountModifier = saturate(float(group.numIndices) / 100000.0);
+		float indexCountModifier = saturate(float(group.lodNumIndices[0]) / 100000.0);
 		lod = SelectLOD(proj, indexCountModifier);
     }
 
@@ -378,7 +378,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint globalVisibleIdx;
     InterlockedAdd(lineDrawCommand[0].firstInstance, 1, globalVisibleIdx);
 
-    drawSparseIndices[lod * sparseIndexLODStride + group.entityOffset + localVisibleIdx] = sparse;
+    drawSparseIndices[lod * sparseIndexLODStride + PrimitiveGroup_EntityOffset(group) + localVisibleIdx] = sparse;
 
     if ((flags & CULL_DRAW_FLAG_VISIBILITY_OUTPUT) != 0u)
     {
