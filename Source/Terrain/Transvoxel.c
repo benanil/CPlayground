@@ -28,7 +28,7 @@ typedef enum ChunkBuildState_
     CHUNK_BUILDING,
     CHUNK_PENDING,
     CHUNK_READY,
-    CHUNK_FAILED
+    CHUNK_FAILED,
     CHUNK_MAX_STATE
 } ChunkBuildState;
 
@@ -373,7 +373,7 @@ static void tDestroyChunkPhysics(tChunk* chunk)
 
 static const char* tChunkStateName(ChunkBuildState state)
 {
-	const char* results[CHUNK_MAX_STATE] = { "UNBUILT", "QUEUED", "BUILDING", "PENDING", "READY", "FAILED", "UNKNOWN"};
+	const char* results[CHUNK_MAX_STATE] = { "UNBUILT", "QUEUED", "BUILDING", "PENDING", "READY", "FAILED"};
 	return results[state % CHUNK_MAX_STATE];
 }
 
@@ -757,7 +757,7 @@ static void tFreeChunkSlot(u32 index)
 
 static bool tFreeOldestChunkSlot(bool requireMesh, bool respectKeepFrames)
 {
-    u32 evictIndex = UINT32_MAX;
+    u32 evictIndex  = UINT32_MAX;
     u32 oldestFrame = UINT32_MAX;
     for (u32 i = 0; i < tTransvoxel.chunkCount; i++)
     {
@@ -780,12 +780,9 @@ static bool tFreeOldestChunkSlot(bool requireMesh, bool respectKeepFrames)
 
 static u32 tAllocChunkSlot(void)
 {
-    if (tTransvoxel.chunkCount >= T_MAX_CHUNKS) {
-        if (!tFreeOldestChunkSlot(false, false)) {
-            tClearChunkCache();
-            AX_LOG("transvoxel chunk cache reset");
-        }
-    }
+    if (tTransvoxel.chunkCount >= T_MAX_CHUNKS) 
+        if (!tFreeOldestChunkSlot(false, false)) 
+            tClearChunkCache(); 
 
     s32 index = BitsetFindFirstEmpty(tTransvoxel.occupiedChunksBitset, (s32)T_MAX_CHUNKS);
     if (index < 0) return UINT32_MAX;
@@ -797,6 +794,7 @@ static u32 tAllocChunkSlot(void)
 
 static void tClearChunkCache(void)
 {
+	AX_LOG("transvoxel chunk cache reset");
     tDrainBuildJobs();
     RendererSetTerrainChunkDraws(NULL, 0);
     for (u32 i = 0; i < tTransvoxel.chunkCount; i++)
@@ -844,7 +842,7 @@ static void tPromotePendingMeshes(void)
                 continue;
         }
 
-        tFreeMeshHandle(chunk->mesh);
+        tFreeMeshHandle(&chunk->mesh);
         if (chunk->pendingState == PENDING_EMPTY) {
             tClearChunkPending(chunk);
             tSetChunkState(chunk, CHUNK_READY);

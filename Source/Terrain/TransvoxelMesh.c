@@ -7,7 +7,7 @@
 bool tMeshDataInit(tMeshData* data)
 {
     *data = (tMeshData){0};
-	u32 r0 = GeometryHeapAlloc(GeometryBuffer_TerrainVert , T_CHUNK_VERTEX_CAP, (void* *)&data->vertices);
+	u32 r0 = GeometryHeapAlloc(GeometryBuffer_TerrainVert , T_CHUNK_VERTEX_CAP, (void**)&data->vertices);
     u32 r1 = GeometryHeapAlloc(GeometryBuffer_TerrainIndex, T_CHUNK_INDEX_CAP , (void**)&data->indices);
 	data->secondaryVert = (tSecondaryVert*)AllocateTLSFGlobal(sizeof(tSecondaryVert) * T_CHUNK_SECONDARY_VERTEX_CAP);
 
@@ -40,11 +40,7 @@ void tMeshDataClear(tMeshData* data)
 
 bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex)
 {
-	if (!data || !data->vertices) {
-		AX_WARN("terrain mesh data push vertex failed: invalid mesh data");
-		return false;
-	}
-	if (data->numVertices >= data->vertexCapacity) {
+	if (!data || !data->vertices || data->numVertices >= data->vertexCapacity) {
 		AX_WARN("terrain mesh data push vertex failed");
 		return false;
 	}
@@ -54,11 +50,7 @@ bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex)
 
 bool tMeshDataPushIndex(tMeshData* data, u32 index)
 {
-	if (!data || !data->indices) {
-		AX_WARN("terrain mesh data push index failed: invalid mesh data");
-		return false;
-	}
-	if (data->numIndices >= data->indexCapacity) {
+	if (!data || !data->indices || data->numIndices >= data->indexCapacity) {
 		AX_WARN("terrain mesh data push indexfailed");
 		return false;
 	}
@@ -68,11 +60,7 @@ bool tMeshDataPushIndex(tMeshData* data, u32 index)
 
 bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVert vertex)
 {
-	if (!data || !data->secondaryVert) {
-		AX_WARN("terrain mesh data push second index failed: invalid mesh data");
-		return false;
-	}
-	if (data->numSecondaryVert >= data->secondaryCapacity) {
+	if (!data || !data->secondaryVert || data->numSecondaryVert >= data->secondaryCapacity) {
 		AX_WARN("terrain mesh data push second index failed:");
 		return false;
 	}
