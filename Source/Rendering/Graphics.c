@@ -10,7 +10,7 @@
 #include "Include/BasisBinding.h"
 #include "Include/Random.h"
 #include "Source/Terrain/TerrainInternal.h"
-#include "Source/Terrain/TransvoxelUnity.h"
+#include "Source/Terrain/Transvoxel.h"
 
 #if !defined(PLATFORM_MACOSX)
 #include "Extern/SDL3/src/video/khronos/vulkan/vulkan.h"
@@ -74,12 +74,9 @@ static char* GeometryHeapBase(GeometryBufferKind kind)
     {
         case GeometryBuffer_SkinnedVertex: return (char*)gGFX.SkinnedVertexBuffer;
         case GeometryBuffer_SurfaceVertex: return (char*)gGFX.SurfaceVertexBuffer;
-        case GeometryBuffer_TerrainVertex: return (char*)gGFX.TerrainVertexBuffer;
-        case GeometryBuffer_TerrainIndex:  return (char*)gGFX.TerrainIndexBuffer;
         case GeometryBuffer_GrassInstance: return (char*)gGFX.TerrainGrassBuffer;
-        case GeometryBuffer_TerrainVertNew: return (char*)gGFX.TerrainVertNewBuffer;
-        case GeometryBuffer_TerrainSecond: return (char*)gGFX.TerrainSecondBuffer;
-        case GeometryBuffer_TerrainIndex2: return (char*)gGFX.TerrainIndexBuffer2;
+        case GeometryBuffer_TerrainVert:   return (char*)gGFX.TerrainVertexBuffer;
+        case GeometryBuffer_TerrainIndex:  return (char*)gGFX.TerrainIndexBuffer;
         default:                           return (char*)gGFX.IndexBuffer;
     }
 }
@@ -88,12 +85,10 @@ static u32 GeometryHeapStride(GeometryBufferKind kind)
 {
     switch (kind)
     {
-        case GeometryBuffer_SkinnedVertex:  return sizeof(ASkinedVertex);
-        case GeometryBuffer_SurfaceVertex:  return sizeof(AVertex);
-        case GeometryBuffer_TerrainVertex:  return sizeof(TerrainVertex);
-        case GeometryBuffer_GrassInstance:  return sizeof(GrassInstance);
-        case GeometryBuffer_TerrainVertNew: return sizeof(tVertexData);
-        case GeometryBuffer_TerrainSecond:  return sizeof(tSecondaryVert);
+        case GeometryBuffer_SkinnedVertex: return sizeof(ASkinedVertex);
+        case GeometryBuffer_SurfaceVertex: return sizeof(AVertex);
+        case GeometryBuffer_GrassInstance: return sizeof(GrassInstance);
+        case GeometryBuffer_TerrainVert:   return sizeof(tVertexData);
 		default:                           return sizeof(u32);
     }
 }
@@ -102,14 +97,11 @@ static void InitGeometryHeaps(void)
 {
     const size_t poolBytes[GeometryBuffer_Count] = {
         sizeof(ASkinedVertex) * MAX_SKINNED_SOURCE_VERTEX,
-        sizeof(AVertex) * MAX_SURFACE_VERTEX,
-        sizeof(u32) * MAX_INDEX,
-        sizeof(TerrainVertex) * TERRAIN_MAX_VERTICES,
-        sizeof(u32) * TERRAIN_MAX_INDICES,
-    	sizeof(GrassInstance) * TERRAIN_MAX_GRASS,
-		sizeof(tVertexData) * TERRAIN_MAX_VERTICES,
-		sizeof(tSecondaryVert) * (TERRAIN_MAX_VERTICES >> 1),
-        sizeof(u32) * TERRAIN_MAX_INDICES
+        sizeof(AVertex)       * MAX_SURFACE_VERTEX,
+        sizeof(u32)           * MAX_INDEX,
+    	sizeof(GrassInstance) * T_MAX_GRASS,
+		sizeof(tVertexData)   * T_MAX_VERTICES,
+        sizeof(u32)           * T_MAX_INDICES
 	};
 
     for (u32 kind = 0; kind < GeometryBuffer_Count; kind++)
@@ -294,18 +286,13 @@ void GraphicsInit(bool msaa)
     // heaps above, so heap pointers are directly usable for SIMD-typed elements
     gGFX.SkinnedVertexBuffer = OSAllocAligned(sizeof(ASkinedVertex) * MAX_SKINNED_SOURCE_VERTEX, 64);
     gGFX.SurfaceVertexBuffer = OSAllocAligned(sizeof(AVertex) * MAX_SURFACE_VERTEX, 64);
-    gGFX.TerrainVertexBuffer = OSAllocAligned(sizeof(TerrainVertex) * TERRAIN_MAX_VERTICES, 64);
-    gGFX.TerrainIndexBuffer  = OSAllocAligned(sizeof(u32) * TERRAIN_MAX_INDICES, 64);
-    gGFX.TerrainGrassBuffer  = OSAllocAligned(sizeof(GrassInstance) * TERRAIN_MAX_GRASS, 64);
-    gGFX.TerrainVertNewBuffer = OSAllocAligned(sizeof(tVertexData) * TERRAIN_MAX_VERTICES, 64);
-    gGFX.TerrainSecondBuffer  = OSAllocAligned(sizeof(tSecondaryVert) * (TERRAIN_MAX_VERTICES >> 1), 64);
-    gGFX.TerrainIndexBuffer2  = OSAllocAligned(sizeof(u32) * TERRAIN_MAX_INDICES, 64);
+    gGFX.TerrainGrassBuffer  = OSAllocAligned(sizeof(GrassInstance) * T_MAX_GRASS, 64);
+    gGFX.TerrainVertexBuffer = OSAllocAligned(sizeof(tVertexData) * T_MAX_VERTICES, 64);
+    gGFX.TerrainIndexBuffer  = OSAllocAligned(sizeof(u32) * T_MAX_INDICES, 64);
 	gGFX.IndexBuffer         = OSAllocAligned(sizeof(u32) * MAX_INDEX + 16, 4); // 16->give little bit of space for memcpy
-    if (!gGFX.SkinnedVertexBuffer || !gGFX.SurfaceVertexBuffer || !gGFX.TerrainVertexBuffer || !gGFX.TerrainIndexBuffer || !gGFX.IndexBuffer ||
-        !gGFX.TerrainVertNewBuffer || !gGFX.TerrainSecondBuffer || !gGFX.TerrainIndexBuffer2)
-        AX_ERROR("graphics CPU buffer allocation failed skinned=%p surface=%p terrain=%p terrainIndex=%p index=%p vertNew=%p second=%p index2=%p",
-                 gGFX.SkinnedVertexBuffer, gGFX.SurfaceVertexBuffer, gGFX.TerrainVertexBuffer, gGFX.TerrainIndexBuffer, gGFX.IndexBuffer,
-                 gGFX.TerrainVertNewBuffer, gGFX.TerrainSecondBuffer, gGFX.TerrainIndexBuffer2);
+    if (!gGFX.SkinnedVertexBuffer || !gGFX.SurfaceVertexBuffer || !gGFX.TerrainVertexBuffer 
+		|| !gGFX.TerrainIndexBuffer || !gGFX.IndexBuffer)
+		AX_ERROR("graphics shared memory allocation failed");
 
     InitGeometryHeaps();
 }
@@ -920,20 +907,14 @@ void GraphicsDestroy()
     DestroyGeometryHeaps();
     OSFreeAligned(gGFX.SkinnedVertexBuffer, sizeof(ASkinedVertex) * MAX_SKINNED_SOURCE_VERTEX);
     OSFreeAligned(gGFX.SurfaceVertexBuffer, sizeof(AVertex) * MAX_SURFACE_VERTEX);
-    OSFreeAligned(gGFX.TerrainVertexBuffer, sizeof(TerrainVertex) * TERRAIN_MAX_VERTICES);
-    OSFreeAligned(gGFX.TerrainGrassBuffer , sizeof(GrassInstance) * TERRAIN_MAX_GRASS);
-	OSFreeAligned(gGFX.TerrainIndexBuffer , sizeof(u32) * TERRAIN_MAX_INDICES);
-    OSFreeAligned(gGFX.TerrainVertNewBuffer, sizeof(tVertexData) * TERRAIN_MAX_VERTICES);
-    OSFreeAligned(gGFX.TerrainSecondBuffer , sizeof(tSecondaryVert) * (TERRAIN_MAX_VERTICES >> 1));
-    OSFreeAligned(gGFX.TerrainIndexBuffer2 , sizeof(u32) * TERRAIN_MAX_INDICES);
+    OSFreeAligned(gGFX.TerrainGrassBuffer , sizeof(GrassInstance) * T_MAX_GRASS);
+    OSFreeAligned(gGFX.TerrainVertexBuffer, sizeof(tVertexData) * T_MAX_VERTICES);
+    OSFreeAligned(gGFX.TerrainIndexBuffer , sizeof(u32) * T_MAX_INDICES);
     OSFreeAligned(gGFX.IndexBuffer        , sizeof(u32) * MAX_INDEX + 16);
     gGFX.SkinnedVertexBuffer = NULL;
     gGFX.SurfaceVertexBuffer = NULL;
-    gGFX.TerrainVertexBuffer = NULL;
     gGFX.TerrainIndexBuffer = NULL;
-    gGFX.TerrainVertNewBuffer = NULL;
-    gGFX.TerrainSecondBuffer = NULL;
-    gGFX.TerrainIndexBuffer2 = NULL;
+    gGFX.TerrainVertexBuffer = NULL;
     gGFX.IndexBuffer = NULL;
 }
 

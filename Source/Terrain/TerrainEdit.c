@@ -149,12 +149,12 @@ void TerrainEdit_OverlayChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* samples)
 
     // sample lattice of this chunk in world meters: (chunk*16 + i - 1) << lod
     s32 step = 1 << lod;
-    s32 wmin[3] = { ((cx * TERRAIN_CHUNK_CELLS) - 1) * step,
-                    ((cy * TERRAIN_CHUNK_CELLS) - 1) * step,
-                    ((cz * TERRAIN_CHUNK_CELLS) - 1) * step };
-    s32 wmax[3] = { wmin[0] + (TERRAIN_SAMPLES_AXIS - 1) * step,
-                    wmin[1] + (TERRAIN_SAMPLES_AXIS - 1) * step,
-                    wmin[2] + (TERRAIN_SAMPLES_AXIS - 1) * step };
+    s32 wmin[3] = { ((cx * T_CHUNK_CELLS) - 1) * step,
+                    ((cy * T_CHUNK_CELLS) - 1) * step,
+                    ((cz * T_CHUNK_CELLS) - 1) * step };
+    s32 wmax[3] = { wmin[0] + (T_SAMPLES_AXIS - 1) * step,
+                    wmin[1] + (T_SAMPLES_AXIS - 1) * step,
+                    wmin[2] + (T_SAMPLES_AXIS - 1) * step };
     for (s32 a = 0; a < 3; a++)
         if (wmax[a] < g_TerrainEdit.boundsMin[a] || wmin[a] > g_TerrainEdit.boundsMax[a]) return;
 
@@ -163,9 +163,9 @@ void TerrainEdit_OverlayChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* samples)
     s32 lastEx = INT32_MIN, lastEy = 0, lastEz = 0;
     TerrainEditChunk* last = NULL;
     s8* dst = samples;
-    for (s32 z = 0; z < TERRAIN_SAMPLES_AXIS; z++)
-    for (s32 y = 0; y < TERRAIN_SAMPLES_AXIS; y++)
-    for (s32 x = 0; x < TERRAIN_SAMPLES_AXIS; x++, dst++)
+    for (s32 z = 0; z < T_SAMPLES_AXIS; z++)
+    for (s32 y = 0; y < T_SAMPLES_AXIS; y++)
+    for (s32 x = 0; x < T_SAMPLES_AXIS; x++, dst++)
     {
         s32 wx = wmin[0] + x * step, wy = wmin[1] + y * step, wz = wmin[2] + z * step;
         s32 ex = wx >> 4, ey = wy >> 4, ez = wz >> 4;

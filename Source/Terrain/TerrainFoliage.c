@@ -46,7 +46,7 @@ static const char* const grassPaths[2] = {
 
 static f32 TerrainFoliageChunkSize0(void)
 {
-    return (f32)TERRAIN_CHUNK_CELLS * TERRAIN_VOXEL_SIZE;
+    return (f32)T_CHUNK_CELLS * T_VOXEL_SIZE;
 }
 
 u32 TerrainFoliage_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* outMin, float3* outMax)
@@ -65,8 +65,8 @@ u32 TerrainFoliage_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* ou
     u32 target = (u32)(bladesPerSqM * size0 * size0);
     if (target > GRASS_PER_CHUNK) target = GRASS_PER_CHUNK;
 
-    s32 cx = FloorDiv(chunkMin.x, TERRAIN_CHUNK_CELLS);
-    s32 cz = FloorDiv(chunkMin.z, TERRAIN_CHUNK_CELLS);
+    s32 cx = FloorDiv(chunkMin.x, T_CHUNK_CELLS);
+    s32 cz = FloorDiv(chunkMin.z, T_CHUNK_CELLS);
     u32 seed = WangHash((u32)cx * 73856093u ^ (u32)cz * 19349663u);
     float3 aMin = { 1e30f, 1e30f, 1e30f };
     float3 aMax = { -1e30f, -1e30f, -1e30f };
@@ -168,12 +168,12 @@ bool TerrainFoliage_Init(TerrainFoliageState* tf)
     if (!g_GPUDevice) return false;
 
     MemSet(tf, 0, sizeof(*tf));
-    for (u32 i = 0; i < TERRAIN_GRASS_MAX_SLOTS; i++)
-        tf->freeSlots[tf->freeCount++] = (u16)(TERRAIN_GRASS_MAX_SLOTS - 1u - i);
+    for (u32 i = 0; i < T_GRASS_MAX_SLOTS; i++)
+        tf->freeSlots[tf->freeCount++] = (u16)(T_GRASS_MAX_SLOTS - 1u - i);
 
-    tf->grassBuffer = CreateBuffer(NULL, sizeof(GrassInstance) * TERRAIN_MAX_GRASS, BVertexBit, "TerrainGrassBuffer");
-    tf->chunkBuffer = CreateBuffer(NULL, sizeof(TerrainGrassChunkInfo) * TERRAIN_GRASS_MAX_SLOTS, BReadRasterBit, "TerrainGrassChunks");
-    tf->indirectBuffer = CreateBuffer(NULL, sizeof(SDL_GPUIndirectDrawCommand) * TERRAIN_GRASS_MAX_DRAWS, BIndirectBit, "TerrainGrassIndirect");
+    tf->grassBuffer = CreateBuffer(NULL, sizeof(GrassInstance) * T_MAX_GRASS, BVertexBit, "TerrainGrassBuffer");
+    tf->chunkBuffer = CreateBuffer(NULL, sizeof(TerrainGrassChunkInfo) * T_GRASS_MAX_SLOTS, BReadRasterBit, "TerrainGrassChunks");
+    tf->indirectBuffer = CreateBuffer(NULL, sizeof(SDL_GPUIndirectDrawCommand) * T_GRASS_MAX_DRAWS, BIndirectBit, "TerrainGrassIndirect");
     TerrainFoliageCreatePipeline(tf);
     tf->grassLayers = LoadTextureArray(grassPaths, 2u, TERRAIN_GRASS_SIZE, true, "TerrainGrass", "grass");
     tf->initialized = true;
@@ -185,8 +185,8 @@ void TerrainFoliage_Clear(TerrainFoliageState* tf)
 {
     if (!tf || !tf->initialized) return;
     tf->freeCount = 0u;
-    for (u32 i = 0; i < TERRAIN_GRASS_MAX_SLOTS; i++)
-        tf->freeSlots[tf->freeCount++] = (u16)(TERRAIN_GRASS_MAX_SLOTS - 1u - i);
+    for (u32 i = 0; i < T_GRASS_MAX_SLOTS; i++)
+        tf->freeSlots[tf->freeCount++] = (u16)(T_GRASS_MAX_SLOTS - 1u - i);
     tf->drawCount = 0u;
 }
 
@@ -233,7 +233,7 @@ bool TerrainFoliage_UploadChunk(TerrainFoliageState* tf, TerrainGrassChunk* chun
 void TerrainFoliage_FreeChunk(TerrainFoliageState* tf, TerrainGrassChunk* chunk)
 {
     if (!tf || !chunk || chunk->slot == UINT32_MAX) { if (chunk) *chunk = (TerrainGrassChunk){ .slot = UINT32_MAX }; return; }
-    if (tf->freeCount < TERRAIN_GRASS_MAX_SLOTS)
+    if (tf->freeCount < T_GRASS_MAX_SLOTS)
         tf->freeSlots[tf->freeCount++] = (u16)chunk->slot;
     *chunk = (TerrainGrassChunk){ .slot = UINT32_MAX };
 }
@@ -242,7 +242,7 @@ void TerrainFoliage_AppendDraw(TerrainFoliageState* tf, const TerrainGrassChunk*
 {
     if (!tf || !tf->initialized || !chunk || chunk->slot == UINT32_MAX || chunk->count == 0u) return;
     if (!CheckAABBCulled(Vec3Load(&chunk->aabbMin.x), Vec3Load(&chunk->aabbMax.x), tf->frustum.planes)) return;
-    if (tf->drawCount >= TERRAIN_GRASS_MAX_DRAWS) return;
+    if (tf->drawCount >= T_GRASS_MAX_DRAWS) return;
     tf->draws[tf->drawCount++] = (SDL_GPUIndirectDrawCommand){ 6u, chunk->count, 0u, chunk->slot * GRASS_PER_CHUNK };
 }
 

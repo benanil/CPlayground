@@ -19,7 +19,7 @@
 #include "Include/Terrain.h"
 #include "Include/Editor.h"
 #include "Include/JobSystem.h"
-#include "Source/Terrain/TransvoxelUnity.h"
+#include "Source/Terrain/Transvoxel.h"
 #include "Math/Quaternion.h"
 
 static s32 done = 0;

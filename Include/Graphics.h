@@ -96,6 +96,17 @@ enum GraphicType_
 };
 typedef s32 GraphicType;
 
+typedef enum GeometryBufferKind_
+{
+    GeometryBuffer_SkinnedVertex,
+    GeometryBuffer_SurfaceVertex,
+    GeometryBuffer_Index,
+    GeometryBuffer_GrassInstance,
+    GeometryBuffer_TerrainVert,
+    GeometryBuffer_TerrainIndex,
+    GeometryBuffer_Count
+} GeometryBufferKind;
+
 // https://www.yosoygames.com.ar/wp/2018/03/vertex-formats-part-1-compression/
 typedef struct AVertex_
 {
@@ -266,9 +277,10 @@ typedef struct RenderState
     SDL_GPUBuffer*           lineBuffer;
     SDL_GPUBuffer*           lineDrawArgsBuffer;
     SDL_GPUBuffer*           gizmoLineBuffer;
-    SDL_GPUBuffer*           terrainChunkVertexBuffer; // GPU mirror of the tVertexData geometry heap
-    SDL_GPUBuffer*           terrainChunkIndexBuffer;  // GPU mirror of the terrain index heap (TerrainIndexBuffer2)
-    SDL_GPUBuffer*           terrainDrawArgsBuffer;    // SDL_GPUIndexedIndirectDrawCommand per visible chunk
+    SDL_GPUBuffer*           terrainGrassBuffer;      
+    SDL_GPUBuffer*           terrainVertexBuffer;
+    SDL_GPUBuffer*           terrainIndexBuffer; 
+    SDL_GPUBuffer*           terrainDrawArgsBuffer;   
     SDL_GPUBuffer*           lightBuffer;
     SDL_GPUBuffer*           pointShadowMatrixBuffer;
     SDL_GPUBuffer*           spotShadowMatrixBuffer;
@@ -292,11 +304,8 @@ typedef struct Graphics_
     ASkinedVertex* SkinnedVertexBuffer;
     AVertex*       SurfaceVertexBuffer;
     void*          TerrainGrassBuffer;
-    void*          TerrainVertNewBuffer;
-    void*          TerrainSecondBuffer;
     void*          TerrainVertexBuffer;
     u32*           TerrainIndexBuffer;
-    u32*           TerrainIndexBuffer2;
     u32*           IndexBuffer;
     u32            NumIndices;          // in use stats, not cursors
     u32            NumSkinnedVertices;
@@ -316,21 +325,6 @@ static inline s32 GetRootNodeIdx(SceneBundle* bundle)
 // per scene render set gpu buffers, implemented in Rendering.c
 void CreateRenderSetBuffers(RenderSetBuffers* buffers, u32 maxEntities, u32 maxGroups);
 void DestroyRenderSetBuffers(RenderSetBuffers* buffers);
-
-enum GeometryBufferKind_
-{
-    GeometryBuffer_SkinnedVertex,
-    GeometryBuffer_SurfaceVertex,
-    GeometryBuffer_Index,
-    GeometryBuffer_TerrainVertex,
-    GeometryBuffer_TerrainIndex,
-    GeometryBuffer_GrassInstance,
-    GeometryBuffer_TerrainVertNew,
-    GeometryBuffer_TerrainSecond, // secondary vertex
-    GeometryBuffer_TerrainIndex2,
-    GeometryBuffer_Count
-};
-typedef s32 GeometryBufferKind;
 
 // sub allocation of the cpu/gpu mega buffers. tlsf runs directly over the cpu
 // mirrors, allocations are over sized and rounded up to the element stride.

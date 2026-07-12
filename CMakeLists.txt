@@ -118,24 +118,14 @@ target_sources(${EXECUTABLE_NAME} PRIVATE
     Source/DemoScene.c
     Source/Physics.c
 
-    Source/Terrain/TerrainPort.c
+    Source/Terrain/Terrain.c
+    Source/Terrain/TerrainMaterial.c
     Source/Terrain/TerrainFoliage.c
     Source/Terrain/TerrainDensity.c
     Source/Terrain/TerrainEdit.c
+    Source/Terrain/TransvoxelMesh.c
     Source/Terrain/TransvoxelMesher.c
-    # Source/Terrain/TransvoxelUnity.c
-    # Source/Terrain/TransvoxelUnityOctree.c
-    Source/Terrain/TransvoxelUnityMesh.c
-    # Source/Terrain/TransvoxelUnityJobs.c
-    # Source/Terrain/TransvoxelUnityUpdates.c
-    # Source/Terrain/TransvoxelUnityPool.c
-    # Source/Terrain/TransvoxelUnityWorld.c
-    # Source/Terrain/TransvoxelUnityTasks.c
-    # Source/Terrain/TransvoxelUnityCollision.c
-    # Source/Terrain/TransvoxelUnityScheduler.c
-    # Source/Terrain/TransvoxelUnityVoxelWorld.c
-    Source/Terrain/TransvoxelUnityMesher.c
-    Source/Terrain/TransvoxelUnityExample.c
+    Source/Terrain/Transvoxel.c
 
     Source/Editor/AssetsEditor.c
     Source/Editor/SceneEditor.c

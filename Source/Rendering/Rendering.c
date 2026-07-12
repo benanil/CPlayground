@@ -10,7 +10,7 @@
 #include "Include/Scene.h"
 #include "Include/Terrain.h"
 #include "Source/Terrain/TerrainInternal.h"
-#include "Source/Terrain/TransvoxelUnity.h"
+#include "Source/Terrain/Transvoxel.h"
 
 #define RESIZE_RELEASE_DELAY 4u
 
@@ -327,17 +327,15 @@ static void UploadDirtyGeometry(void)
 
     SDL_GPUBuffer* gpuBuffers[GeometryBuffer_Count] = {
         g_RenderState.skinned.vertexBuffer, g_RenderState.surface.vertexBuffer, g_RenderState.indexBuffer,
-        NULL, NULL, NULL,
-        g_RenderState.terrainChunkVertexBuffer, NULL, g_RenderState.terrainChunkIndexBuffer
+        g_RenderState.terrainGrassBuffer, g_RenderState.terrainVertexBuffer, g_RenderState.terrainIndexBuffer
     };
     const u8* sources[GeometryBuffer_Count] = {
         (const u8*)gGFX.SkinnedVertexBuffer, (const u8*)gGFX.SurfaceVertexBuffer, (const u8*)gGFX.IndexBuffer,
-        NULL, NULL, NULL,
-        (const u8*)gGFX.TerrainVertNewBuffer, NULL, (const u8*)gGFX.TerrainIndexBuffer2
+        (const u8*)gGFX.TerrainGrassBuffer , (const u8*)gGFX.TerrainVertexBuffer, (const u8*)gGFX.TerrainIndexBuffer
     };
     const size_t strides[GeometryBuffer_Count] = {
-        sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), 0u, 0u, 0u,
-        sizeof(tVertexData), 0u, sizeof(u32)
+        sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), 
+        sizeof(GrassInstance), sizeof(tVertexData), sizeof(u32)
     };
 
     // Snapshot and clear the queue under the lock, then do the (slower) GPU copies without holding
@@ -373,17 +371,17 @@ void InitBuffers(void)
     // AnimatedVert is position-only, 16/16/16 unorm in 2x u32 -> 512 MB at full provisioning.
     // (Lever 2 / compaction by visible animated-vertex count reclaims this later.)
     const size_t animatedVertexSize = sizeof(u32) * 2 * MAX_ANIMATED_VERTEX;
-    g_RenderState.skinned.vertexBuffer = CreateBuffer(NULL, MAX_SKINNED_SOURCE_VERTEX * sizeof(ASkinedVertex), BVertexBit | BReadCompute, "CPSkinnedVertexBuffer");
-    g_RenderState.surface.vertexBuffer = CreateBuffer(NULL, MAX_VERTEX * sizeof(AVertex), BVertexBit, "CPSurfaceVertexBuffer");
-    g_RenderState.indexBuffer          = CreateBuffer(NULL, MAX_INDEX  * sizeof(int)    , SDL_GPU_BUFFERUSAGE_INDEX, "CPIndexBuffer");
-    g_RenderState.lineBuffer           = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_LINE_COUNT   , BVertexBit     | BWriteComputeBit, "CPLineVertexBuffer");
-    g_RenderState.lineDrawArgsBuffer   = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
-    g_RenderState.gizmoLineBuffer      = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
-    g_RenderState.terrainChunkVertexBuffer = CreateBuffer(NULL, sizeof(tVertexData) * TERRAIN_MAX_VERTICES, BVertexBit, "CPTerrainChunkVertexBuffer");
-    g_RenderState.terrainChunkIndexBuffer  = CreateBuffer(NULL, sizeof(u32) * TERRAIN_MAX_INDICES, SDL_GPU_BUFFERUSAGE_INDEX, "CPTerrainChunkIndexBuffer");
+    g_RenderState.skinned.vertexBuffer     = CreateBuffer(NULL, MAX_SKINNED_SOURCE_VERTEX * sizeof(ASkinedVertex), BVertexBit | BReadCompute, "CPSkinnedVertexBuffer");
+    g_RenderState.surface.vertexBuffer     = CreateBuffer(NULL, MAX_VERTEX * sizeof(AVertex), BVertexBit, "CPSurfaceVertexBuffer");
+    g_RenderState.indexBuffer              = CreateBuffer(NULL, MAX_INDEX  * sizeof(int)    , SDL_GPU_BUFFERUSAGE_INDEX, "CPIndexBuffer");
+    g_RenderState.lineBuffer               = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_LINE_COUNT   , BVertexBit     | BWriteComputeBit, "CPLineVertexBuffer");
+    g_RenderState.lineDrawArgsBuffer       = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
+    g_RenderState.gizmoLineBuffer          = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
+    g_RenderState.terrainVertexBuffer      = CreateBuffer(NULL, sizeof(tVertexData) * T_MAX_VERTICES    , BVertexBit, "CPTerrainChunkVertexBuffer");
+    g_RenderState.terrainIndexBuffer       = CreateBuffer(NULL, sizeof(u32) * T_MAX_INDICES, SDL_GPU_BUFFERUSAGE_INDEX, "CPTerrainChunkIndexBuffer");
     g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndexedIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
-    g_RenderState.lightBuffer          = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
-    g_RenderState.lightVisibilityBuffer = CreateBuffer(NULL, sizeof(u32) * MAX_LIGHT_COUNT          , BWriteComputeBit, "CPLightVisibilityBuffer");
+    g_RenderState.lightBuffer              = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
+    g_RenderState.lightVisibilityBuffer    = CreateBuffer(NULL, sizeof(u32) * MAX_LIGHT_COUNT          , BWriteComputeBit, "CPLightVisibilityBuffer");
     // Forward+ tiled light grid. lightGrid holds a {offset,count} per tile; lightIndex is a
     // flat list the forward shaders walk; lightIndexCounter is the global allocator.
     g_RenderState.lightGridBuffer      = CreateBuffer(NULL, sizeof(u32) * 2u * FORWARD_MAX_TILES                  , BReadRasterBit | BReadCompute | BWriteComputeBit, "CPLightGridBuffer");
@@ -632,7 +630,6 @@ void Render(void)
     SDL_GPUDepthStencilTargetInfo forward_depth_target = MakeForwardDepthTarget(winstate);
     SDL_GPUColorTargetInfo        hiz_depth_target  = MakeHiZDepthTarget(winstate);
     UploadDirtyGeometry();
-    Terrain_GPUFlush(cmd);
     
     mat4x4 viewProj = M44Multiply(g_Camera.view, g_Camera.projection);
     bool enableHiZ  = g_RenderSettings.enableOcclusion && winstate->hiz_valid;
@@ -750,7 +747,7 @@ void Render(void)
             SDL_EndGPUCopyPass(copyPass);
             submitLightVisReadback = true;
         }
-        Terrain_RenderWireframe(cmd, &color_load_target, &main_depth_target, viewProj);
+        RenderTerrainWireframe(cmd, &color_load_target, &main_depth_target, viewProj);
 
         winstate->hiz_view_proj = viewProj;
         winstate->hiz_valid = true;
@@ -849,8 +846,8 @@ void DestroyPipeline(void)
     if (g_RenderState.indexBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.indexBuffer);
     if (g_RenderState.lineBuffer)               SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineBuffer);
     if (g_RenderState.lineDrawArgsBuffer)       SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lineDrawArgsBuffer);
-    if (g_RenderState.terrainChunkVertexBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainChunkVertexBuffer);
-    if (g_RenderState.terrainChunkIndexBuffer)  SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainChunkIndexBuffer);
+    if (g_RenderState.terrainVertexBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainVertexBuffer);
+    if (g_RenderState.terrainIndexBuffer)  SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainIndexBuffer);
     if (g_RenderState.terrainDrawArgsBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainDrawArgsBuffer);
     if (g_RenderState.lightBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightBuffer);
     if (g_RenderState.lightVisibilityBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightVisibilityBuffer);

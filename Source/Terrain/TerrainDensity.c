@@ -26,7 +26,6 @@ static TerrainGenParams td_Params = {
     .carveAmplitude = 1.0f,  .carveFrequency = 0.045f,
     .island = false,
     .islandRadius = 250.0f, .islandFalloff = 110.0f,
-    .fixedArea = false,
     .fixedWorldSize = TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
 };
 // seed turns into a large noise domain offset, world coords stay near the origin
@@ -217,8 +216,8 @@ static f32 TerrainNoiseDensity01(f32 x, f32 z)
     f32 noiseScale = Clampf32(td_Params.hillFrequency, 0.05f, 4.0f);
     f32 lowlandScale = Clampf32(td_Params.hillAmplitude, 0.25f, 8.0f);
     f32 mountainScale = Clampf32(td_Params.ridgeFrequency, 0.05f, 2.0f);
-    f32 cx = (x + td_SeedOffsetX) / TERRAIN_CHUNK_CELLS * noiseScale;
-    f32 cz = (z + td_SeedOffsetZ) / TERRAIN_CHUNK_CELLS * noiseScale;
+    f32 cx = (x + td_SeedOffsetX) / T_CHUNK_CELLS * noiseScale;
+    f32 cz = (z + td_SeedOffsetZ) / T_CHUNK_CELLS * noiseScale;
     f32 mountain = TerrainNoiseSimplexRidgedSimple(cx * mountainScale, cz * mountainScale) *
                    TerrainNoisePerlinTerrain(cx * lowlandScale * 4.0f, cz * lowlandScale * 4.0f, 2, TD_START_HEIGHT, TD_WEIGHT, TD_MULT);
     f32 lowland = TerrainNoisePerlinTerrain(cx * lowlandScale, cz * lowlandScale, 4, TD_START_HEIGHT, TD_WEIGHT, TD_MULT);
@@ -230,8 +229,8 @@ static v128f TerrainNoiseDensity01V(v128f x, v128f z)
     f32 noiseScale    = Clampf32(td_Params.hillFrequency , 0.05f, 4.0f);
     f32 lowlandScale  = Clampf32(td_Params.hillAmplitude , 0.25f, 8.0f);
     f32 mountainScale = Clampf32(td_Params.ridgeFrequency, 0.05f, 2.0f);
-    v128f cx = VecMulf(VecAddf(x, td_SeedOffsetX), noiseScale / (f32)TERRAIN_CHUNK_CELLS);
-    v128f cz = VecMulf(VecAddf(z, td_SeedOffsetZ), noiseScale / (f32)TERRAIN_CHUNK_CELLS);
+    v128f cx = VecMulf(VecAddf(x, td_SeedOffsetX), noiseScale / (f32)T_CHUNK_CELLS);
+    v128f cz = VecMulf(VecAddf(z, td_SeedOffsetZ), noiseScale / (f32)T_CHUNK_CELLS);
     v128f mountain = VecMul(TerrainNoiseSimplexRidgedSimpleV(VecMulf(cx, mountainScale), VecMulf(cz, mountainScale)),
                             TerrainNoisePerlinTerrainV(VecMulf(cx, lowlandScale * 4.0f), VecMulf(cz, lowlandScale * 4.0f), 2, TD_START_HEIGHT, TD_WEIGHT, TD_MULT));
     v128f lowland = TerrainNoisePerlinTerrainV(VecMulf(cx, lowlandScale), VecMulf(cz, lowlandScale), 4, TD_START_HEIGHT, TD_WEIGHT, TD_MULT);
@@ -265,7 +264,6 @@ TerrainGenParams Terrain_DefaultGenParams(void)
         .carveAmplitude = 1.0f,  .carveFrequency = 0.045f,
         .island = false,
         .islandRadius = 250.0f, .islandFalloff = 110.0f,
-        .fixedArea = false,
         .fixedWorldSize = TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
     };
     return defaults;
@@ -399,7 +397,7 @@ void TerrainDensity_GetYRange(f32* outMin, f32* outMax)
     f32 lo = td_Params.baseHeight + minElev - td_Params.carveAmplitude - 2.0f;
     f32 hi = td_Params.baseHeight + maxElev + td_Params.carveAmplitude + 2.0f;
     // stream a chunk past the bedrock floor so the solid floor itself always meshes
-    lo = Minf32(lo, TERRAIN_BEDROCK_Y - (f32)TERRAIN_CHUNK_CELLS);
+    lo = Minf32(lo, TERRAIN_BEDROCK_Y - (f32)T_CHUNK_CELLS);
     if (td_Params.island)
     {
         lo = Minf32(lo, td_Params.seaLevel - td_Params.carveAmplitude - 2.0f);
@@ -423,36 +421,36 @@ static s8 TerrainDensity_Quantize(f32 sdf)
 
 void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
 {
-    const f32 voxel = TERRAIN_VOXEL_SIZE * (f32)(1 << lod);
-    const f32 ox = (f32)cx * (TERRAIN_CHUNK_CELLS * voxel);
-    const f32 oy = (f32)cy * (TERRAIN_CHUNK_CELLS * voxel);
-    const f32 oz = (f32)cz * (TERRAIN_CHUNK_CELLS * voxel);
+    const f32 voxel = T_VOXEL_SIZE * (f32)(1 << lod);
+    const f32 ox = (f32)cx * (T_CHUNK_CELLS * voxel);
+    const f32 oy = (f32)cy * (T_CHUNK_CELLS * voxel);
+    const f32 oz = (f32)cz * (T_CHUNK_CELLS * voxel);
     const f32 carveSkip = TERRAIN_SDF_CLAMP + td_Params.carveAmplitude;
 
     // the heightfield part only depends on the column, evaluate it once per (x,z)
-    f32 heights[TERRAIN_SAMPLES_AXIS * TERRAIN_SAMPLES_AXIS];
-    for (s32 z = 0; z < TERRAIN_SAMPLES_AXIS; z++)
-    for (s32 x = 0; x < TERRAIN_SAMPLES_AXIS; x += 4)
+    f32 heights[T_SAMPLES_AXIS * T_SAMPLES_AXIS];
+    for (s32 z = 0; z < T_SAMPLES_AXIS; z++)
+    for (s32 x = 0; x < T_SAMPLES_AXIS; x += 4)
     {
         v128f wx = VecAdd(VecSet1(ox + (f32)(x - 1) * voxel), VecMulf(VecSetR(0.0f, 1.0f, 2.0f, 3.0f), voxel));
         v128f wz = VecSet1(oz + (f32)(z - 1) * voxel);
         f32 h[4];
         VecStore(h, TerrainDensity_HeightV(wx, wz));
-        u32 n = Minu32(4u, (u32)(TERRAIN_SAMPLES_AXIS - x));
-        for (u32 i = 0; i < n; i++) heights[z * TERRAIN_SAMPLES_AXIS + x + i] = h[i];
+        u32 n = Minu32(4u, (u32)(T_SAMPLES_AXIS - x));
+        for (u32 i = 0; i < n; i++) heights[z * T_SAMPLES_AXIS + x + i] = h[i];
     }
 
     s8* dst = out;
-    for (s32 z = 0; z < TERRAIN_SAMPLES_AXIS; z++)
-    for (s32 y = 0; y < TERRAIN_SAMPLES_AXIS; y++)
-    for (s32 x = 0; x < TERRAIN_SAMPLES_AXIS; x += 4)
+    for (s32 z = 0; z < T_SAMPLES_AXIS; z++)
+    for (s32 y = 0; y < T_SAMPLES_AXIS; y++)
+    for (s32 x = 0; x < T_SAMPLES_AXIS; x += 4)
     {
         v128f wx = VecAdd(VecSet1(ox + (f32)(x - 1) * voxel), VecMulf(VecSetR(0.0f, 1.0f, 2.0f, 3.0f), voxel));
         v128f wy = VecSet1(oy + (f32)(y - 1) * voxel);
         v128f wz = VecSet1(oz + (f32)(z - 1) * voxel);
         f32 h[4] = {0};
-        u32 n = Minu32(4u, (u32)(TERRAIN_SAMPLES_AXIS - x));
-        for (u32 i = 0; i < n; i++) h[i] = heights[z * TERRAIN_SAMPLES_AXIS + x + i];
+        u32 n = Minu32(4u, (u32)(T_SAMPLES_AXIS - x));
+        for (u32 i = 0; i < n; i++) h[i] = heights[z * T_SAMPLES_AXIS + x + i];
         v128f sdf = VecSub(wy, VecLoad(h));
         // the carve term only matters near the surface, skip the 3D noise when the
         // column distance alone saturates the s8 range
@@ -474,13 +472,13 @@ void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
     // bedrock floor, applied last so sculpt can never dig through it. each y-plane clamps
     // its samples toward solid by the quantized (worldY - floor): above the floor that
     // threshold saturates to +127 and the min is a no-op, below it drives samples solid.
-    for (s32 y = 0; y < TERRAIN_SAMPLES_AXIS; y++)
+    for (s32 y = 0; y < T_SAMPLES_AXIS; y++)
     {
         s32 floorQ = TerrainDensity_Quantize(oy + (f32)(y - 1) * voxel - TERRAIN_BEDROCK_SURFACE_Y);
-        for (s32 z = 0; z < TERRAIN_SAMPLES_AXIS; z++)
-        for (s32 x = 0; x < TERRAIN_SAMPLES_AXIS; x++)
+        for (s32 z = 0; z < T_SAMPLES_AXIS; z++)
+        for (s32 x = 0; x < T_SAMPLES_AXIS; x++)
         {
-            s8* p = &out[(z * TERRAIN_SAMPLES_AXIS + y) * TERRAIN_SAMPLES_AXIS + x];
+            s8* p = &out[(z * T_SAMPLES_AXIS + y) * T_SAMPLES_AXIS + x];
             *p = (s8)Mins32(*p, floorQ);
         }
     }

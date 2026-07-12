@@ -8,7 +8,7 @@
 #include "Math.hlsl"
 #include "Shadow/Shadow.hlsl"
 
-#define LOD_VISUALIZE 0
+#define LOD_VISUALIZE 1
 
 cbuffer vs_params : register(b0, space1)
 {

@@ -73,7 +73,7 @@ typedef struct tDensityGenerator_
     f32        noise3DStrength;
 } tDensityGenerator;
 
-bool tMeshDataInit(tMeshData* data, size_t vertexCapacity, size_t indexCapacity, size_t secondaryVertexCapacity);
+bool tMeshDataInit(tMeshData* data);
 void tMeshDataDestroy(tMeshData* data);
 void tMeshDataClear(tMeshData* data);
 bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex);
@@ -82,17 +82,13 @@ bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVert vertex);
 void tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask);
 u32* tMeshDataBuildValidIndices(const tMeshData* data);
 
-bool tMeshDataContainerInit(tMeshDataContainer* container, size_t vertexCapacity, size_t indexCapacity, size_t secondaryVertexCapacity);
+bool tMeshDataContainerInit(tMeshDataContainer* container);
 void tMeshDataContainerDestroy(tMeshDataContainer* container);
 void tMeshDataContainerClear(tMeshDataContainer* container);
 bool tMeshDataContainerHasAnyData(const tMeshDataContainer* container);
-tMeshData* tMeshDataContainerGet(tMeshDataContainer* container, tMeshDataSlot slot);
-const tMeshData* tMeshDataContainerGetConst(const tMeshDataContainer* container, tMeshDataSlot slot);
 void tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask);
 
-u64  tChunkPositionKey(int3 position);
-
-bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, s32 chunkSize, const f32* densityData,
+bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, const f32* densityData,
                            s32 lod, s32 neighboursMask, tMeshDataContainer* meshData, void* userData);
 
 void tUpdate(void);

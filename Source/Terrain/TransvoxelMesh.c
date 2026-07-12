@@ -1,32 +1,33 @@
-#include "Source/Terrain/TransvoxelUnity.h"
+#include "TerrainInternal.h"
+#include "Source/Terrain/Transvoxel.h"
+#include "Include/Memory.h"
 #include "Include/Platform.h"
 #include "Include/Graphics.h"
 
-bool tMeshDataInit(tMeshData* data, size_t vertexCapacity, size_t indexCapacity, size_t secondaryVertexCapacity)
+bool tMeshDataInit(tMeshData* data)
 {
     *data = (tMeshData){0};
-    u32 r0 = GeometryHeapAlloc(GeometryBuffer_TerrainVertNew, (u32)vertexCapacity         , (void**)&data->vertices     );
-    u32 r1 = GeometryHeapAlloc(GeometryBuffer_TerrainIndex2 , (u32)indexCapacity          , (void**)&data->indices      );
-    u32 r2 = GeometryHeapAlloc(GeometryBuffer_TerrainSecond , (u32)secondaryVertexCapacity, (void**)&data->secondaryVert);
+	u32 r0 = GeometryHeapAlloc(GeometryBuffer_TerrainVert , T_CHUNK_VERTEX_CAP, (void* *)&data->vertices);
+    u32 r1 = GeometryHeapAlloc(GeometryBuffer_TerrainIndex, T_CHUNK_INDEX_CAP , (void**)&data->indices);
+	data->secondaryVert = (tSecondaryVert*)AllocateTLSFGlobal(sizeof(tSecondaryVert) * T_CHUNK_SECONDARY_VERTEX_CAP);
 
-    if (!data->vertices || !data->indices || !data->secondaryVert
-		|| r0 == GEOMETRY_ALLOC_FAIL || r1 == GEOMETRY_ALLOC_FAIL || r2 == GEOMETRY_ALLOC_FAIL )
+    if (r0 == GEOMETRY_ALLOC_FAIL || r1 == GEOMETRY_ALLOC_FAIL || !data->secondaryVert)
     {
         AX_WARN("transvoxel unity mesh data init failed: allocation failed");
         tMeshDataDestroy(data);
         return false;
     }
-    data->vertexCapacity    = (s32)vertexCapacity;
-    data->indexCapacity     = (s32)indexCapacity;
-    data->secondaryCapacity = (s32)secondaryVertexCapacity;
+    data->vertexCapacity    = (s32)T_CHUNK_VERTEX_CAP;
+    data->indexCapacity     = (s32)T_CHUNK_INDEX_CAP;
+    data->secondaryCapacity = (s32)T_CHUNK_SECONDARY_VERTEX_CAP;
     return true;
 }
 
 void tMeshDataDestroy(tMeshData* data)
 {
-    GeometryHeapFree(GeometryBuffer_TerrainVertNew, data->vertices);
-    GeometryHeapFree(GeometryBuffer_TerrainIndex2 , data->indices);
-    GeometryHeapFree(GeometryBuffer_TerrainSecond , data->secondaryVert);
+    if (data->vertices) GeometryHeapFree(GeometryBuffer_TerrainVert, data->vertices);
+    if (data->indices) GeometryHeapFree(GeometryBuffer_TerrainIndex , data->indices);
+    if (data->secondaryVert) DeAllocateTLSFGlobal(data->secondaryVert);
     *data = (tMeshData){0};
 }
 
@@ -39,8 +40,11 @@ void tMeshDataClear(tMeshData* data)
 
 bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex)
 {
-	if (data->numVertices >= data->vertexCapacity)
-	{
+	if (!data || !data->vertices) {
+		AX_WARN("terrain mesh data push vertex failed: invalid mesh data");
+		return false;
+	}
+	if (data->numVertices >= data->vertexCapacity) {
 		AX_WARN("terrain mesh data push vertex failed");
 		return false;
 	}
@@ -50,8 +54,11 @@ bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex)
 
 bool tMeshDataPushIndex(tMeshData* data, u32 index)
 {
-	if (data->numIndices >= data->indexCapacity)
-	{
+	if (!data || !data->indices) {
+		AX_WARN("terrain mesh data push index failed: invalid mesh data");
+		return false;
+	}
+	if (data->numIndices >= data->indexCapacity) {
 		AX_WARN("terrain mesh data push indexfailed");
 		return false;
 	}
@@ -61,8 +68,11 @@ bool tMeshDataPushIndex(tMeshData* data, u32 index)
 
 bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVert vertex)
 {
-	if (data->numSecondaryVert >= data->secondaryCapacity)
-	{
+	if (!data || !data->secondaryVert) {
+		AX_WARN("terrain mesh data push second index failed: invalid mesh data");
+		return false;
+	}
+	if (data->numSecondaryVert >= data->secondaryCapacity) {
 		AX_WARN("terrain mesh data push second index failed:");
 		return false;
 	}
@@ -80,8 +90,7 @@ void tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask)
         if ((secondary.vertexMask & (u16)neighboursMask) != secondary.vertexMask)
             continue;
 
-        if ((size_t)secondary.vertexIndex >= vertexCount)
-        {
+        if ((size_t)secondary.vertexIndex >= vertexCount) {
             AX_WARN("transvoxel unity mesh secondary apply skipped: vertex index out of range");
             continue;
         }
@@ -90,12 +99,12 @@ void tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask)
     }
 }
 
-bool tMeshDataContainerInit(tMeshDataContainer* container, size_t vertexCapacity, size_t indexCapacity, size_t secondaryVertexCapacity)
+bool tMeshDataContainerInit(tMeshDataContainer* container)
 {
     *container = (tMeshDataContainer){0};
-    for (u32 i = 0; i < tMeshDataSlot_Count; i++)
+	for (u32 i = 0; i < tMeshDataSlot_Count; i++)
     {
-        if (!tMeshDataInit(&container->mesh[i], vertexCapacity, indexCapacity, secondaryVertexCapacity))
+        if (!tMeshDataInit(&container->mesh[i]))
         {
             tMeshDataContainerDestroy(container);
             return false;
@@ -125,16 +134,6 @@ bool tMeshDataContainerHasAnyData(const tMeshDataContainer* container)
             return true;
     }
     return false;
-}
-
-tMeshData* tMeshDataContainerGet(tMeshDataContainer* container, tMeshDataSlot slot)
-{
-    return &container->mesh[slot];
-}
-
-const tMeshData* tMeshDataContainerGetConst(const tMeshDataContainer* container, tMeshDataSlot slot)
-{
-    return &container->mesh[slot];
 }
 
 void tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask)

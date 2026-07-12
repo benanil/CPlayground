@@ -133,21 +133,14 @@ s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* 
 // meshes: works at any distance, approximate within ~half a coarse cell of the
 // rendered surface. entityIdx/groupIdx are not meaningful on field hits
 s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit);
-bool Terrain_HasDraws(void); // any live chunk with geometry while enabled
 TerrainStats Terrain_GetStats(void);
 
-// renderer hooks, implemented in Terrain.c and called by Rendering.c/RenderingDraw.c.
-// flush records copy passes for pending chunk meshes on the frame command buffer and
-// must run before any render pass uses the terrain buffers
-void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd);
 // grass multidraw for the port terrain path, called inside the forward pass right
 // after the port terrain surface; no-op until the grass system is initialized
 void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass);
-void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj);
-void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj, u32 width, u32 height);
 bool Terrain_GetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** normal, SDL_GPUTexture** arm);
 // line overlay over the lit scene, enabled by g_RenderSettings.terrainWireframe
-void Terrain_RenderWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
+void RenderTerrainWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
                              SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj);
 
 #if defined(__cplusplus)

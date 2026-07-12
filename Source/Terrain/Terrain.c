@@ -1,15 +1,14 @@
 #include "Include/Terrain.h"
-#include "Source/Terrain/TransvoxelUnity.h"
+#include "Source/Terrain/Transvoxel.h"
 #include "Source/Terrain/TerrainInternal.h"
 #include "Include/Graphics.h"
 #include "Include/FileSystem.h"
 #include "Include/Algorithm.h"
 
-#define TERRAIN_LAYER_COUNT 4u
-#define TERRAIN_ALBEDO_SIZE 2048
-#define TERRAIN_DETAIL_SIZE 1024
+#define T_ALBEDO_SIZE 2048
+#define T_DETAIL_SIZE 1024
 
-typedef struct TerrainPortState_
+typedef struct TerrainState_
 {
     bool initialized;
     bool enabled;
@@ -18,40 +17,48 @@ typedef struct TerrainPortState_
     Texture albedoLayers;
     Texture normalLayers;
     Texture armLayers;
-} TerrainPortState;
+} TerrainState;
 
-static TerrainPortState tp;
+static TerrainState tp;
 
-static const char* const albedoPaths[TERRAIN_LAYER_COUNT] = {
+const char* const tAlbedoPaths[T_LAYER_COUNT] = {
     "Assets/Textures/Terrain/rocky_terrain_02_diff_2k.png",
     "Assets/Textures/Terrain/brown_mud_leaves_01_diff_2k.png",
     "Assets/Textures/Terrain/rocky_terrain_diff_2k.png",
     "Assets/Textures/Terrain/sandydrysoil-albedo2b.png"
 };
 
-static const char* const normalPaths[TERRAIN_LAYER_COUNT] = {
+const char* const tNormalPaths[T_LAYER_COUNT] = {
     "Assets/Textures/Terrain/rocky_terrain_02_nor_dx_1k.png",
     "Assets/Textures/Terrain/brown_mud_leaves_01_nor_dx_1k.png",
     "Assets/Textures/Terrain/rocky_terrain_nor_dx_1k.png",
     "Assets/Textures/Terrain/sandydrysoil-normal.png"
 };
 
-static const char* const metallicRoughnessPaths[TERRAIN_LAYER_COUNT] = {
+const char* const tMetallicRoughnessPaths[T_LAYER_COUNT] = {
     "Assets/Textures/Terrain/rocky_terrain_02_arm_1k.png",
     "Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png",
     "Assets/Textures/Terrain/rocky_terrain_arm_1k.png",
     "Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png"
 };
 
+void TerrainInitMaterialTextures(void)
+{
+    if (tp.albedoLayers.handle && tp.normalLayers.handle && tp.armLayers.handle) return;
+    tp.albedoLayers = LoadTextureArray(tAlbedoPaths, T_LAYER_COUNT, T_ALBEDO_SIZE, true, "TerrainAlbedo", "terrain albedo");
+    tp.normalLayers = LoadTextureArray(tNormalPaths, T_LAYER_COUNT, T_DETAIL_SIZE, false, "TerrainNormal", "terrain normal");
+    tp.armLayers = LoadTextureArray(tMetallicRoughnessPaths, T_LAYER_COUNT, T_DETAIL_SIZE, false, "TerrainARM", "terrain arm");
+}
+
 static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
 {
     SDL_memset(authoring, 0, sizeof(*authoring));
-    for (u32 i = 0; i < TERRAIN_LAYER_COUNT; i++)
+    for (u32 i = 0; i < T_LAYER_COUNT; i++)
     {
         authoring->layers[i].enabled = true;
-        CopyString(authoring->layers[i].albedo, sizeof(authoring->layers[i].albedo), albedoPaths[i]);
-        CopyString(authoring->layers[i].normal, sizeof(authoring->layers[i].normal), normalPaths[i]);
-        CopyString(authoring->layers[i].metallicRoughness, sizeof(authoring->layers[i].metallicRoughness), metallicRoughnessPaths[i]);
+        CopyString(authoring->layers[i].albedo, sizeof(authoring->layers[i].albedo), tAlbedoPaths[i]);
+        CopyString(authoring->layers[i].normal, sizeof(authoring->layers[i].normal), tNormalPaths[i]);
+        CopyString(authoring->layers[i].metallicRoughness, sizeof(authoring->layers[i].metallicRoughness), tMetallicRoughnessPaths[i]);
     }
     authoring->grassDensity = 4.0f;
     authoring->grassScaleMin = 0.6f;
@@ -60,13 +67,6 @@ static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
     CopyString(authoring->grassColorHex, sizeof(authoring->grassColorHex), "77AA55FF");
 }
 
-static void TerrainInitMaterialTextures(void)
-{
-    if (tp.albedoLayers.handle && tp.normalLayers.handle && tp.armLayers.handle) return;
-    tp.albedoLayers = LoadTextureArray(albedoPaths, TERRAIN_LAYER_COUNT, TERRAIN_ALBEDO_SIZE, true, "TerrainAlbedo", "terrain albedo");
-    tp.normalLayers = LoadTextureArray(normalPaths, TERRAIN_LAYER_COUNT, TERRAIN_DETAIL_SIZE, false, "TerrainNormal", "terrain normal");
-    tp.armLayers = LoadTextureArray(metallicRoughnessPaths, TERRAIN_LAYER_COUNT, TERRAIN_DETAIL_SIZE, false, "TerrainARM", "terrain arm");
-}
 
 TerrainAuthoring* Terrain_GetAuthoring(void)
 {
@@ -166,6 +166,7 @@ void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32
     tInvalidateRegion(mn, mx);
 }
 
+// todo physics raycast
 s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit)
 {
     (void)origin;
@@ -215,38 +216,12 @@ s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
     return 0;
 }
 
-bool Terrain_HasDraws(void)
-{
-    return false;
-}
-
 TerrainStats Terrain_GetStats(void)
 {
     return (TerrainStats){0};
 }
 
-void Terrain_GPUFlush(SDL_GPUCommandBuffer* cmd)
-{
-    (void)cmd;
-}
-
-void Terrain_RenderDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
-{
-    (void)cmd;
-    (void)pass;
-    (void)viewProj;
-}
-
-void Terrain_RenderForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj, u32 width, u32 height)
-{
-    (void)cmd;
-    (void)pass;
-    (void)viewProj;
-    (void)width;
-    (void)height;
-}
-
-void Terrain_RenderWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget, SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj)
+void RenderTerrainWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget, SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj)
 {
     (void)cmd;
     (void)colorTarget;
@@ -336,7 +311,6 @@ bool Terrain_SaveWorld(const char* path)
     TerrainAuthoring* authoring = &tp.authoring;
     char* p = text;
     p = TerrainWriteString(p, "terrain 1\n");
-    p = TerrainWriteBool(p, "fixed_chunk_size", params->fixedArea);
     p = TerrainWriteF32(p, "fixed_world_size", (f32)params->fixedWorldSize, 0);
     p = TerrainWriteBool(p, "island", params->island);
     p = TerrainWriteF32(p, "seed", (f32)params->seed, 0);
@@ -381,8 +355,7 @@ bool Terrain_LoadWorld(const char* path)
         bool hadNewline = *next == '\n';
         *next = '\0';
 
-        if      (TerrainKeyIs(line, "fixed_chunk_size", &value)) params.fixedArea = value[0] == '1';
-        else if (TerrainKeyIs(line, "fixed_world_size", &value)) { f32 f; ParseFloat(value, &f); params.fixedWorldSize = (u32)Clamps32((s32)f, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE); }
+        if (TerrainKeyIs(line, "fixed_world_size", &value)) { f32 f; ParseFloat(value, &f); params.fixedWorldSize = (u32)Clamps32((s32)f, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE); }
         else if (TerrainKeyIs(line, "island", &value)) params.island = value[0] == '1';
         else if (TerrainKeyIs(line, "seed", &value)) { f32 f; ParseFloat(value, &f); params.seed = (u32)f; }
         else if (TerrainKeyIs(line, "sea_level", &value)) ParseFloat(value, &params.seaLevel);

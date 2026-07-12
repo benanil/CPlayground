@@ -77,7 +77,6 @@ void RenderDepth(SDL_GPUCommandBuffer* cmd, const DepthPassContext* ctx)
     // terrain draws into the main depth prepass only, it does not cast shadows yet
     if ((ctx->flags & DepthPassFlag_AnyShadow) == 0)
     {
-        Terrain_RenderDepth(cmd, pass, ctx->viewProj);
         RenderTerrainTrianglesDepth(cmd, pass, ctx->viewProj);
     }
 
@@ -231,8 +230,7 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
                             g_RenderState.surface.forwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
                             &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
 
-    Terrain_RenderForward(cmd, pass, ctx->viewProj, width, height);
-    RenderTerrainTriangles(cmd, pass, ctx->viewProj);
+    RenderTerrain(cmd, pass, ctx->viewProj);
     Terrain_RenderGrass(cmd, pass);
 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSurfaceSet, &scene->transparentSurfaceBuffers,
@@ -274,17 +272,17 @@ void RenderGizmo(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
 // mirror; the caller has already bound the terrain pipeline and pushed its uniforms
 static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
 {
-    if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainChunkVertexBuffer ||
-        !g_RenderState.terrainChunkIndexBuffer || !g_RenderState.terrainDrawArgsBuffer) return;
+    if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainVertexBuffer ||
+        !g_RenderState.terrainIndexBuffer || !g_RenderState.terrainDrawArgsBuffer) return;
 
-    SDL_GPUBufferBinding heapBinding = { g_RenderState.terrainChunkVertexBuffer, 0 };
+    SDL_GPUBufferBinding heapBinding = { g_RenderState.terrainVertexBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &heapBinding, 1);
-    SDL_GPUBufferBinding indexBinding = { g_RenderState.terrainChunkIndexBuffer, 0 };
+    SDL_GPUBufferBinding indexBinding = { g_RenderState.terrainIndexBuffer, 0 };
     SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
     SDL_DrawGPUIndexedPrimitivesIndirect(pass, g_RenderState.terrainDrawArgsBuffer, 0, g_NumTerrainChunkDraws);
 }
 
-void RenderTerrainTriangles(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
+void RenderTerrain(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
 {
     if (g_NumTerrainChunkDraws == 0 || !g_TerrainTrianglePipeline) return;
     SDL_GPUTexture* albedo = NULL;

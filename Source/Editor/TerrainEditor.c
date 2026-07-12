@@ -111,7 +111,6 @@ static TerrainGenParams TerrainEditorBuildParams(void)
     params.island         = terrainUI.island;
     params.islandRadius   = terrainUI.islandRadius;
     params.islandFalloff  = terrainUI.islandFalloff;
-    params.fixedArea      = terrainUI.fixedChunkSize;
     return params;
 }
 
@@ -130,7 +129,6 @@ static void TerrainEditorApplyParams(const TerrainGenParams* params)
     terrainUI.island         = params->island;
     terrainUI.islandRadius   = params->islandRadius;
     terrainUI.islandFalloff  = params->islandFalloff;
-    terrainUI.fixedChunkSize = params->fixedArea;
 }
 
 // per frame brush interaction, runs from the main loop before gizmo/picking and
