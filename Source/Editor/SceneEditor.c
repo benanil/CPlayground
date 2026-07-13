@@ -1408,12 +1408,11 @@ static void SceneAddLight(Scene* scene, u32 type)
     MemsetZero(light, sizeof(*light));
     light->positionRadius[1] = 4.0f;
     light->positionRadius[3] = 12.0f;
-    light->directionCone[1] = -1.0f;
-    light->directionCone[3] = type == LightType_Spot ? 0.72f : 0.0f;
-    light->colorIntensity[0] = 1.0f;
-    light->colorIntensity[1] = 1.0f;
-    light->colorIntensity[2] = 1.0f;
-    light->colorIntensity[3] = 25.0f;
+    f32 directionCone[4] = { 0.0f, -1.0f, 0.0f, type == LightType_Spot ? 0.72f : 0.0f };
+    f32 color[3] = { 1.0f, 1.0f, 1.0f };
+    LightGPU_SetDirectionCone(light, directionCone);
+    LightGPU_SetColor3(light, color);
+    LightGPU_SetIntensity(light, 25.0f);
     light->type = type;
     light->flags = LIGHT_FLAG_SHADOWED;
     light->shadowIndex = LIGHT_SHADOW_INDEX_INVALID;
@@ -1450,7 +1449,9 @@ static bool SceneLightWorldToScreen(Camera* camera, const LightGPU* light, float
 
 static u32 SceneLightGizmoColor(const LightGPU* light)
 {
-    return 0xCC000000u | PackColor3PtrToUint(light->colorIntensity);
+    f32 color[3];
+    LightGPU_GetColor3(light, color);
+    return 0xCC000000u | PackColor3PtrToUint(color);
 }
 
 static bool SceneLightPlaneHit(Camera* camera, float2 mouse, f32 depth, v128f* outHit)
@@ -1591,11 +1592,21 @@ static void SceneLightsUI(Scene* scene)
     UISliderFloatValue(CLAY_ID("SceneLightRadius"), CLAY_STRING("Radius"), &light->positionRadius[3], 0.1f, 200.0f, 1);
     if (light->type == LightType_Spot)
     {
-        UIEditFloatN(CLAY_ID("SceneLightDir"), CLAY_STRING("Direction"), light->directionCone, 3u, -1.0f, 1.0f, 2);
-        UISliderFloatValue(CLAY_ID("SceneLightCone"), CLAY_STRING("Cone"), &light->directionCone[3], 0.0f, 0.99f, 2);
+        f32 directionCone[4];
+        LightGPU_GetDirectionCone(light, directionCone);
+        bool directionChanged = UIEditFloatN(CLAY_ID("SceneLightDir"), CLAY_STRING("Direction"), directionCone, 3u, -1.0f, 1.0f, 2);
+        directionChanged |= UISliderFloatValue(CLAY_ID("SceneLightCone"), CLAY_STRING("Cone"), &directionCone[3], 0.0f, 0.99f, 2);
+        if (directionChanged) LightGPU_SetDirectionCone(light, directionCone);
     }
-    UIColorEdit3(CLAY_ID("SceneLightColor"), CLAY_STRING("Color"), light->colorIntensity);
-    UISliderFloatValue(CLAY_ID("SceneLightIntensity"), CLAY_STRING("Intensity"), &light->colorIntensity[3], 0.0f, 200.0f, 1);
+
+    f32 color[3];
+    LightGPU_GetColor3(light, color);
+    if (UIColorEdit3(CLAY_ID("SceneLightColor"), CLAY_STRING("Color"), color))
+        LightGPU_SetColor3(light, color);
+
+    f32 intensity = LightGPU_GetIntensity(light);
+    if (UISliderFloatValue(CLAY_ID("SceneLightIntensity"), CLAY_STRING("Intensity"), &intensity, 0.0f, 200.0f, 1))
+        LightGPU_SetIntensity(light, intensity);
 
     bool shadowed = (light->flags & LIGHT_FLAG_SHADOWED) != 0u;
     UICheckbox(CLAY_ID("SceneLightShadowed"), CLAY_STRING("Shadowed"), &shadowed);

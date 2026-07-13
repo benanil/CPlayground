@@ -68,9 +68,10 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID,
 float frag(VSOutput input) : SV_Target0
 {
     MaterialGPU material = sMaterials[input.materialIndex];
-    if (MaterialIsAlphaMasked(material.flags))
+	u16 flags = (u16)(material.metallicRoughnessDescriptorAndFlags >> 16);
+	if (MaterialIsAlphaMasked(flags))
     {
-        TextureDescriptor albedo = sTextureDescriptors[material.albedoDescriptor];
+        TextureDescriptor albedo = sTextureDescriptors[material.AlbedoNormalDescriptor & 0xFFFF];
         f16_4 albedoSample = SampleTexturePageRGBA(AlbedoPages, Sampler, albedo, float2(input.texCoords), f16_4(1.0, 1.0, 1.0, 1.0));
         AlphaClipMaterial(material, float(albedoSample.a));
     }

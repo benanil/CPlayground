@@ -142,26 +142,61 @@ enum LightType_
 typedef u32 LightType;
 
 #define LIGHT_FLAG_SHADOWED (1u << 0)
-#define LIGHT_SHADOW_INDEX_INVALID 0xffffffffu
+#define LIGHT_SHADOW_INDEX_INVALID 0xffu
 
 typedef struct LightGPU_
 {
     f32 positionRadius[4];
-    f32 directionCone[4];
-    f32 colorIntensity[4];
-    u32 type;
-    u32 flags;
-    u32 shadowIndex;
-    u32 padding;
+	f16 directionCone[4];
+	u8 colorR;
+	u8 colorG;
+	u8 colorB;
+    u8 shadowIndex;
+    f16 intensity;
+	u8 type;
+    u8 flags;
 } LightGPU;
+STATIC_ASSERT(sizeof(LightGPU) == 32, "LightGPU CPU/GPU stride mismatch");
 
-typedef struct LightDrawInfo_
+static inline u8 LightGPU_ColorByte(f32 value)
 {
-    f32 uvRect[4];
-    u32 lightIndex;
-    u32 flags;
-    u32 padding[2];
-} LightDrawInfo;
+    return (u8)(Saturatef32(value) * 255.0f + 0.5f);
+}
+
+static inline void LightGPU_SetColor3(LightGPU* light, const f32* color)
+{
+    light->colorR = LightGPU_ColorByte(color[0]);
+    light->colorG = LightGPU_ColorByte(color[1]);
+    light->colorB = LightGPU_ColorByte(color[2]);
+}
+
+static inline void LightGPU_GetColor3(const LightGPU* light, f32* color)
+{
+    const f32 scale = 1.0f / 255.0f;
+    color[0] = (f32)light->colorR * scale;
+    color[1] = (f32)light->colorG * scale;
+    color[2] = (f32)light->colorB * scale;
+}
+
+static inline void LightGPU_SetIntensity(LightGPU* light, f32 intensity)
+{
+    light->intensity = FloatToHalf(intensity);
+}
+
+static inline f32 LightGPU_GetIntensity(const LightGPU* light)
+{
+    return HalfToFloat(light->intensity);
+}
+
+static inline void LightGPU_SetDirectionCone(LightGPU* light, const f32* directionCone)
+{
+    Float4ToHalf4(light->directionCone, directionCone);
+}
+
+static inline void LightGPU_GetDirectionCone(const LightGPU* light, f32* directionCone)
+{
+    Half4ToFloat4(directionCone, light->directionCone);
+}
 
 typedef struct GPUMesh_
 {
@@ -207,13 +242,12 @@ typedef struct TextureDescriptor_
 
 typedef struct MaterialGPU_
 {
-    u32 albedoDescriptor;
-    u32 normalDescriptor;
-    u32 metallicRoughnessDescriptor;
-    u32 flags;
+    u16 albedoDescriptor;
+    u16 normalDescriptor;
+    u16 metallicRoughnessDescriptor;
+    u16 flags;
     u32 baseColorFactor;
     u32 metallicRoughnessFactor;
-    u32 padding[2];
 } MaterialGPU;
 
 typedef struct WindowState

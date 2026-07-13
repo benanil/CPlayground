@@ -300,8 +300,8 @@ static void UploadRenderSetStatics(const RenderSet* set, RenderSetBuffers* buffe
         const PrimitiveGroup* group = &set->primitiveGroups[i];
         v128u aabbMinEntity   = VecBitcastU32(group->aabbMin);
         v128u aabbMaxMaterial = VecBitcastU32(group->aabbMax);
-        VeciSetW(aabbMinEntity  , (u32)group->entityOffset | ((u32)group->numEntities << 16u));
-        VeciSetW(aabbMaxMaterial, (u32)group->materialIndex);
+        VeciSetW(aabbMinEntity  , (u32)group->entityOffset);
+        VeciSetW(aabbMaxMaterial, (u32)group->materialIndex | ((u32)group->numEntities << 16u));
         VecStoreI(gpuGroups[i].aabbMinEntity  , aabbMinEntity);
         VecStoreI(gpuGroups[i].aabbMaxMaterial, aabbMaxMaterial);
     }

@@ -146,9 +146,9 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID, [[vk::builtin("Dra
 float4 frag(VSOutput input) : SV_Target0
 {
     MaterialGPU material = sMaterials[input.materialIndex];
-    TextureDescriptor albedo = sTextureDescriptors[material.albedoDescriptor];
-    TextureDescriptor normalDesc = sTextureDescriptors[material.normalDescriptor];
-    TextureDescriptor mrDesc = sTextureDescriptors[material.metallicRoughnessDescriptor];
+    TextureDescriptor albedo = sTextureDescriptors[material.AlbedoNormalDescriptor & 0xFFFF];
+    TextureDescriptor normalDesc = sTextureDescriptors[(material.AlbedoNormalDescriptor >> 16)];
+    TextureDescriptor mrDesc = sTextureDescriptors[material.metallicRoughnessDescriptorAndFlags & 0xFFFF];
 
     f16_4 albedoSample = SampleTexturePageRGBA(AlbedoPages, Sampler, albedo, float2(input.texCoords), f16_4(1.0, 1.0, 1.0, 1.0));
     float4 baseFactor = UnpackColor4Uint(material.baseColorFactor);

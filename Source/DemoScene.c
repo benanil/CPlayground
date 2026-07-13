@@ -58,22 +58,18 @@ static void UpdateDemoLights(void)
         f32 dz = Sin(yaw) * Cos(pitch);
         f32 radius = RepeatMinMaxF32(WangHash(seed + 7u), 10.0f, 18.0f);
 
-        g_DemoLights[i].positionRadius[0] = x;
-        g_DemoLights[i].positionRadius[1] = y;
-        g_DemoLights[i].positionRadius[2] = z;
-        g_DemoLights[i].positionRadius[3] = radius;
-        g_DemoLights[i].directionCone[0] = dx;
-        g_DemoLights[i].directionCone[1] = dy;
-        g_DemoLights[i].directionCone[2] = dz;
-        g_DemoLights[i].directionCone[3] = 0.72f;
-        g_DemoLights[i].colorIntensity[0] = colors[i & 7u][0];
-        g_DemoLights[i].colorIntensity[1] = colors[i & 7u][1];
-        g_DemoLights[i].colorIntensity[2] = colors[i & 7u][2];
-        g_DemoLights[i].colorIntensity[3] = RepeatMinMaxF32(WangHash(seed + 8u), 24.0f, 44.0f);
-        g_DemoLights[i].type = LightType_Spot;
-        g_DemoLights[i].flags = LIGHT_FLAG_SHADOWED;
-        g_DemoLights[i].shadowIndex = LIGHT_SHADOW_INDEX_INVALID;
-        g_DemoLights[i].padding = 0u;
+        LightGPU* light = &g_DemoLights[i];
+        light->positionRadius[0] = x;
+        light->positionRadius[1] = y;
+        light->positionRadius[2] = z;
+        light->positionRadius[3] = radius;
+        f32 directionCone[4] = { dx, dy, dz, 0.72f };
+        LightGPU_SetDirectionCone(light, directionCone);
+        LightGPU_SetColor3(light, colors[i & 7u]);
+        LightGPU_SetIntensity(light, RepeatMinMaxF32(WangHash(seed + 8u), 24.0f, 44.0f));
+        light->type = LightType_Spot;
+        light->flags = LIGHT_FLAG_SHADOWED;
+        light->shadowIndex = LIGHT_SHADOW_INDEX_INVALID;
         numLights++;
     }
 
@@ -88,22 +84,18 @@ static void UpdateDemoLights(void)
         f32 z = Sin(angle) * orbit;
         f32 radius = 7.0f + (f32)(i % 3u) * 2.0f;
 
-        g_DemoLights[lightIndex].positionRadius[0] = x;
-        g_DemoLights[lightIndex].positionRadius[1] = y;
-        g_DemoLights[lightIndex].positionRadius[2] = z;
-        g_DemoLights[lightIndex].positionRadius[3] = radius;
-        g_DemoLights[lightIndex].directionCone[0] = 0.0f;
-        g_DemoLights[lightIndex].directionCone[1] = -1.0f;
-        g_DemoLights[lightIndex].directionCone[2] = 0.0f;
-        g_DemoLights[lightIndex].directionCone[3] = 0.0f;
-        g_DemoLights[lightIndex].colorIntensity[0] = colors[i & 7u][0];
-        g_DemoLights[lightIndex].colorIntensity[1] = colors[i & 7u][1];
-        g_DemoLights[lightIndex].colorIntensity[2] = colors[i & 7u][2];
-        g_DemoLights[lightIndex].colorIntensity[3] = 16.0f + (f32)(i % 4u) * 5.0f;
-        g_DemoLights[lightIndex].type = LightType_Point;
-        g_DemoLights[lightIndex].flags = LIGHT_FLAG_SHADOWED;
-        g_DemoLights[lightIndex].shadowIndex = LIGHT_SHADOW_INDEX_INVALID;
-        g_DemoLights[lightIndex].padding = 0u;
+        LightGPU* light = &g_DemoLights[lightIndex];
+        light->positionRadius[0] = x;
+        light->positionRadius[1] = y;
+        light->positionRadius[2] = z;
+        light->positionRadius[3] = radius;
+        f32 directionCone[4] = { 0.0f, -1.0f, 0.0f, 0.0f };
+        LightGPU_SetDirectionCone(light, directionCone);
+        LightGPU_SetColor3(light, colors[i & 7u]);
+        LightGPU_SetIntensity(light, 16.0f + (f32)(i % 4u) * 5.0f);
+        light->type = LightType_Point;
+        light->flags = LIGHT_FLAG_SHADOWED;
+        light->shadowIndex = LIGHT_SHADOW_INDEX_INVALID;
         numLights++;
     }
     RendererSetLights(g_DemoLights, numLights);

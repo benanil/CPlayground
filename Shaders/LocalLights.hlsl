@@ -33,7 +33,8 @@ uint LocalLights_PointShadowFace(float3 lightToWorld)
 
 float LocalLights_SamplePointShadow(LightGPU light, float3 worldPos, float3 normal, float3 lightDir)
 {
-    if ((light.flags & LIGHT_FLAG_SHADOWED) == 0u || light.shadowIndex >= POINT_SHADOW_MAX_LIGHTS)
+    uint shadowIndex = LightGPU_ShadowIndex(light);
+    if ((LightGPU_Flags(light) & LIGHT_FLAG_SHADOWED) == 0u || shadowIndex >= POINT_SHADOW_MAX_LIGHTS)
         return 1.0f;
 
     float ndotl = saturate(dot(normal, lightDir));
@@ -42,7 +43,7 @@ float LocalLights_SamplePointShadow(LightGPU light, float3 worldPos, float3 norm
     // Use the new biasedWorldPos instead of the original worldPos for all matrix math
     float3 lightToWorld = biasedWorldPos - light.positionRadius.xyz;
     uint face = LocalLights_PointShadowFace(lightToWorld);
-    uint matrixIndex = light.shadowIndex * POINT_SHADOW_FACE_COUNT + face;
+    uint matrixIndex = shadowIndex * POINT_SHADOW_FACE_COUNT + face;
     float4 shadowPos = MulPointShadowSide(PointShadowMatrices[matrixIndex], float4(biasedWorldPos, 1.0f));
     
     float3 proj = shadowPos.xyz / max(abs(shadowPos.w), 0.00001f);
@@ -54,7 +55,7 @@ float LocalLights_SamplePointShadow(LightGPU light, float3 worldPos, float3 norm
 
     uint width, height, layers;
     PointShadowTexture.GetDimensions(width, height, layers);
-    if (light.shadowIndex >= layers)
+    if (shadowIndex >= layers)
         return 1.0f;
 
     float bias = max(0.0035f * (1.0f - ndotl), 0.0008f);
@@ -67,7 +68,7 @@ float LocalLights_SamplePointShadow(LightGPU light, float3 worldPos, float3 norm
     {
         float2 sampleUV = clamp(uv + ShadowKernel[i] * texel * 1.5f, texel * 0.5f, 1.0f - texel * 0.5f);
         float2 atlasUV = float2((sampleUV.x + float(face)) / float(POINT_SHADOW_FACE_COUNT), sampleUV.y);
-        float mapDepth = PointShadowTexture.SampleLevel(PointShadowSampler, float3(atlasUV, float(light.shadowIndex)), 0.0f);
+        float mapDepth = PointShadowTexture.SampleLevel(PointShadowSampler, float3(atlasUV, float(shadowIndex)), 0.0f);
         shadow += float(mapDepth >= depth - bias);
     }
     return max(shadow * 0.125f, 0.15f);
@@ -75,15 +76,16 @@ float LocalLights_SamplePointShadow(LightGPU light, float3 worldPos, float3 norm
 
 float LocalLights_SampleSpotShadow(LightGPU light, float3 worldPos, float3 normal, float3 lightDir)
 {
-    if ((light.flags & LIGHT_FLAG_SHADOWED) == 0u || light.shadowIndex >= SPOT_SHADOW_MAX_LIGHTS)
+    uint shadowIndex = LightGPU_ShadowIndex(light);
+    if ((LightGPU_Flags(light) & LIGHT_FLAG_SHADOWED) == 0u || shadowIndex >= SPOT_SHADOW_MAX_LIGHTS)
         return 1.0f;
 
     uint width, height, layers;
     SpotShadowTexture.GetDimensions(width, height, layers);
-    if (light.shadowIndex >= layers)
+    if (shadowIndex >= layers)
         return 1.0f;
 
-    float4 shadowPos = MulPointShadowSide(SpotShadowMatrices[light.shadowIndex], float4(worldPos, 1.0f));
+    float4 shadowPos = MulPointShadowSide(SpotShadowMatrices[shadowIndex], float4(worldPos, 1.0f));
     float3 proj = shadowPos.xyz / max(abs(shadowPos.w), 0.00001f);
     float2 uv = proj.xy * float2(0.5f, -0.5f) + 0.5f;
     float depth = proj.z;
@@ -99,7 +101,7 @@ float LocalLights_SampleSpotShadow(LightGPU light, float3 worldPos, float3 norma
     for (int i = 0; i < 8; i++)
     {
         float2 sampleUV = uv + ShadowKernel[i] * texel * 1.25f;
-        float mapDepth = SpotShadowTexture.SampleLevel(SpotShadowSampler, float3(sampleUV, float(light.shadowIndex)), 0.0f);
+        float mapDepth = SpotShadowTexture.SampleLevel(SpotShadowSampler, float3(sampleUV, float(shadowIndex)), 0.0f);
         shadow += float(mapDepth >= depth - bias);
     }
     return max(shadow * (1.0f / 8.0f), 0.15f);
@@ -121,17 +123,21 @@ float3 ApplyLocalLightForward(float3 albedo, float3 normal, float3 viewDir, floa
     float attenuation = saturate(1.0f - distanceToLight / radius);
     attenuation *= attenuation;
 
-    if (light.type == LIGHT_TYPE_SPOT)
+    uint lightType = LightGPU_Type(light);
+    if (lightType == LIGHT_TYPE_SPOT)
     {
-        float coneCos = light.directionCone.w;
-        float spotCos = dot(normalize(-light.directionCone.xyz), lightDir);
+        float coneCos = float(light.directionCone.w);
+        float spotCos = dot(normalize(-float3(light.directionCone.xyz)), lightDir);
         float spot = saturate((spotCos - coneCos) / max(1.0f - coneCos, 0.0001f));
         attenuation *= spot * spot;
     }
 
-    float shadow = light.type == LIGHT_TYPE_POINT ? LocalLights_SamplePointShadow(light, worldPos, normal, lightDir) :
-                   (light.type == LIGHT_TYPE_SPOT ? LocalLights_SampleSpotShadow(light, worldPos, normal, lightDir) : 1.0f);
-    float3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation * shadow;
+    float shadow = 1.0f;
+    if (lightType == LIGHT_TYPE_POINT)
+        shadow = LocalLights_SamplePointShadow(light, worldPos, normal, lightDir);
+    else if (lightType == LIGHT_TYPE_SPOT)
+        shadow = LocalLights_SampleSpotShadow(light, worldPos, normal, lightDir);
+    float3 radiance = LightGPU_Color(light) * LightGPU_Intensity(light) * attenuation * shadow;
     return ApplyPBRLight(albedo, normal, viewDir, metallic, perceptualRoughness, radiance, lightDir) * saturate(ao);
 }
 

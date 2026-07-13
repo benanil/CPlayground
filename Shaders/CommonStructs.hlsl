@@ -57,17 +57,17 @@ typedef struct PrimitiveGroupLOD_
 
 uint PrimitiveGroup_EntityOffset(PrimitiveGroup group)
 {
-    return group.aabbMinEntity.w & 0xFFFFu;
+    return group.aabbMinEntity.w;
 }
 
 uint PrimitiveGroup_NumEntities(PrimitiveGroup group)
 {
-    return group.aabbMinEntity.w >> 16u;
+    return group.aabbMaxMaterial.w >> 16u;
 }
 
 uint PrimitiveGroup_MaterialIndex(PrimitiveGroup group)
 {
-    return group.aabbMaxMaterial.w;
+    return group.aabbMaxMaterial.w & 0xFFFFu;
 }
 
 float3 PrimitiveGroup_AABBMin(PrimitiveGroup group)
@@ -102,12 +102,12 @@ typedef struct TextureDescriptor_
 #define MATERIAL_ALPHA_CUTOFF_SHIFT    8u
 #define MATERIAL_ALPHA_CUTOFF_MASK     (0xffu << MATERIAL_ALPHA_CUTOFF_SHIFT)
 
-bool MaterialIsAlphaMasked(uint flags)
+bool MaterialIsAlphaMasked(u16 flags)
 {
     return (flags & MATERIAL_FLAG_ALPHA_MASK) != 0u;
 }
 
-float MaterialAlphaCutoff(uint flags)
+float MaterialAlphaCutoff(u16 flags)
 {
     return float((flags & MATERIAL_ALPHA_CUTOFF_MASK) >> MATERIAL_ALPHA_CUTOFF_SHIFT) * (1.0f / 255.0f);
 }
@@ -119,18 +119,16 @@ float MaterialBaseAlpha(uint baseColorFactor)
 
 typedef struct MaterialGPU_
 {
-    uint albedoDescriptor;
-    uint normalDescriptor;
-    uint metallicRoughnessDescriptor;
-    uint flags;
+    uint AlbedoNormalDescriptor;
+    uint metallicRoughnessDescriptorAndFlags;
     uint baseColorFactor;
     uint metallicRoughnessFactor;
-    uint2 padding;
 } MaterialGPU;
 
 void AlphaClipMaterial(MaterialGPU material, float albedoAlpha)
 {
-    if (MaterialIsAlphaMasked(material.flags) && albedoAlpha * MaterialBaseAlpha(material.baseColorFactor) < MaterialAlphaCutoff(material.flags))
+	u16 flags = (u16)(material.metallicRoughnessDescriptorAndFlags >> 16);
+    if (MaterialIsAlphaMasked(flags) && albedoAlpha * MaterialBaseAlpha(material.baseColorFactor) < MaterialAlphaCutoff(flags))
         discard;
 }
 
@@ -145,27 +143,43 @@ typedef struct LineVertex_
 #define LIGHT_TYPE_RECT  2u
 
 #define LIGHT_FLAG_SHADOWED 1u
-#define LIGHT_SHADOW_INDEX_INVALID 0xffffffffu
+#define LIGHT_SHADOW_INDEX_INVALID 0xffu
 
 #define LIGHT_DRAW_FULLSCREEN 1u
 
 typedef struct LightGPU_
 {
     float4 positionRadius;
-    float4 directionCone;
-    float4 colorIntensity;
-    uint type;
-    uint flags;
-    uint shadowIndex;
-    uint padding;
+    f16_4 directionCone;
+    uint colorShadow;        // r8 | g8 << 8 | b8 << 16 | shadowIndex << 24
+    uint intensityTypeFlags; // intensity f16 | type << 16 | flags << 24
 } LightGPU;
 
-typedef struct LightDrawInfo_
+float3 LightGPU_Color(LightGPU light)
 {
-    float4 uvRect;
-    uint lightIndex;
-    uint flags;
-    uint2 padding;
-} LightDrawInfo;
+    return float3(light.colorShadow & 0xffu,
+                  (light.colorShadow >> 8u) & 0xffu,
+                  (light.colorShadow >> 16u) & 0xffu) * (1.0f / 255.0f);
+}
+
+uint LightGPU_ShadowIndex(LightGPU light)
+{
+    return (light.colorShadow >> 24u) & 0xffu;
+}
+
+float LightGPU_Intensity(LightGPU light)
+{
+    return f16tof32(light.intensityTypeFlags & 0xffffu);
+}
+
+uint LightGPU_Type(LightGPU light)
+{
+    return (light.intensityTypeFlags >> 16u) & 0xffu;
+}
+
+uint LightGPU_Flags(LightGPU light)
+{
+    return (light.intensityTypeFlags >> 24u) & 0xffu;
+}
 
 #endif

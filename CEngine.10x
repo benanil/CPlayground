@@ -518,6 +518,9 @@
 						<Path>Shaders/CompileShaders.py</Path>
 					</File>
 					<File>
+						<Path>Shaders/CommonStructs.hlsl</Path>
+					</File>
+					<File>
 						<Path>Shaders/TexturePageCopyRG.hlsl</Path>
 					</File>
 					<File>
@@ -540,9 +543,6 @@
 					</File>
 					<File>
 						<Path>Shaders/Bitpack.hlsl</Path>
-					</File>
-					<File>
-						<Path>Shaders/CommonStructs.hlsl</Path>
 					</File>
 					<File>
 						<Path>Shaders/LOD.hlsl</Path>

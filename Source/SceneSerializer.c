@@ -187,8 +187,13 @@ s32 SceneSerializer_Save(Scene* scene, const char* path)
         p = WInt(p, (s64)light->type);
         p = WInt(p, (s64)light->flags);
         for (u32 k = 0; k < 4u; k++) p = WFlt(p, light->positionRadius[k]);
-        for (u32 k = 0; k < 4u; k++) p = WFlt(p, light->directionCone[k]);
-        for (u32 k = 0; k < 4u; k++) p = WFlt(p, light->colorIntensity[k]);
+        f32 directionCone[4];
+        f32 colorIntensity[4];
+        LightGPU_GetDirectionCone(light, directionCone);
+        LightGPU_GetColor3(light, colorIntensity);
+        colorIntensity[3] = LightGPU_GetIntensity(light);
+        for (u32 k = 0; k < 4u; k++) p = WFlt(p, directionCone[k]);
+        for (u32 k = 0; k < 4u; k++) p = WFlt(p, colorIntensity[k]);
         WEnd(file, line, p);
     }
 
@@ -441,12 +446,20 @@ static s32 ParseSceneFile(const char* path, SceneFileData* data)
     {
         MaterialGPU* material = &data->materials[i];
         if (!(p = ReadRecord(file, line, sizeof(line), "mat"))) goto fail;
-        p = RU32(p, &material->albedoDescriptor);
-        p = RU32(p, &material->normalDescriptor);
-        p = RU32(p, &material->metallicRoughnessDescriptor);
-        p = RU32(p, &material->flags);
+        u32 albedoDescriptor = 0u;
+        u32 normalDescriptor = 0u;
+        u32 metallicRoughnessDescriptor = 0u;
+        u32 flags = 0u;
+        p = RU32(p, &albedoDescriptor);
+        p = RU32(p, &normalDescriptor);
+        p = RU32(p, &metallicRoughnessDescriptor);
+        p = RU32(p, &flags);
         p = RU32(p, &material->baseColorFactor);
         RU32(p, &material->metallicRoughnessFactor);
+        material->albedoDescriptor = (u16)albedoDescriptor;
+        material->normalDescriptor = (u16)normalDescriptor;
+        material->metallicRoughnessDescriptor = (u16)metallicRoughnessDescriptor;
+        material->flags = (u16)flags;
     }
 
     if (!(p = ReadRecord(file, line, sizeof(line), "lights"))) goto fail;
@@ -457,13 +470,21 @@ static s32 ParseSceneFile(const char* path, SceneFileData* data)
     {
         LightGPU* light = &data->lights[i];
         if (!(p = ReadRecord(file, line, sizeof(line), "light"))) goto fail;
-        p = RU32(p, &light->type);
-        p = RU32(p, &light->flags);
+        u32 type = 0u;
+        u32 flags = 0u;
+        p = RU32(p, &type);
+        p = RU32(p, &flags);
         for (u32 k = 0; k < 4u; k++) p = RFlt(p, &light->positionRadius[k]);
-        for (u32 k = 0; k < 4u; k++) p = RFlt(p, &light->directionCone[k]);
-        for (u32 k = 0; k < 4u; k++) p = RFlt(p, &light->colorIntensity[k]);
+        f32 directionCone[4];
+        f32 colorIntensity[4];
+        for (u32 k = 0; k < 4u; k++) p = RFlt(p, &directionCone[k]);
+        for (u32 k = 0; k < 4u; k++) p = RFlt(p, &colorIntensity[k]);
+        LightGPU_SetDirectionCone(light, directionCone);
+        LightGPU_SetColor3(light, colorIntensity);
+        LightGPU_SetIntensity(light, colorIntensity[3]);
+        light->type = (u8)type;
+        light->flags = (u8)flags;
         light->shadowIndex = LIGHT_SHADOW_INDEX_INVALID;
-        light->padding = 0u;
     }
 
     u32 serializedSets = version >= 3u ? 3u : 2u;

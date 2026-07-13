@@ -1055,7 +1055,6 @@ s32 TextureSystem_AppendBundle(TextureSystem* ts, const SceneBundle* bundle, con
         dst->flags = PackMaterialFlags(src);
         dst->baseColorFactor = src->baseColorFactor;
         dst->metallicRoughnessFactor = ((u32)src->metallicFactor << 16u) | src->roughnessFactor;
-        dst->padding[0] = dst->padding[1] = 0;
 
         u32 image;
         if (ResolveBundleImage(bundle, src->baseColorTexture.index, &image))
@@ -1106,7 +1105,6 @@ void TextureSystem_RemoveBundle(TextureSystem* ts, const SceneBundle* bundle, u3
         dst->flags = 0;
         dst->baseColorFactor = 0xFFFFFFFFu;
         dst->metallicRoughnessFactor = 0x0000FFFFu;
-        dst->padding[0] = dst->padding[1] = 0;
     }
     UpdateGPUBuffer(ts->materialBuffer, ts->materials + materialOffset,
                     numMaterials * sizeof(MaterialGPU), materialOffset * sizeof(MaterialGPU));

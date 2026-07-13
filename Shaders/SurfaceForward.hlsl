@@ -136,9 +136,9 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID, [[vk::builtin("Dra
 float4 frag(VSOutput input) : SV_Target0
 {
     MaterialGPU material = sMaterials[input.materialIndex];
-    TextureDescriptor albedo     = sTextureDescriptors[material.albedoDescriptor];
-    TextureDescriptor normalDesc = sTextureDescriptors[material.normalDescriptor];
-    TextureDescriptor mrDesc     = sTextureDescriptors[material.metallicRoughnessDescriptor];
+	TextureDescriptor albedo = sTextureDescriptors[material.AlbedoNormalDescriptor & 0xFFFF];
+    TextureDescriptor normalDesc = sTextureDescriptors[(material.AlbedoNormalDescriptor >> 16)];
+    TextureDescriptor mrDesc = sTextureDescriptors[material.metallicRoughnessDescriptorAndFlags & 0xFFFF];
 
     // Untextured materials keep the built-in fallback descriptors, whose atlas pages hold no
     // real data. Substitute neutral values so shading falls back to the material factors:
