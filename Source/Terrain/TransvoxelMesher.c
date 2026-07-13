@@ -197,16 +197,20 @@ static bool tMesherEmitVertex(tMeshData* meshData, float3 vertex, float3 normal,
         {
             float3 secondaryPos = tMesherSecondaryPosition(vertex, normal, boundaryMask);
             tSecondaryVert secondary = {0};
-            secondary.position = VecSetR(secondaryPos.x * (f32)lodScale, secondaryPos.y * (f32)lodScale, secondaryPos.z * (f32)lodScale, 0.0f);
-            secondary.vertexMask = (u16)boundaryMask;
-            secondary.vertexIndex = (u16)vertexIndex;
+            f32 chunkSize = (f32)(T_CHUNK_CELLS * lodScale);
+            v128f localPos = VecSetR(secondaryPos.x * (f32)lodScale, secondaryPos.y * (f32)lodScale, secondaryPos.z * (f32)lodScale, 0.0f);
+            secondary.position = Pack16x4Fixed(localPos, chunkSize);
+            secondary.vertexMask = boundaryMask;
+            secondary.vertexIndex = (s32)vertexIndex;
             if (!tMeshDataPushSecondaryVertex(meshData, secondary))
                 return false;
         }
     }
 
     tVertexData data = {0};
-    data.position = VecSetR(vertex.x * (f32)lodScale, vertex.y * (f32)lodScale, vertex.z * (f32)lodScale, 0.0f);
+    f32 chunkSize = (f32)(T_CHUNK_CELLS * lodScale);
+    v128f localPos = VecSetR(vertex.x * (f32)lodScale, vertex.y * (f32)lodScale, vertex.z * (f32)lodScale, 0.0f);
+    data.position = Pack16x4Fixed(localPos, chunkSize);
 	v128f normVec = VecSetR(normal.x, normal.y, normal.z, 0.0f);
 	data.normal = PackNormalOCT(normVec);
     return tMeshDataPushVertex(meshData, data);

@@ -43,8 +43,8 @@
 // the transvoxel-unity port parks non-indexed triangle soup in the vertex heap
 // (~3x an indexed mesh), so it is sized above the old runtime's needs. these back
 // both the CPU mirrors (Graphics.c) and the GPU mirror (Rendering.c) - keep sane.
-#define T_MAX_VERTICES        (2u << 22) // 64MB if vertex is 16B
-#define T_MAX_INDICES         (2u << 22) // 16MB of u32
+#define T_MAX_VERTICES        (2u << 22) // 128MB if vertex is 16B
+#define T_MAX_INDICES         (2u << 22) // 32MB of u32
 #define T_VERTEX_CACHE_BUDGET (T_MAX_VERTICES / 2u)
 #define T_VERTEX_CACHE_TARGET (T_MAX_VERTICES / 3u)
 #define T_INDEX_CACHE_BUDGET  (T_MAX_INDICES / 2u)

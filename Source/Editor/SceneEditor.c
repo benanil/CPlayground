@@ -963,7 +963,7 @@ static void SceneEventDuplicateBundle(void* unused)
             const Entity* entity = &set->entities[group->entityOffset];
             position = entity->position;
             rotation = UnpackQuaternionS16Norm1(entity->rotation);
-            scale    = EntityUnpackScale01(entity->scale);
+            scale    = UnpackUnorm16x4(entity->scale);
             break;
         }
     }

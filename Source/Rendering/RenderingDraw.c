@@ -276,10 +276,13 @@ void RenderGizmo(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
 static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
 {
     if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainVertexBuffer ||
-        !g_RenderState.terrainIndexBuffer || !g_RenderState.terrainDrawArgsBuffer) return;
+        !g_RenderState.terrainIndexBuffer || !g_RenderState.terrainDrawArgsBuffer ||
+        !g_RenderState.terrainChunkLocationBuffer) return;
 
     SDL_GPUBufferBinding heapBinding = { g_RenderState.terrainVertexBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &heapBinding, 1);
+    SDL_GPUBuffer* storageBuffers[1] = { g_RenderState.terrainChunkLocationBuffer };
+    SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, 1);
     SDL_GPUBufferBinding indexBinding = { g_RenderState.terrainIndexBuffer, 0 };
     SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
     SDL_DrawGPUIndexedPrimitivesIndirect(pass, g_RenderState.terrainDrawArgsBuffer, 0, g_NumTerrainChunkDraws);

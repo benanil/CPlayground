@@ -210,10 +210,17 @@ void RendererSetTerrainChunkDraws(const TerrainChunkDraw* draws, u32 count)
     // first_instance stays 0: SDL only guarantees it with the drawIndirectFirstInstance
     // feature, and the terrain shader does not use instancing anyway
     static SDL_GPUIndexedIndirectDrawCommand commands[MAX_TERRAIN_CHUNK_DRAWS];
+    static u32 chunkLocations[MAX_TERRAIN_CHUNK_DRAWS * 2u];
     for (u32 i = 0; i < count; i++)
+    {
         commands[i] = (SDL_GPUIndexedIndirectDrawCommand){ draws[i].indexCount, 1u, draws[i].firstIndex, draws[i].baseVertex, 0u };
+        chunkLocations[i * 2u + 0u] = draws[i].chunkXY;
+        chunkLocations[i * 2u + 1u] = draws[i].chunkZLod;
+    }
     UpdateGPUBufferCycle(g_RenderState.terrainDrawArgsBuffer, commands,
                          count * sizeof(SDL_GPUIndexedIndirectDrawCommand), 0, true);
+    if (g_RenderState.terrainChunkLocationBuffer)
+        UpdateGPUBufferCycle(g_RenderState.terrainChunkLocationBuffer, chunkLocations, count * sizeof(u32) * 2u, 0, true);
 }
 
 void RendererSetTerrainBrush(float3 position, f32 radius)
@@ -412,6 +419,7 @@ void InitBuffers(void)
     g_RenderState.terrainVertexBuffer      = CreateBuffer(NULL, sizeof(tVertexData) * T_MAX_VERTICES    , BVertexBit, "CPTerrainChunkVertexBuffer");
     g_RenderState.terrainIndexBuffer       = CreateBuffer(NULL, sizeof(u32) * T_MAX_INDICES, SDL_GPU_BUFFERUSAGE_INDEX, "CPTerrainChunkIndexBuffer");
     g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndexedIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
+    g_RenderState.terrainChunkLocationBuffer = CreateBuffer(NULL, sizeof(u32) * 2u * MAX_TERRAIN_CHUNK_DRAWS, BReadRasterBit, "CPTerrainChunkLocationBuffer");
     g_RenderState.lightBuffer              = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
     g_RenderState.lightVisibilityBuffer    = CreateBuffer(NULL, sizeof(u32) * MAX_LIGHT_COUNT          , BWriteComputeBit, "CPLightVisibilityBuffer");
     // Forward+ tiled light grid. lightGrid holds a {offset,count} per tile; lightIndex is a
@@ -882,6 +890,7 @@ void DestroyPipeline(void)
     if (g_RenderState.terrainVertexBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainVertexBuffer);
     if (g_RenderState.terrainIndexBuffer)  SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainIndexBuffer);
     if (g_RenderState.terrainDrawArgsBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainDrawArgsBuffer);
+    if (g_RenderState.terrainChunkLocationBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.terrainChunkLocationBuffer);
     if (g_RenderState.lightBuffer)              SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightBuffer);
     if (g_RenderState.lightVisibilityBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightVisibilityBuffer);
     if (g_RenderState.lightGridBuffer)          SDL_ReleaseGPUBuffer(g_GPUDevice, g_RenderState.lightGridBuffer);

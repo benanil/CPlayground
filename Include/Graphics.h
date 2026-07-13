@@ -316,6 +316,7 @@ typedef struct RenderState
     SDL_GPUBuffer*           terrainVertexBuffer;
     SDL_GPUBuffer*           terrainIndexBuffer; 
     SDL_GPUBuffer*           terrainDrawArgsBuffer;   
+    SDL_GPUBuffer*           terrainChunkLocationBuffer;
     SDL_GPUBuffer*           lightBuffer;
     SDL_GPUBuffer*           pointShadowMatrixBuffer;
     SDL_GPUBuffer*           spotShadowMatrixBuffer;

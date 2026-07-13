@@ -68,41 +68,19 @@ static bool PrimitiveMatchesMaterialFilter(const RenderSet* set, const SceneBund
     return !transparent;
 }
 
-v128f EntityUnpackRotation(u64 packed)
-{
-    return UnpackQuaternionS16Norm1(packed);
+v128f EntityUnpackWorldScale(u64 packed) {
+    return Unpack16x4Fixed(packed, ENTITY_MAX_SCALE);
 }
 
-u64 EntityPackRotation(v128f rotation)
-{
-    return PackQuaternionS16NormRet(rotation);
+u64 EntityPackWorldScale(v128f scale) {
+    return Pack16x4Fixed(scale, ENTITY_MAX_SCALE);
 }
 
-v128f EntityUnpackScale01(u64 packed)
-{
-    return UnpackUnorm16x4(packed);
+u64 EntityPackUniformWorldScale(f32 scale) {
+    return PackUnorm16x4(VecSet1(Saturatef32(scale * 0.1f)));
 }
 
-v128f EntityUnpackWorldScale(u64 packed)
-{
-    v128f scale = VecMulf(EntityUnpackScale01(packed), 10.0f);
-    VecSetW(scale, 1.0f);
-    return scale;
-}
-
-u64 EntityPackWorldScale(v128f scale)
-{
-    return PackUnorm16x4(VecClamp01(VecMulf(scale, 0.1f)));
-}
-
-u64 EntityPackUniformWorldScale(f32 scale)
-{
-    f32 packedScale = Saturatef32(scale * 0.1f);
-    return PackUnorm16x4(VecSet1(packedScale));
-}
-
-v128f RenderSet_GroupLocalCenter(const PrimitiveGroup* group)
-{
+v128f RenderSet_GroupLocalCenter(const PrimitiveGroup* group) {
     return VecMulf(VecAdd(group->aabbMin, group->aabbMax), 0.5f);
 }
 
@@ -168,8 +146,7 @@ u32 RenderSet_CountTriangles(const RenderSet* set)
 u32 RenderSet_AllocateSparseID(RenderSet* set)
 {
     s32 sparseIdx = BitsetFindFirstEmpty(set->sparseSlots, (s32)set->maxEntities);
-    if (sparseIdx < 0)
-    {
+	if (sparseIdx < 0) {
         AX_WARN("maximum sparse id reached: %d", set->maxEntities);
         return INVALID_ENTITY;
     }
@@ -183,8 +160,7 @@ u32 RenderSet_AllocateSparseIDRange(RenderSet* set, int count)
     if (count <= 0) return INVALID_ENTITY;
 
     s32 sparseIdx = BitsetFindEmptyRange(set->sparseSlots, set->maxEntities, (u32)count);
-    if (sparseIdx < 0)
-    {
+    if (sparseIdx < 0) {
         AX_WARN("RenderSet_AllocateSparseIDRange: maximum sparse id reached: %d", set->maxEntities);
         return INVALID_ENTITY;
     }
@@ -221,8 +197,7 @@ static s32 GetNumPrimitivesOfSceneBundle(const SceneBundle* sceneBundle)
 u32 RenderSet_AddSceneBundle(RenderSet* set, const SceneBundle* sceneBundle, u32 materialOffset)
 {
     u32 numNewGroups = GetNumPrimitivesOfSceneBundle(sceneBundle);
-    if (set->numGroups + numNewGroups > set->maxGroups)
-    {
+    if (set->numGroups + numNewGroups > set->maxGroups) {
         AX_WARN("maximum primitive group count reached: %d + %d > %d", set->numGroups, numNewGroups, set->maxGroups);
         return INVALID_BUNDLE;
     }
@@ -230,8 +205,7 @@ u32 RenderSet_AddSceneBundle(RenderSet* set, const SceneBundle* sceneBundle, u32
     // bundle slots are stable handles, the lowest free slot is reused so removing a bundle
     // never shifts the indices of the others. numBundles tracks the highest used slot + 1.
     s32 slot = BitsetFindFirstEmpty(set->bundleSlots, (s32)set->maxBundles);
-    if (slot < 0)
-    {
+    if (slot < 0) {
         AX_WARN("maximum render bundle count reached: %d", set->maxBundles);
         return INVALID_BUNDLE;
     }
@@ -350,8 +324,7 @@ static u32 LeaveSpaceForEntities(RenderSet* set, u32 primitiveIdx, u32 numAdded)
 {
     PrimitiveGroup* group = &set->primitiveGroups[primitiveIdx];
     const u32 entityStart = group->entityOffset + group->numEntities;
-    if (set->numEntities + numAdded > set->maxEntities)
-    {
+    if (set->numEntities + numAdded > set->maxEntities) {
         AX_WARN("maximum entity reached: %d", set->maxEntities);
         return INVALID_ENTITY;
     }
@@ -422,10 +395,10 @@ void RendersetAddANodesAsEntities(RenderSet* rs, const ANode* nodes, s32 numNode
         const Entity* parent = world + node->parent;
         u32 noMesh = (node->type != 0) | (node->index < 0) | (rs->skinned && node->skin < 0);
         Entity* added = world + n;
-        v128f parentRot = EntityUnpackRotation(parent->rotation);
+        v128f parentRot = UnpackQuaternionS16Norm1(parent->rotation);
         v128f parentScale = EntityUnpackWorldScale(parent->scale);
         added->position = VecAdd(QMulVec3V(VecMul(localPos, parentScale), parentRot), parent->position);
-        added->rotation = EntityPackRotation(VecNorm(QMul(localRot, parentRot)));
+        added->rotation = PackQuaternionS16NormRet(VecNorm(QMul(localRot, parentRot)));
         added->scale = EntityPackWorldScale(VecMul(localScale, parentScale));
         added->parentIdx = (parent->sparseIdx & 0x00FFFFFFu) | (noMesh << 24);
         added->sparseIdx = INVALID_ENTITY;
@@ -445,8 +418,7 @@ u32 RenderSet_AddScene(RenderSet* set, u32 bundleIdx, v128f position, v128f rota
     const ANode* nodes = bundle->nodes;
     const int numNodes = bundle->numNodes;
     u32 numPrimitives = range.count;
-    if (numNodes <= 0 || numPrimitives == 0u)
-    {
+    if (numNodes <= 0 || numPrimitives == 0u) {
         AX_WARN("no nodes in bundle to add!");
         return 0;
     }
@@ -818,8 +790,7 @@ bool RenderSet_Validate(const RenderSet* set, const char* label)
     {
         if (set->bundles[b] == NULL) continue;
         Range range = set->bundlePrimRange[b];
-        if (range.start + range.count > set->numGroups)
-        {
+        if (range.start + range.count > set->numGroups) {
             AX_WARN("RenderSet invalid %s: bundle %d range start=%d count=%d groups=%d",
                     label ? label : "", b, range.start, range.count, set->numGroups);
             ok = false;
@@ -830,8 +801,7 @@ bool RenderSet_Validate(const RenderSet* set, const char* label)
     {
         const PrimitiveGroup* group = &set->primitiveGroups[g];
         u32 end = group->entityOffset + group->numEntities;
-        if (group->entityOffset < prevEnd || end > set->numEntities)
-        {
+        if (group->entityOffset < prevEnd || end > set->numEntities) {
             AX_WARN("RenderSet invalid %s: group %d entity range offset=%d count=%d prevEnd=%d entities=%d mesh=%d prim=%d mat=%d idx=%d/%d",
                     label ? label : "", g, group->entityOffset, group->numEntities, prevEnd, set->numEntities,
                     group->meshIndex, group->primitiveIndex, group->materialIndex, group->lodIndexOffset[0], group->lodNumIndices[0]);
@@ -840,16 +810,14 @@ bool RenderSet_Validate(const RenderSet* set, const char* label)
         prevEnd = Maxu32(prevEnd, end);
         countedEntities += group->numEntities;
 
-        if (group->numEntities > 0 && group->lodNumIndices[0] == 0)
-        {
+        if (group->numEntities > 0 && group->lodNumIndices[0] == 0) {
             AX_WARN("RenderSet invalid %s: group %d has entities but no lod0 indices mesh=%d prim=%d",
                     label ? label : "", g, group->meshIndex, group->primitiveIndex);
             ok = false;
         }
     }
 
-    if (countedEntities > set->numEntities)
-    {
+    if (countedEntities > set->numEntities) {
         AX_WARN("RenderSet invalid %s: counted drawable entities=%d set entities=%d groups=%d bundles=%d",
                 label ? label : "", countedEntities, set->numEntities, set->numGroups, set->numBundles);
         ok = false;
@@ -860,35 +828,30 @@ bool RenderSet_Validate(const RenderSet* set, const char* label)
         bool noMesh = ((set->entities[e].parentIdx >> 24u) & ENTITY_FLAG_NOMESH) != 0u ||
                       set->entities[e].primitiveIdx == INVALID_GROUP;
         u32 groupIdx = set->entities[e].primitiveIdx;
-        if (noMesh)
-        {
+        if (noMesh) {
             u32 sparseIdx = set->entities[e].sparseIdx;
-            if (sparseIdx != INVALID_ENTITY && sparseIdx < set->maxEntities && set->sparseID[sparseIdx] == INVALID_ENTITY)
-            {
+            if (sparseIdx != INVALID_ENTITY && sparseIdx < set->maxEntities && set->sparseID[sparseIdx] == INVALID_ENTITY) {
                 AX_WARN("RenderSet invalid %s: no-mesh dense %d sparse %d missing sparseToDense", label ? label : "", e, sparseIdx);
                 ok = false;
             }
             continue;
         }
 
-        if (groupIdx >= set->numGroups)
-        {
+        if (groupIdx >= set->numGroups) {
             AX_WARN("RenderSet invalid %s: dense %d primitive=%d groups=%d", label ? label : "", e, groupIdx, set->numGroups);
             ok = false;
             continue;
         }
 
         const PrimitiveGroup* group = &set->primitiveGroups[groupIdx];
-        if (e < group->entityOffset || e >= group->entityOffset + group->numEntities)
-        {
+        if (e < group->entityOffset || e >= group->entityOffset + group->numEntities) {
             AX_WARN("RenderSet invalid %s: dense %d points group %d range=%d..%d",
                     label ? label : "", e, groupIdx, group->entityOffset, group->entityOffset + group->numEntities);
             ok = false;
         }
 
         u32 sparseIdx = set->entities[e].sparseIdx;
-        if (sparseIdx != INVALID_ENTITY && sparseIdx < set->maxEntities && set->sparseID[sparseIdx] == INVALID_ENTITY)
-        {
+        if (sparseIdx != INVALID_ENTITY && sparseIdx < set->maxEntities && set->sparseID[sparseIdx] == INVALID_ENTITY) {
             AX_WARN("RenderSet invalid %s: dense %d sparse %d missing sparseToDense", label ? label : "", e, sparseIdx);
             ok = false;
         }

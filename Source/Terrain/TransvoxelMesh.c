@@ -70,15 +70,15 @@ bool tMeshDataPushSecondaryVertex(tMeshData* data, tSecondaryVert vertex)
 
 void tMeshDataApplySecondaryVertices(tMeshData* data, s32 neighboursMask)
 {
-    size_t vertexCount = data->numVertices;
-    size_t secondaryCount = data->numSecondaryVert;
+    s32 vertexCount = data->numVertices;
+    s32 secondaryCount = data->numSecondaryVert;
     for (size_t i = 0; i < secondaryCount; i++)
     {
         tSecondaryVert secondary = data->secondaryVert[i];
-        if ((secondary.vertexMask & (u16)neighboursMask) != secondary.vertexMask)
+        if ((secondary.vertexMask & neighboursMask) != secondary.vertexMask)
             continue;
 
-        if ((size_t)secondary.vertexIndex >= vertexCount) {
+        if (secondary.vertexIndex >= vertexCount) {
             AX_WARN("transvoxel unity mesh secondary apply skipped: vertex index out of range");
             continue;
         }

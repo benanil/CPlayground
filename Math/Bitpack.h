@@ -51,6 +51,16 @@ static inline v128f VCALL UnpackUnorm16x4(u64 i16)
     return VecMul(VecI32ToF32(VecUnpackLo32(VeciDup64(i16))), inv);
 }
 
+static inline u64 VCALL Pack16x4Fixed(v128f val, float scale)
+{
+	return PackUnorm16x4(VecDivf(val, scale));
+}
+
+static inline v128f VCALL Unpack16x4Fixed(u64 i16, float scale)
+{
+    return VecMulf(UnpackUnorm16x4(i16), scale);
+}
+
 // signed pack/unpack: quaternion components are negative half the time, the unsigned
 // VecPack16/VecUnpackLo32 variants clamp or zero-extend them and break rotations
 static inline void VCALL PackQuaternionS16Norm(v128f quat, u64* result)

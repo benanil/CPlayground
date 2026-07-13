@@ -5,18 +5,20 @@
 
 #define TERRAIN_UV_SCALE  (1.0 / 6.0)
 #define TERRAIN_NORMAL_DX 1
+#define TERRAIN_CHUNK_CELLS 16.0
 
 Texture2DArray<float4> AlbedoLayers : register(t0, space2);
 Texture2DArray<float4> NormalLayers : register(t1, space2);
 Texture2DArray<float4> ArmLayers    : register(t2, space2);
 SamplerState Sampler : register(s0, space2);
 
+StructuredBuffer<uint2> ChunkLocations : register(t0);
+
 struct VSInput
 {
-    float4 pos       : POSITION0;
+    uint2 position   : POSITION0;
     uint normal      : NORMAL;
     uint materials   : TEXCOORD0;
-    uint blend       : TEXCOORD1;
 };
 
 struct VSOutput
@@ -25,7 +27,6 @@ struct VSOutput
     float3 worldPos : TEXCOORD0;
     float3 normal   : NORMAL;
     nointerpolation uint materials : TEXCOORD1;
-    nointerpolation uint blend     : TEXCOORD2;
 };
 
 cbuffer vs_params : register(b0, space1)
@@ -39,15 +40,29 @@ cbuffer ps_params : register(b0, space3)
     float4 uSunDirection;
 };
 
-VSOutput vert(VSInput i)
+int DecodeS16(uint v) {
+    return int(v << 16) >> 16;
+}
+
+float3 DecodeTerrainPosition(uint2 packedPosition, uint drawID)
+{
+    uint2 chunkLocation = ChunkLocations[drawID];
+    int3 chunkCoord = int3(DecodeS16(chunkLocation.x), int(chunkLocation.x) >> 16, DecodeS16(chunkLocation.y));
+    uint lod = chunkLocation.y >> 16;
+    float chunkSize = TERRAIN_CHUNK_CELLS * float(1u << lod);
+    float3 local = float3(packedPosition.x & 0xFFFFu, packedPosition.x >> 16, packedPosition.y & 0xFFFFu) * (chunkSize / 65535.0);
+    return float3(chunkCoord) * chunkSize + local;
+}
+
+VSOutput vert(VSInput i, [[vk::builtin("DrawIndex")]] uint drawID : DRAWINDEX)
 {
     VSOutput o;
-    o.position = mul(uViewProj, float4(i.pos.xyz, 1.0));
-    o.worldPos = i.pos.xyz;
+    float3 worldPos = DecodeTerrainPosition(i.position, drawID);
+    o.position = mul(uViewProj, float4(worldPos, 1.0));
+    o.worldPos = worldPos;
     f16_3 normal = UnpackNormal(i.normal);
     o.normal = float3(normal);
     o.materials = i.materials;
-    o.blend = i.blend;
     return o;
 }
 
@@ -84,7 +99,7 @@ float4 frag(VSOutput i) : SV_Target0
 
     float layerA = float(i.materials & 0xFFu);
     float layerB = float((i.materials >> 8) & 0xFFu);
-    float wA = float(i.blend & 0xFFu) * (1.0 / 255.0);
+    float wA = float((i.materials >> 16) & 0xFFu) * (1.0 / 255.0);
     float wB = 1.0 - wA;
 
     float4 albedoSample = SampleTriplanarLayer(AlbedoLayers, layerA, i.worldPos, triBlend) * wA

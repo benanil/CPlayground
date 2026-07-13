@@ -133,8 +133,7 @@ u32 GeometryHeapAlloc(GeometryBufferKind kind, u32 count, void** raw)
     if (count == 0 || !g_GeometryTLSF[kind]) return GEOMETRY_ALLOC_FAIL;
 
     // power-of-two strides align the block to the stride itself: the returned pointer
-    // is then valid for SIMD-typed elements (tVertexData holds v128f, movaps faults on
-    // the 8-byte tlsf minimum) and lands exactly on an element boundary of the mega
+    // stays valid for SIMD-typed elements and lands exactly on an element boundary of the mega
     // buffer, so raw == base + index * stride and both access conventions agree.
     // non-power-of-two strides can't be aligned by tlsf; over allocate by stride-1 so
     // the data start (index * stride) can be rounded up past the block start instead

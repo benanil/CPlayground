@@ -254,13 +254,12 @@ static v128f tUnpackNormal(u32 packed)
     return OctDecode(VecSetR(x, y, 0.0f, 0.0f));
 }
 
-static void AppendBuildVertex(tBuildJob* job, v128f p, u32 normal, u32 materials, u32 blend)
+static void AppendBuildVertex(tBuildJob* job, u64 position, u32 normal, u32 materials, u32 blend)
 {
     tVertexData vertex = {0};
-    vertex.position = p;
+    vertex.position = position;
     vertex.normal = normal;
-    vertex.materials = materials;
-    vertex.blend = blend;
+    vertex.materials = materials | (blend << 16);
     job->buildVertices[job->buildVertexCount++] = vertex;
 }
 
@@ -285,16 +284,18 @@ static void tAppendMeshSlotTriangles(tBuildJob* job, tMeshDataSlot slot)
     u32 base = job->buildVertexCount;
 
     v128f offset = VecI32ToF32(VeciLoad((const u32*)&job->min.x));
+    f32 chunkSize = (f32)(T_CHUNK_CELLS << job->lod);
     for (size_t v = 0; v < vertexCount; v++)
     {
-        v128f p = VecAdd(mesh->vertices[v].position, offset);
+        v128f local = Unpack16x4Fixed(mesh->vertices[v].position, chunkSize);
+        v128f p = VecAdd(local, offset);
         // safe normalize: secondary-vertex snapping can leave zero-length normals, a
         // plain normalize would spray NaN colors
         float3 world = Vec3Get(p);
         float3 n = Vec3Get(tUnpackNormal(mesh->vertices[v].normal));
         u32 m, b;
         tTerrainMaterial(world, n, &m, &b);
-        AppendBuildVertex(job, p, mesh->vertices[v].normal, m, b);
+        AppendBuildVertex(job, mesh->vertices[v].position, mesh->vertices[v].normal, m, b);
     }
 
     for (size_t i = 0; i + 2 < indexCount; i += 3)
@@ -308,9 +309,9 @@ static void tAppendMeshSlotTriangles(tBuildJob* job, tMeshDataSlot slot)
         if ((size_t)ia >= vertexCount || (size_t)ib >= vertexCount || (size_t)ic >= vertexCount)
             continue;
 
-        v128f pa = VecAdd(mesh->vertices[ia].position, offset);
-        v128f pb = VecAdd(mesh->vertices[ib].position, offset);
-        v128f pc = VecAdd(mesh->vertices[ic].position, offset);
+        v128f pa = Unpack16x4Fixed(mesh->vertices[ia].position, chunkSize);
+        v128f pb = Unpack16x4Fixed(mesh->vertices[ib].position, chunkSize);
+        v128f pc = Unpack16x4Fixed(mesh->vertices[ic].position, chunkSize);
 
         // secondary-vertex snapping and transition cells produce degenerate triangles
         // (verts collapse onto each other); skip them here instead of shading zero-area
@@ -511,8 +512,11 @@ static bool BuildPhysicsMesh(tBuildJob* job, u32 vertexCount, u32 indexCount)
     job->mesh.physics.indices = (s32*)AllocateTLSFGlobal(sizeof(s32) * indexCount);
     if (job->mesh.physics.vertices && job->mesh.physics.indices)
     {
+        f32 chunkSize = (f32)(T_CHUNK_CELLS << job->lod);
+        v128f offset = VecI32ToF32(VeciLoad((const u32*)&job->min.x));
         for (u32 v = 0; v < vertexCount; v++) {
-            v128f p = job->buildVertices[v].position;
+            v128f local = Unpack16x4Fixed(job->buildVertices[v].position, chunkSize);
+            v128f p = VecAdd(local, offset);
             job->mesh.physics.vertices[v] = (b3Vec3){ VecGetX(p), VecGetY(p), VecGetZ(p) };
         }
         for (u32 k = 0; k < indexCount; k++)
@@ -946,15 +950,30 @@ static bool tAABBVisible(float3 aabbMin, float3 aabbMax, const FrustumPlanes* fr
 // returns false only when the draw list is full; empty chunks are a successful no-op so
 // one air/solid chunk does not abort the rest of the LOD ring. every chunk submits a heap
 // draw range (no vertex copy); the brush highlight is a terrain shader uniform now
-static bool tAppendChunkTriangles(const tChunk* chunk)
+static bool tDrawChunk(const tChunk* chunk)
 {
     if (!chunk || chunk->mesh.indices.count == 0 || !chunk->mesh.vertices.heapPtr || !chunk->mesh.indices.heapPtr)
         return true;
 
     if (tTransvoxel.numChunkDraws >= MAX_TERRAIN_CHUNK_DRAWS)
         return false;
+    s32 step = T_CHUNK_CELLS << chunk->lod;
+    s32 chunkX = chunk->min.x / step;
+    s32 chunkY = chunk->min.y / step;
+    s32 chunkZ = chunk->min.z / step;
+    if (chunkX < INT16_MIN || chunkX > INT16_MAX || chunkY < INT16_MIN || chunkY > INT16_MAX || chunkZ < INT16_MIN || chunkZ > INT16_MAX)
+    {
+        AX_WARN("terrain chunk draw skipped: chunk coord out of s16 range");
+        return true;
+    }
+
     // indexed draw: first_index into the terrain index heap, base_vertex = vertex heap offset
-    TerrainChunkDraw draw = { chunk->mesh.indices.first, chunk->mesh.indices.count, (s32)chunk->mesh.vertices.first };
+	TerrainChunkDraw draw;
+	draw.firstIndex = chunk->mesh.indices.first;
+	draw.indexCount = chunk->mesh.indices.count;
+	draw.baseVertex = (s32)chunk->mesh.vertices.first;
+    draw.chunkXY    = (u32)(u16)(s16)chunkX | ((u32)(u16)(s16)chunkY << 16);
+    draw.chunkZLod  = (u32)(u16)(s16)chunkZ | ((u32)(u16)chunk->lod << 16);
 	tTransvoxel.chunkDraws[tTransvoxel.numChunkDraws++] = draw;
     return true;
 }
@@ -1103,7 +1122,7 @@ static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, const Fr
         tChunk* chunk = GetOrCreateChunk(min, lod);
         if (!tChunkPresentable(chunk))
             continue;
-        if (!tAppendChunkTriangles(chunk))
+        if (!tDrawChunk(chunk))
             return false;
     }
 
@@ -1197,7 +1216,7 @@ static bool tInit(void)
 
 void tUpdate(void)
 {
-    if (true || !tInit()) {
+    if (!tInit()) {
         RendererSetTerrainChunkDraws(NULL, 0);
         return;
     }

@@ -169,7 +169,7 @@ b3Quat ToB3Quat(v128f q)
 }
 
 v128f SceneB3PosToVec3(b3Pos p) { return VecSetR((f32)p.x, (f32)p.y, (f32)p.z, 0.0f); }
-u64 SceneB3QuatToEntityRotation(b3Quat q) { return EntityPackRotation(VecSetR(q.v.x, q.v.y, q.v.z, q.s)); }
+u64 SceneB3QuatToEntityRotation(b3Quat q) { return PackQuaternionS16NormRet(VecSetR(q.v.x, q.v.y, q.v.z, q.s)); }
 
 static RenderSet* PhysicsSet(Scene* scene, bool transparent)
 {
@@ -399,7 +399,7 @@ static void Scene_PhysicsCreateEntityBody(Scene* scene, bool transparent, u32 gr
 	// movable prop would need a convex hull/primitive shape instead.
 	bd.type       = b3_staticBody;
 	bd.position   = ToB3Vec3(entity->position);
-	bd.rotation   = ToB3Quat(EntityUnpackRotation(entity->rotation));
+	bd.rotation   = ToB3Quat(UnpackQuaternionS16Norm1(entity->rotation));
 	bd.userData   = (void*)PhysicsBodyUserData(entity->sparseIdx, transparent);
 	b3BodyId body = b3CreateBody(scene->physicsWorldID, &bd);
 	b3ShapeDef sd = b3DefaultShapeDef();
@@ -440,7 +440,7 @@ void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, c
 		}
 	}
 
-	b3Body_SetTransform(body, ToB3Vec3(entity->position), ToB3Quat(EntityUnpackRotation(entity->rotation)));
+	b3Body_SetTransform(body, ToB3Vec3(entity->position), ToB3Quat(UnpackQuaternionS16Norm1(entity->rotation)));
 }
 
 void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot)

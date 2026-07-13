@@ -1,0 +1,16 @@
+terrain 1
+fixed_world_size 128.
+island 1
+seed 1.
+sea_level -18.000
+base_height -32.000
+hill_amplitude 0.600
+hill_frequency 0.399999
+ridge_amplitude 0.500
+ridge_frequency 0.350000
+cave_amplitude 0.800
+cave_frequency 0.045000
+island_radius 250.000
+island_falloff 120.000
+grass_density 1.000
+grass_view_distance 300.000

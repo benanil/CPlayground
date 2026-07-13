@@ -12,6 +12,8 @@
 
 #define ENTITY_FLAG_NOMESH 1
 
+#define ENTITY_MAX_SCALE 10.0f
+
 typedef struct Entity_
 {
     v128f position;     // last 32bit unused
@@ -110,9 +112,6 @@ v128f EntityUnpackScale01(u64 packed);
 v128f EntityUnpackWorldScale(u64 packed);
 u64   EntityPackWorldScale(v128f scale);
 u64   EntityPackUniformWorldScale(f32 scale);
-
-v128f EntityUnpackRotation(u64 packed);
-u64   EntityPackRotation(v128f rotation);
 
 v128f RenderSet_GroupLocalCenter(const PrimitiveGroup* group);
 v128f RenderSet_EntityBoundsCenter(const PrimitiveGroup* group, const Entity* entity, v128f rotation, v128f worldScale);

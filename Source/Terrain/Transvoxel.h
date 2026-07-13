@@ -1,7 +1,7 @@
 #ifndef TRANSVOXEL_UNITY_H
 #define TRANSVOXEL_UNITY_H
 
-#include "Math/Vector.h"
+#include "Math/Bitpack.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -23,18 +23,17 @@ typedef enum tMeshDataSlot_
 
 typedef struct tVertexData_
 {
-    v128f position;
+    u64 position;  // u16 fixed x/y/z local to chunk, w unused
     u32 normal;    // packed normal/tangent (PackNormalTangent)
-    u32 materials; // rgba8 material ids
-    u32 blend;     // r = material A weight; shader uses 1-r for B
-    u32 padding;
+    u32 materials; 
 } tVertexData;
+STATIC_ASSERT(sizeof(tVertexData) == 16, "tVertexData must stay 16 bytes");
 
 typedef struct tSecondaryVertexData_
 {
-    v128f position;
-    u16   vertexMask;
-    u16   vertexIndex;
+    u64   position;
+    s32   vertexMask;
+    s32   vertexIndex;
 } tSecondaryVert;
 
 typedef struct tMeshData_

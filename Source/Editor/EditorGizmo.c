@@ -305,7 +305,7 @@ static u32 GizmoCollectMembers(Scene* scene, v128f* outCenter)
                 member->entityIdx = e;
                 member->startPos = entity->position;
                 member->startRot = VecNorm(UnpackQuaternionS16Norm1(entity->rotation));
-                member->startScale = EntityUnpackScale01(entity->scale);
+                member->startScale = UnpackUnorm16x4(entity->scale);
                 member->localCenter = localCenter;
 
                 v128f worldScale = VecMulf(member->startScale, 10.0f);
@@ -539,7 +539,7 @@ static void GizmoApplyMembers(Scene* scene, const v128f axes[3], f32 mouseY)
                           0.0f);
             v128f scale = VecClamp(VecMul(member->startScale, scaleFactor), VecSet1(0.0001f), VecSet1(1.0f));
             VecSetW(scale, 0.0f);
-            entity->scale = EntityPackWorldScale(VecMulf(scale, 10.0f));
+            entity->scale = EntityPackWorldScale(VecMulf(scale, ENTITY_MAX_SCALE));
 
             // the member center moves with the scale: radially for uniform, along the
             // handle's world direction for a single axis
