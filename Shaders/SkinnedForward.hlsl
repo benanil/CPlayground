@@ -32,6 +32,7 @@ StructuredBuffer<uint>           sDrawSparseIndices   : register(t2);
 StructuredBuffer<AnimatedVert>   sAnimatedVert        : register(t3);
 StructuredBuffer<ShadowCascadeBuffer> sShadowCascades : register(t4);
 StructuredBuffer<uint>           sBoneMtx             : register(t5);
+StructuredBuffer<PrimitiveGroupLOD> sPrimitiveGroupLODs : register(t6);
 
 Texture2DArray<float4> AlbedoPages            : register(t0, space2);
 Texture2DArray<float2> NormalPages            : register(t1, space2);
@@ -87,10 +88,11 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID, [[vk::builtin("Dra
     uint primitiveIdx = drawID / MESH_LOD_COUNT;
     uint lod = drawID - primitiveIdx * MESH_LOD_COUNT;
     PrimitiveGroup group = sPrimitiveGroups[primitiveIdx];
+    PrimitiveGroupLOD lodGroup = sPrimitiveGroupLODs[primitiveIdx];
     uint denseIdx  = sDrawSparseIndices[lod * uint(MAX_ANIM_INSTANCES) + PrimitiveGroup_EntityOffset(group) + instanceID];
-    uint localVertex = vertexID - group.lodVertexOffset[lod];
+    uint localVertex = vertexID - lodGroup.lodVertexOffset[lod];
     uint sparse = sEntities[denseIdx].sparse;
-    uint animatedVertex = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + group.lodAnimatedVertexOffset[lod] + localVertex;
+    uint animatedVertex = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + lodGroup.lodVertexOffset[lod] + localVertex;
     AnimatedVert animated = sAnimatedVert[animatedVertex];
     Entity entity = sEntities[denseIdx];
     float3 aabbMin = PrimitiveGroup_AABBMin(group);

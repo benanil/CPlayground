@@ -196,7 +196,7 @@ s32 SceneSerializer_Save(Scene* scene, const char* path)
     // rotation and scale stay in their packed forms so the round trip is exact
     for (u32 s = 0; s < 3u; s++)
     {
-        const RenderSet* set = s == 0u ? &scene->surfaceSet : (s == 1u ? &scene->skinnedSet : &scene->transparentSurfaceSet);
+        const RenderSet* set = s == 0u ? &scene->surfaceSet : (s == 1u ? &scene->skinnedSet : &scene->transparentSet);
         p = WStr(line, "entities");
         p = WInt(p, (s64)s);
         p = WInt(p, (s64)set->numEntities);
@@ -268,7 +268,7 @@ s32 SceneSerializer_Save(Scene* scene, const char* path)
     RemoveFile(path);
     RenameFile(tmpPath, path);
     AX_LOG("scene saved: %s bundles=%d entities=%d lights=%d %.2fs",
-           path, scene->numBundles, scene->surfaceSet.numEntities + scene->skinnedSet.numEntities + scene->transparentSurfaceSet.numEntities,
+           path, scene->numBundles, scene->surfaceSet.numEntities + scene->skinnedSet.numEntities + scene->transparentSet.numEntities,
            scene->numLights, TimeSinceStartup() - startTime);
     return 1;
 }
@@ -616,7 +616,7 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
     for (u32 s = 0; s < 3u; s++)
     {
         bool isSkinned = s == 1u;
-        RenderSet* set = s == 0u ? &scene->surfaceSet : (s == 1u ? &scene->skinnedSet : &scene->transparentSurfaceSet);
+        RenderSet* set = s == 0u ? &scene->surfaceSet : (s == 1u ? &scene->skinnedSet : &scene->transparentSet);
 
         u32* primitiveCounts = (u32*)ArenaAllocGlobal(set->numGroups * sizeof(u32));
         MemSet(primitiveCounts, 0, set->numGroups * sizeof(u32));
@@ -719,7 +719,7 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
     Scene_BuildStaticCollidersAsync(scene, BuildColliderEndCallback);
 
     AX_LOG("scene loaded: %s bundles=%d entities=%d lights=%d baked=%d %.2fs",
-           path, scene->numBundles, scene->surfaceSet.numEntities + scene->skinnedSet.numEntities + scene->transparentSurfaceSet.numEntities,
+           path, scene->numBundles, scene->surfaceSet.numEntities + scene->skinnedSet.numEntities + scene->transparentSet.numEntities,
            scene->numLights, scene->texturesBaked, TimeSinceStartup() - startTime);
     return 1;
 }

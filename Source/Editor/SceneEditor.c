@@ -790,7 +790,7 @@ static void SceneSelectNodeInViewport(const Scene* scene, u32 bundleIdx, s32 nod
 
     const RenderSet* set = ref->skinned ? &scene->skinnedSet : &scene->surfaceSet;
     if (ref->renderIdx >= set->numBundles) return;
-    Range range = set->bundlePrimitiveRange[ref->renderIdx];
+    Range range = set->bundlePrimRange[ref->renderIdx];
 
     // gather the subtree's mesh nodes (including the picked one)
     enum { MaxSubtree = 2048 };
@@ -955,7 +955,7 @@ static void SceneEventDuplicateBundle(void* unused)
     v128f scale    = VecSet1(1.0f);
     if (ref->renderIdx < set->numBundles)
     {
-        Range range = set->bundlePrimitiveRange[ref->renderIdx];
+        Range range = set->bundlePrimRange[ref->renderIdx];
         for (u32 g = range.start; g < range.start + range.count; g++)
         {
             const PrimitiveGroup* group = &set->primitiveGroups[g];
@@ -1031,7 +1031,7 @@ static void SceneEventDeleteNode(void* unused)
     if (ref->renderIdx >= set->numBundles) return;
 
     u32 removed = 0;
-    Range range = set->bundlePrimitiveRange[ref->renderIdx];
+    Range range = set->bundlePrimRange[ref->renderIdx];
     for (u32 g = range.start; g < range.start + range.count; g++)
     {
         const PrimitiveGroup* group = &set->primitiveGroups[g];
@@ -1837,10 +1837,10 @@ void DrawSceneWindow(bool* open)
                     UITextU32("Bundles", scene->numBundles);
                     UITextU32("Materials", scene->numMaterials);
                     UITextU32("Static entities", scene->surfaceSet.numEntities);
-                    UITextU32("Transparent entities", scene->transparentSurfaceSet.numEntities);
+                    UITextU32("Transparent entities", scene->transparentSet.numEntities);
                     UITextU32("Skinned entities", scene->skinnedSet.numEntities);
-                    UITextU32("Primitive groups", scene->surfaceSet.numGroups + scene->transparentSurfaceSet.numGroups + scene->skinnedSet.numGroups);
-                    UITextU32("Triangles", RenderSet_CountTriangles(&scene->surfaceSet) + RenderSet_CountTriangles(&scene->transparentSurfaceSet) + RenderSet_CountTriangles(&scene->skinnedSet));
+                    UITextU32("Primitive groups", scene->surfaceSet.numGroups + scene->transparentSet.numGroups + scene->skinnedSet.numGroups);
+                    UITextU32("Triangles", RenderSet_CountTriangles(&scene->surfaceSet) + RenderSet_CountTriangles(&scene->transparentSet) + RenderSet_CountTriangles(&scene->skinnedSet));
                 }
             }
             UIDivider(CLAY_ID("SceneWindowDivider"));

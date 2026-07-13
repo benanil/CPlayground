@@ -395,7 +395,7 @@ static s32 BVH_RaycastSet(const Scene* scene, const RenderSet* set, bool skinned
         const SceneBundle* bundle = set->bundles[b];
         if (!bundle) continue;
 
-        Range range = set->bundlePrimitiveRange[b];
+        Range range = set->bundlePrimRange[b];
         if (range.count == 0) continue;
 
         // every group of the bundle carries the same owning scene bundle index

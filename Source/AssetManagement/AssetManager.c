@@ -962,7 +962,9 @@ s32 LoadGLTFCached(const char* path, SceneBundle* scene, Texture* textures, void
 // 79: geometry offsets and index values are stored bundle relative, the
 // runtime placement comes from the mega buffer range allocators
 // 80: surface (static) AVertex.position quantized to xyz unorm16 vs the primitive AABB
-const s32 ABMMeshVersion = 80;
+// 81: skinned animation uses lod vertex offsets directly
+// 82: unindexed primitives store mega-buffer-relative generated indices
+const s32 ABMMeshVersion = 82;
 
 u8 IsABMLastVersion(const char* path)
 {
@@ -1123,7 +1125,6 @@ s32 SaveGLTFBinary(const SceneBundle* gltf, const char* path)
             AFileWrite(primitive->lodNumIndices, sizeof(s32) * 4, file, 1);
             AFileWrite(relLodVertexOffset, sizeof(s32) * 4, file, 1);
             AFileWrite(primitive->lodNumVertices, sizeof(s32) * 4, file, 1);
-            AFileWrite(primitive->lodAnimatedVertexOffset, sizeof(s32) * 4, file, 1); // already bundle local
             AFileWrite(&primitive->jointType  , sizeof(u16), file, 1);
             AFileWrite(&primitive->jointCount , sizeof(u16), file, 1);
             AFileWrite(&primitive->jointStride, sizeof(u16), file, 1);
@@ -1424,7 +1425,6 @@ s32 LoadSceneBundleBinary(const char* path, SceneBundle* gltf, void** outVertexH
             AFileRead(primitive->lodNumIndices, sizeof(s32) * 4, file, 1);
             AFileRead(primitive->lodVertexOffset, sizeof(s32) * 4, file, 1);
             AFileRead(primitive->lodNumVertices, sizeof(s32) * 4, file, 1);
-            AFileRead(primitive->lodAnimatedVertexOffset, sizeof(s32) * 4, file, 1);
 
             // stored bundle relative, rebase onto the allocated ranges
             primitive->indexOffset += (s32)indexBase;

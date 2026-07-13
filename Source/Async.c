@@ -99,7 +99,8 @@ void AsyncRun(const char* name, AsyncTaskFn fn, AsyncCallback callback, void* us
     task->userFn = fn;
 	if (!AsyncStart(task, name ? name : "AsyncTask"))
 	{
-		callback(userData, fn(userData));
+		s32 result = fn(userData);
+		if (callback) callback(userData, result);
 		AX_WARN("running on another thread failed! %s", name);
 	}
 }

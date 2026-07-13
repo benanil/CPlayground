@@ -253,12 +253,12 @@ static void InitComputePipelines(void)
     }); CHECK_CREATE(g_AnimComputePipeline, "Animation Compute Pipeline");
 
     g_AnimVerticesPipeline = COMPUTE_DEF(Shaders_AnimateVertices_spv),
-        .num_uniform_buffers           = 1, .num_readonly_storage_buffers  = 7, .num_readwrite_storage_buffers = 1,
+        .num_uniform_buffers           = 1, .num_readonly_storage_buffers  = 8, .num_readwrite_storage_buffers = 1,
         THREAD_COUNT_XYZ(1, 32, 1)
     }); CHECK_CREATE(g_AnimVerticesPipeline, "Animation vertices Pipeline");
 
     g_CullDrawArgsComputePipeline = COMPUTE_DEF(Shaders_CullDrawArgsCompute_spv),
-        .num_readonly_storage_textures = 1, .num_uniform_buffers = 1, .num_readonly_storage_buffers  = 2, .num_readwrite_storage_buffers = 8,
+        .num_readonly_storage_textures = 1, .num_uniform_buffers = 1, .num_readonly_storage_buffers  = 3, .num_readwrite_storage_buffers = 8,
         THREAD_COUNT_XYZ(64, 1, 1)
     }); CHECK_CREATE(g_CullDrawArgsComputePipeline, "Cull Draw Args Compute Pipeline");
 
@@ -743,7 +743,7 @@ static void InitForwardPipelines(void)
     SDL_GPUShaderFormat shaderformat = AX_GPU_SHADER_FORMAT;
     SDL_GPUShader* sur_vert = PIPELINE_VERT_DEF(Shaders_SurfaceForwardVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 4 }); CHECK_CREATE(sur_vert, "Surface Forward Vertex Shader")
     SDL_GPUShader* sur_frag = PIPELINE_FRAG_DEF(Shaders_SurfaceForwardFrag_spv), .num_uniform_buffers = 1, .num_samplers = 8, .num_storage_buffers = 7 }); CHECK_CREATE(sur_frag, "Surface Forward Fragment Shader")
-    SDL_GPUShader* ski_vert = PIPELINE_VERT_DEF(Shaders_SkinnedForwardVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 6 }); CHECK_CREATE(ski_vert, "Skinned Forward Vertex Shader")
+    SDL_GPUShader* ski_vert = PIPELINE_VERT_DEF(Shaders_SkinnedForwardVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 7 }); CHECK_CREATE(ski_vert, "Skinned Forward Vertex Shader")
     SDL_GPUShader* ski_frag = PIPELINE_FRAG_DEF(Shaders_SkinnedForwardFrag_spv), .num_uniform_buffers = 1, .num_samplers = 8, .num_storage_buffers = 7 }); CHECK_CREATE(ski_frag, "Skinned Forward Fragment Shader")
 
     const SDL_GPUVertexAttribute sur_attributes[3] = {
@@ -855,17 +855,17 @@ static void InitDepthOnlyPipelines(void)
 {
     SDL_GPUShaderFormat shaderformat = AX_GPU_SHADER_FORMAT;
     SDL_GPUShader* sur_ver  = PIPELINE_VERT_DEF(Shaders_SurfaceDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 3 });
-    SDL_GPUShader* ski_ver  = PIPELINE_VERT_DEF(Shaders_SkinnedDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 4 });
+    SDL_GPUShader* ski_ver  = PIPELINE_VERT_DEF(Shaders_SkinnedDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 5 });
     SDL_GPUShader* sur_frag = PIPELINE_FRAG_DEF(Shaders_SurfaceDepthOnlyFrag_spv), .num_uniform_buffers = 0, .num_samplers = 1, .num_storage_buffers = 2 });
     SDL_GPUShader* ski_frag = PIPELINE_FRAG_DEF(Shaders_SkinnedDepthOnlyFrag_spv), .num_storage_buffers = 2 ,.num_samplers = 1 });
     SDL_GPUShader* sur_shadow_ver        = PIPELINE_VERT_DEF(Shaders_SurfaceShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 4 });
-    SDL_GPUShader* ski_shadow_ver        = PIPELINE_VERT_DEF(Shaders_SkinnedShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 5 });
+    SDL_GPUShader* ski_shadow_ver        = PIPELINE_VERT_DEF(Shaders_SkinnedShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 6 });
     SDL_GPUShader* sur_shadow_frag       = PIPELINE_FRAG_DEF(Shaders_SurfaceShadowDepthOnlyFrag_spv) });
     SDL_GPUShader* ski_shadow_frag       = PIPELINE_FRAG_DEF(Shaders_SkinnedShadowDepthOnlyFrag_spv) });
     SDL_GPUShader* sur_point_shadow_ver  = PIPELINE_VERT_DEF(Shaders_SurfacePointShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 4 });
-    SDL_GPUShader* ski_point_shadow_ver  = PIPELINE_VERT_DEF(Shaders_SkinnedPointShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 5 });
+    SDL_GPUShader* ski_point_shadow_ver  = PIPELINE_VERT_DEF(Shaders_SkinnedPointShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 6 });
     SDL_GPUShader* sur_spot_shadow_ver   = PIPELINE_VERT_DEF(Shaders_Shadow_SurfaceSpotShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 4 });
-    SDL_GPUShader* ski_spot_shadow_ver   = PIPELINE_VERT_DEF(Shaders_Shadow_SkinnedSpotShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 5 });
+    SDL_GPUShader* ski_spot_shadow_ver   = PIPELINE_VERT_DEF(Shaders_Shadow_SkinnedSpotShadowDepthOnlyVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 6 });
     SDL_GPUShader* sur_point_shadow_frag = PIPELINE_FRAG_DEF(Shaders_SurfacePointShadowDepthOnlyFrag_spv) });
     SDL_GPUShader* ski_point_shadow_frag = PIPELINE_FRAG_DEF(Shaders_SkinnedPointShadowDepthOnlyFrag_spv) });
     SDL_GPUShader* sur_spot_shadow_frag  = PIPELINE_FRAG_DEF(Shaders_SurfacePointShadowDepthOnlyFrag_spv) });

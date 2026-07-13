@@ -121,7 +121,7 @@ void Scene_InitPhysics(Scene* scene)
 	scene->physicsWorldID = b3CreateWorld(&worldDef);
 	Scene_PhysicsApplyWorldSettings(scene);
 	scene->surfacePhysicsBodies = (b3BodyId*)AllocZeroTLSFGlobal(scene->surfaceSet.maxEntities, sizeof(b3BodyId));
-	scene->transparentPhysicsBodies = (b3BodyId*)AllocZeroTLSFGlobal(scene->transparentSurfaceSet.maxEntities, sizeof(b3BodyId));
+	scene->transparentPhysicsBodies = (b3BodyId*)AllocZeroTLSFGlobal(scene->transparentSet.maxEntities, sizeof(b3BodyId));
 	if (!scene->surfacePhysicsBodies || !scene->transparentPhysicsBodies)
 		AX_WARN("physics: body slot allocation failed");
 }
@@ -145,6 +145,10 @@ void Scene_PhysicsDestroy(Scene* scene)
 	scene->transparentPhysicsBodies = NULL;
 	scene->pendingPhysics = NULL;
 	scene->numPendingPhysics = 0;
+	SDL_SetAtomicInt(&scene->physicsColliderBuildRunning, 0);
+	SDL_SetAtomicInt(&scene->physicsColliderBuildDone, 0);
+	scene->physicsColliderBuildCallback = NULL;
+	scene->physicsColliderBuildResult = 0;
 	scene->physicsWorldID = b3_nullWorldId;
 	MemSet(scene->terrainPhysicsBodies, 0, sizeof(b3BodyId) * MAX_TERRAIN_PHYSICS_CHUNKS);
 	MemSet(scene->terrainPhysicsMeshes, 0, sizeof(b3MeshData*) * MAX_TERRAIN_PHYSICS_CHUNKS);
@@ -169,8 +173,11 @@ u64 SceneB3QuatToEntityRotation(b3Quat q) { return EntityPackRotation(VecSetR(q.
 
 static RenderSet* PhysicsSet(Scene* scene, bool transparent)
 {
-	return transparent ? &scene->transparentSurfaceSet : &scene->surfaceSet;
+	return transparent ? &scene->transparentSet : &scene->surfaceSet;
 }
+
+static u32 PhysicsCountMeshes(Scene* scene, bool transparent);
+static void BuildCollidersForSet(Scene* scene, const RenderSet* set, bool transparent);
 
 static b3MeshData** PhysicsMeshes(Scene* scene, bool transparent)
 {
@@ -224,6 +231,23 @@ static bool PhysicsUserDataTransparent(void* userData)
 
 void Scene_PhysicsUpdate(Scene* scene, float deltaTime)
 {
+	if (SDL_GetAtomicInt(&scene->physicsColliderBuildDone))
+	{
+		SDL_SetAtomicInt(&scene->physicsColliderBuildDone, 0);
+		SDL_SetAtomicInt(&scene->physicsColliderBuildRunning, 0);
+		if (scene->physicsColliderBuildResult)
+		{
+			BuildCollidersForSet(scene, &scene->surfaceSet, false);
+			BuildCollidersForSet(scene, &scene->transparentSet, true);
+			Terrain_InvalidatePhysics();
+			AX_LOG("physics: built %u static collider meshes\n", PhysicsCountMeshes(scene, false) + PhysicsCountMeshes(scene, true));
+		}
+
+		AsyncCallback callback = scene->physicsColliderBuildCallback;
+		scene->physicsColliderBuildCallback = NULL;
+		if (callback) callback(scene, scene->physicsColliderBuildResult);
+	}
+
 	b3World_Step(scene->physicsWorldID, deltaTime, (int)g_PhysicsSettings.substepCount);
 
 	// Write moved bodies back onto their entities. Move events only report bodies
@@ -270,7 +294,7 @@ static void PhysicsDestroyMeshStorage(Scene* scene, bool transparent)
 static void PhysicsDestroyLiveStaticColliders(Scene* scene)
 {
 	PhysicsDestroyBodies(scene->surfacePhysicsBodies, scene->surfaceSet.maxEntities);
-	PhysicsDestroyBodies(scene->transparentPhysicsBodies, scene->transparentSurfaceSet.maxEntities);
+	PhysicsDestroyBodies(scene->transparentPhysicsBodies, scene->transparentSet.maxEntities);
 	for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
 		Scene_PhysicsDestroyTerrainChunk(scene, i);
 	PhysicsDestroyMeshStorage(scene, false);
@@ -312,9 +336,17 @@ static b3MeshData* Scene_PhysicsEnsureGroupMesh(Scene* scene, bool transparent, 
 	v128f decodeMin    = VecLoad(prim->min);
 	v128f decodeExtent = VecMax(VecSub(VecLoad(prim->max), decodeMin), VecSet1(1.0e-6f));
 
-	ArenaMark mark = ArenaSave(&GlobalArena);
-	b3Vec3*  verts = (b3Vec3*)ArenaAllocGlobal(numVertices * sizeof(b3Vec3));
-	int32_t* idx   = (int32_t*)ArenaAllocGlobal(numIndices * sizeof(int32_t));
+	size_t vertBytes = (size_t)numVertices * sizeof(b3Vec3);
+	size_t indexBytes = (size_t)numIndices * sizeof(int32_t);
+	b3Vec3*  verts = (b3Vec3*)SDL_malloc(vertBytes);
+	int32_t* idx   = (int32_t*)SDL_malloc(indexBytes);
+	if (!verts || !idx)
+	{
+		AX_WARN("physics collider temp allocation failed vertices=%u indices=%u", numVertices, numIndices);
+		if (verts) SDL_free(verts);
+		if (idx) SDL_free(idx);
+		return NULL;
+	}
 
 	const AVertex* vb = gGFX.SurfaceVertexBuffer + vertexOffset;
 	for (u32 v = 0; v < numVertices; v++)
@@ -323,7 +355,17 @@ static b3MeshData* Scene_PhysicsEnsureGroupMesh(Scene* scene, bool transparent, 
 	const u32* ib = gGFX.IndexBuffer + indexOffset;
 	for (u32 k = 0; k < numIndices; k++)
 	{
-		idx[k] = (int32_t)(ib[k] - vertexOffset); // mega-absolute -> group-local
+		u32 index = ib[k];
+		if (index < vertexOffset || index >= vertexOffset + numVertices)
+		{
+			AX_WARN("physics collider skipped: invalid index group=%u mesh=%u primitive=%u k=%u vertexRange=%u..%u index=%u indexOffset=%u numIndices=%u",
+					groupIdx, group->meshIndex, group->primitiveIndex, k, vertexOffset, vertexOffset + numVertices,
+					index, indexOffset, numIndices);
+			SDL_free(idx);
+			SDL_free(verts);
+			return NULL;
+		}
+		idx[k] = (int32_t)(index - vertexOffset); // mega-absolute -> group-local
 	}
 
 	b3MeshDef md      = {0};
@@ -333,7 +375,8 @@ static b3MeshData* Scene_PhysicsEnsureGroupMesh(Scene* scene, bool transparent, 
 	md.triangleCount  = (int)(numIndices / 3);
 	md.identifyEdges  = true;
 	b3MeshData* mesh  = b3CreateMesh(&md, NULL, 0);
-	ArenaRestore(&GlobalArena, mark); // b3CreateMesh copied the arrays into its own storage
+	SDL_free(idx);
+	SDL_free(verts);
 	if (!mesh) return NULL;
 
 	meshes[groupIdx] = mesh;
@@ -749,9 +792,28 @@ void RenderSet_ClearEntitiesCallback(RenderSet* set)
 	Scene_PhysicsDestroyBodiesInRange(set->hookScene, transparent, 0u, set->numGroups);
 }
 
-// builds one triangle-mesh collider per primitive group of the set and a static body per instance.
-// mirrors the bundle/group iteration used by the picking BVH (BVH_RaycastSet) and the same unorm16
-// de-quantization as BVH_PrimitiveDecode so the collider matches the rendered geometry exactly.
+// Builds one triangle-mesh collider per primitive group. This can run on the loader thread because
+// it only creates mesh data, not world bodies.
+static void BuildColliderMeshesForSet(Scene* scene, const RenderSet* set, bool transparent)
+{
+	for (u32 b = 0; b < set->numBundles; b++)
+	{
+		const SceneBundle* bundle = set->bundles[b];
+		if (!bundle) continue;
+
+		Range range = set->bundlePrimRange[b];
+		for (u32 g = range.start; g < range.start + range.count; g++)
+		{
+			PrimitiveGroup* group = &set->primitiveGroups[g];
+			if (group->numEntities == 0 || group->lodNumIndices[0] < 3 || group->lodNumVertices[0] == 0)
+				continue;
+			Scene_PhysicsEnsureGroupMesh(scene, transparent, g);
+		}
+	}
+}
+
+// Creates static bodies for built collider meshes. Must run on the main thread: Box3D asserts when
+// bodies are created while the world is locked or from async worker mutation paths.
 static void BuildCollidersForSet(Scene* scene, const RenderSet* set, bool transparent)
 {
 	for (u32 b = 0; b < set->numBundles; b++)
@@ -759,13 +821,13 @@ static void BuildCollidersForSet(Scene* scene, const RenderSet* set, bool transp
 		const SceneBundle* bundle = set->bundles[b];
 		if (!bundle) continue;
 
-		Range range = set->bundlePrimitiveRange[b];
+		Range range = set->bundlePrimRange[b];
 		for (u32 g = range.start; g < range.start + range.count; g++)
 		{
 			PrimitiveGroup* group = &set->primitiveGroups[g];
 			if (group->numEntities == 0 || group->lodNumIndices[0] < 3 || group->lodNumVertices[0] == 0)
 				continue;
-			if (!Scene_PhysicsEnsureGroupMesh(scene, transparent, g)) continue;
+			if (!PhysicsMeshes(scene, transparent)[g]) continue;
 
 			Entity* ents = set->entities + group->entityOffset;
 			for (u32 e = 0; e < group->numEntities; e++)
@@ -779,26 +841,43 @@ void Scene_BuildStaticColliders(Scene* scene)
 	PhysicsDestroyLiveStaticColliders(scene);
 	if (!scene->surfacePhysicsBodies || !scene->transparentPhysicsBodies) return;
 
-	u32 maxMeshes = scene->surfaceSet.numGroups + scene->transparentSurfaceSet.numGroups;
+	u32 maxMeshes = scene->surfaceSet.numGroups + scene->transparentSet.numGroups;
 	if (maxMeshes == 0) return;
 
+	BuildColliderMeshesForSet(scene, &scene->surfaceSet, false);
+	BuildColliderMeshesForSet(scene, &scene->transparentSet, true);
 	BuildCollidersForSet(scene, &scene->surfaceSet, false);
-	BuildCollidersForSet(scene, &scene->transparentSurfaceSet, true);
+	BuildCollidersForSet(scene, &scene->transparentSet, true);
 	// the wholesale destroy above also dropped every terrain chunk collider; tell the
 	// terrain to re-create them on its next update (this can run on the async loader)
 	Terrain_InvalidatePhysics();
 	AX_LOG("physics: built %u static collider meshes\n", PhysicsCountMeshes(scene, false) + PhysicsCountMeshes(scene, true));
 }
 
-static s32 BuildStaticCollidersTask(void* data)
+static s32 BuildStaticColliderMeshesTask(void* data)
 {
-	Scene_BuildStaticColliders((Scene*)data);
+	Scene* scene = (Scene*)data;
+	BuildColliderMeshesForSet(scene, &scene->surfaceSet, false);
+	BuildColliderMeshesForSet(scene, &scene->transparentSet, true);
+	scene->physicsColliderBuildResult = 1;
+	SDL_SetAtomicInt(&scene->physicsColliderBuildDone, 1);
 	return 1;
 }
 
 void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback)
 {
-	AsyncRun("craete static colliders task", BuildStaticCollidersTask, callback, scene);
+	if (SDL_GetAtomicInt(&scene->physicsColliderBuildRunning))
+	{
+		AX_WARN("physics collider build already running");
+		return;
+	}
+
+	PhysicsDestroyLiveStaticColliders(scene);
+	scene->physicsColliderBuildCallback = callback;
+	scene->physicsColliderBuildResult = 0;
+	SDL_SetAtomicInt(&scene->physicsColliderBuildDone, 0);
+	SDL_SetAtomicInt(&scene->physicsColliderBuildRunning, 1);
+	AsyncRun("create static colliders task", BuildStaticColliderMeshesTask, NULL, scene);
 }
 
 // box3d picking against the static surface colliders. mirrors the BVHHit contract of the cpu-BVH
@@ -832,7 +911,7 @@ s32 Scene_PhysicsRaycastPick(const Scene* scene, v128f origin, v128f dir, BVHHit
 	}
 
 	u32 sparse = PhysicsUserDataSparse(userData);
-	const RenderSet* set = PhysicsUserDataTransparent(userData) ? &scene->transparentSurfaceSet : &scene->surfaceSet;
+	const RenderSet* set = PhysicsUserDataTransparent(userData) ? &scene->transparentSet : &scene->surfaceSet;
 	if (sparse >= set->maxEntities) return 0;
 	u32 dense = set->sparseID[sparse];
 	if (dense == INVALID_ENTITY || dense >= set->numEntities) return 0;

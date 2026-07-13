@@ -34,6 +34,7 @@ StructuredBuffer<uint>           sVisibleSparseIndices : register(t3);
 StructuredBuffer<SkinnedVertex>  sVertexBuffer      : register(t4);
 StructuredBuffer<uint>           sSparseToDense     : register(t5);
 StructuredBuffer<uint>           sVisibleCount      : register(t6);
+StructuredBuffer<PrimitiveGroupLOD> sPrimitiveGroupLODs : register(t7);
 
 RWStructuredBuffer<AnimatedVert> sAnimatedVert : register(u0, space1);
 
@@ -47,6 +48,7 @@ void main(uint3 globalID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint
     uint primitiveIdx = drawIdx / MESH_LOD_COUNT;
     uint lod = drawIdx - primitiveIdx * MESH_LOD_COUNT;
     PrimitiveGroup group = sPrimitiveGroups[primitiveIdx];
+    PrimitiveGroupLOD lodGroup = sPrimitiveGroupLODs[primitiveIdx];
 
     uint visibleSlot = groupID.y * 32u + groupThreadID.y;
     if (visibleSlot >= sVisibleCount[0])
@@ -72,9 +74,9 @@ void main(uint3 globalID : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint
         return;
 
     uint vertexBase = groupID.z * 32u;
-    uint animatedBase = group.lodAnimatedVertexOffset[lod];
-    uint numVertices = group.lodNumVertices[lod];
-    uint sourceVertexBase = group.lodVertexOffset[lod];
+    uint animatedBase = lodGroup.lodVertexOffset[lod];
+    uint numVertices = lodGroup.lodNumVertices[lod];
+    uint sourceVertexBase = lodGroup.lodVertexOffset[lod];
 
     uint boneStart = sparse * MAX_BONES;
 

@@ -162,7 +162,6 @@ typedef struct APrimitive_
     int lodNumIndices[4];
     int lodVertexOffset[4];
     int lodNumVertices[4];
-    int lodAnimatedVertexOffset[4];
     
     unsigned bvhNodeIndex;
 

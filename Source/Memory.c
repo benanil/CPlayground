@@ -8,7 +8,7 @@
 // quick A/B switch for hunting allocator related corruption,
 // 0 routes the global allocations through SDL's allocator instead of tlsf
 #ifndef USE_TLSF_ALLOCATOR
-    #define USE_TLSF_ALLOCATOR 0
+    #define USE_TLSF_ALLOCATOR 1
 #endif
 
 #if !USE_TLSF_ALLOCATOR

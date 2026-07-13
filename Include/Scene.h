@@ -79,10 +79,10 @@ typedef struct Scene_
 {
     RenderSet        skinnedSet;
     RenderSet        surfaceSet;
-    RenderSet        transparentSurfaceSet;
+    RenderSet        transparentSet;
     RenderSetBuffers skinnedBuffers;
     RenderSetBuffers surfaceBuffers;
-    RenderSetBuffers transparentSurfaceBuffers;
+    RenderSetBuffers transparentBuffers;
     TextureSystem    textureSystem;
     AnimationSystem  animSystem;
 
@@ -109,6 +109,10 @@ typedef struct Scene_
 	b3BodyId*            transparentPhysicsBodies;
 	struct b3MeshData*   terrainPhysicsMeshes[MAX_TERRAIN_PHYSICS_CHUNKS];
 	b3BodyId             terrainPhysicsBodies[MAX_TERRAIN_PHYSICS_CHUNKS];
+	SDL_AtomicInt        physicsColliderBuildRunning;
+	SDL_AtomicInt        physicsColliderBuildDone;
+	AsyncCallback        physicsColliderBuildCallback;
+	s32                  physicsColliderBuildResult;
 
 	// physics overrides parsed from a .scene file, applied once the async collider
 	// build finishes (bodies do not exist until then). tlsf-owned, freed on apply.

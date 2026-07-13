@@ -43,37 +43,41 @@ typedef struct Entity_
 
 typedef struct PrimitiveGroup_
 {
-    float4 aabbMin;
-    float4 aabbMax;
-    uint4 lodIndexOffset;  // w u16 entityOffset, numEntities
-    uint4 lodNumIndices;   // w u16 capacity, meshIndex
-    uint4 lodVertexOffset; // w u16 primitiveIndex, materialIndex
-    uint4 lodNumVertices;  
+    uint4 aabbMinEntity;
+    uint4 aabbMaxMaterial;
 } PrimitiveGroup;
+
+typedef struct PrimitiveGroupLOD_
+{
+    uint4 lodIndexOffset;
+    uint4 lodNumIndices;
+    uint4 lodVertexOffset;
+    uint4 lodNumVertices;
+} PrimitiveGroupLOD;
 
 uint PrimitiveGroup_EntityOffset(PrimitiveGroup group)
 {
-    return group.lodIndexOffset.w & 0xFFFFu;
+    return group.aabbMinEntity.w & 0xFFFFu;
 }
 
 uint PrimitiveGroup_NumEntities(PrimitiveGroup group)
 {
-    return group.lodIndexOffset.w >> 16u;
+    return group.aabbMinEntity.w >> 16u;
 }
 
 uint PrimitiveGroup_MaterialIndex(PrimitiveGroup group)
 {
-    return group.lodVertexOffset.w >> 16u;
+    return group.aabbMaxMaterial.w;
 }
 
 float3 PrimitiveGroup_AABBMin(PrimitiveGroup group)
 {
-    return group.aabbMin.xyz;
+    return asfloat(group.aabbMinEntity.xyz);
 }
 
 float3 PrimitiveGroup_AABBMax(PrimitiveGroup group)
 {
-    return group.aabbMax.xyz;
+    return asfloat(group.aabbMaxMaterial.xyz);
 }
 
 // Animated vertex cache format, 8 bytes per vertex (position only).

@@ -57,9 +57,10 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd, RenderSet* renderSet
     if (cullSphere) MemCopy(params.cullSphere, cullSphere, sizeof(params.cullSphere));
     else SDL_zero(params.cullSphere);
 
-    SDL_GPUBuffer* ro_buffers[2] = {
+    SDL_GPUBuffer* ro_buffers[3] = {
         buffers->entity,
-        buffers->primitiveGroup
+        buffers->primitiveGroup,
+        buffers->primitiveGroupLOD
     };
     SDL_GPUStorageBufferReadWriteBinding rw_bindings[8] = {
         { buffers->drawSparseIndices },
@@ -825,14 +826,15 @@ void DispatchAnimateVerticesCompute(SDL_GPUCommandBuffer* cmd, RenderSet* render
         { g_RenderState.skinned.animatedVertices }
     };
 
-    SDL_GPUBuffer* ro_buffers[7] = {
+    SDL_GPUBuffer* ro_buffers[8] = {
         anims->boneBuffer,
         setBuffers->entity,
         setBuffers->primitiveGroup,
         setBuffers->visibleSparseIndices,
         g_RenderState.skinned.vertexBuffer,
         setBuffers->sparseToDense,
-        setBuffers->visibleCount
+        setBuffers->visibleCount,
+        setBuffers->primitiveGroupLOD
     };
 
     SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, NULL, 0, rw_bindings, SDL_arraysize(rw_bindings));

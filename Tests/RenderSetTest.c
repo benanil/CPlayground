@@ -129,7 +129,6 @@ static APrimitive MakePrimitive(int material, int indexOffset, int numIndices, i
         p.lodNumIndices[lod] = lod == 0 ? numIndices : numIndices / 2;
         p.lodVertexOffset[lod] = vertexOffset;
         p.lodNumVertices[lod] = numVertices;
-        p.lodAnimatedVertexOffset[lod] = vertexOffset;
     }
     return p;
 }
@@ -389,8 +388,8 @@ static void TestBundleRegistration(void)
     CHECK(a == 0, "first bundle index=%u", a);
     CHECK(b == 1, "second bundle index=%u", b);
     CHECK(set.numGroups == 3, "numGroups=%u", set.numGroups);
-    CHECK(set.bundlePrimitiveRange[0].start == 0 && set.bundlePrimitiveRange[0].count == 2, "bundle A range %u+%u", set.bundlePrimitiveRange[0].start, set.bundlePrimitiveRange[0].count);
-    CHECK(set.bundlePrimitiveRange[1].start == 2 && set.bundlePrimitiveRange[1].count == 1, "bundle B range %u+%u", set.bundlePrimitiveRange[1].start, set.bundlePrimitiveRange[1].count);
+    CHECK(set.bundlePrimRange[0].start == 0 && set.bundlePrimRange[0].count == 2, "bundle A range %u+%u", set.bundlePrimRange[0].start, set.bundlePrimRange[0].count);
+    CHECK(set.bundlePrimRange[1].start == 2 && set.bundlePrimRange[1].count == 1, "bundle B range %u+%u", set.bundlePrimRange[1].start, set.bundlePrimRange[1].count);
     CHECK(set.primitiveGroups[0].materialIndex == 10, "group0 material=%u", set.primitiveGroups[0].materialIndex);
     CHECK(set.primitiveGroups[1].materialIndex == 11, "group1 material=%u", set.primitiveGroups[1].materialIndex);
     CHECK(set.primitiveGroups[2].materialIndex == 20, "group2 material=%u", set.primitiveGroups[2].materialIndex);
@@ -704,11 +703,11 @@ static void TestClearEntitiesKeepsBundlesAndGroups(void)
     CHECK(set.bundles[0] == &bundleA, "bundle 0 pointer changed");
     CHECK(set.bundles[1] == &bundleB, "bundle 1 pointer changed");
 
-    CHECK(set.bundlePrimitiveRange[0].start == 0 && set.bundlePrimitiveRange[0].count == 2,
-          "bundle A range %u+%u", set.bundlePrimitiveRange[0].start, set.bundlePrimitiveRange[0].count);
+    CHECK(set.bundlePrimRange[0].start == 0 && set.bundlePrimRange[0].count == 2,
+          "bundle A range %u+%u", set.bundlePrimRange[0].start, set.bundlePrimRange[0].count);
 
-    CHECK(set.bundlePrimitiveRange[1].start == 2 && set.bundlePrimitiveRange[1].count == 1,
-          "bundle B range %u+%u", set.bundlePrimitiveRange[1].start, set.bundlePrimitiveRange[1].count);
+    CHECK(set.bundlePrimRange[1].start == 2 && set.bundlePrimRange[1].count == 1,
+          "bundle B range %u+%u", set.bundlePrimRange[1].start, set.bundlePrimRange[1].count);
 
     CheckGroupRange(&set, 0, 0, 0, "clear entities");
     CheckGroupRange(&set, 1, 0, 0, "clear entities");
@@ -780,14 +779,14 @@ static void TestRemoveSceneBundleMiddleWithEntities(void)
     CHECK(set.bundles[1] == NULL, "bundle 1 slot should be empty");
     CHECK(set.bundles[2] == &bundleC, "bundle 2 should be C");
 
-    CHECK(set.bundlePrimitiveRange[0].start == 0 && set.bundlePrimitiveRange[0].count == 2,
-          "bundle A range %u+%u", set.bundlePrimitiveRange[0].start, set.bundlePrimitiveRange[0].count);
+    CHECK(set.bundlePrimRange[0].start == 0 && set.bundlePrimRange[0].count == 2,
+          "bundle A range %u+%u", set.bundlePrimRange[0].start, set.bundlePrimRange[0].count);
 
-    CHECK(set.bundlePrimitiveRange[1].start == 0 && set.bundlePrimitiveRange[1].count == 0,
-          "freed slot range %u+%u", set.bundlePrimitiveRange[1].start, set.bundlePrimitiveRange[1].count);
+    CHECK(set.bundlePrimRange[1].start == 0 && set.bundlePrimRange[1].count == 0,
+          "freed slot range %u+%u", set.bundlePrimRange[1].start, set.bundlePrimRange[1].count);
 
-    CHECK(set.bundlePrimitiveRange[2].start == 2 && set.bundlePrimitiveRange[2].count == 2,
-          "bundle C range %u+%u", set.bundlePrimitiveRange[2].start, set.bundlePrimitiveRange[2].count);
+    CHECK(set.bundlePrimRange[2].start == 2 && set.bundlePrimRange[2].count == 2,
+          "bundle C range %u+%u", set.bundlePrimRange[2].start, set.bundlePrimRange[2].count);
 
     CHECK(set.primitiveGroups[0].materialIndex == 10, "group0 material=%u", set.primitiveGroups[0].materialIndex);
     CHECK(set.primitiveGroups[1].materialIndex == 11, "group1 material=%u", set.primitiveGroups[1].materialIndex);

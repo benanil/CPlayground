@@ -336,10 +336,10 @@ purefn f32 VCALL Vec3DotfImpl(v128f a, v128f b) {
 #define VeciLoad64(qword)           _mm_loadu_si64(qword)     /* loads 64bit integer to first 8 bytes of register */
                                     
 // SSE4.1                           
-#define VeciSetX(v, x)              ((v) = _mm_insert_epi32((v), 0, x))
-#define VeciSetY(v, y)              ((v) = _mm_insert_epi32((v), 1, y))
-#define VeciSetZ(v, z)              ((v) = _mm_insert_epi32((v), 2, z))
-#define VeciSetW(v, w)              ((v) = _mm_insert_epi32((v), 3, w))
+#define VeciSetX(v, x)              ((v) = _mm_insert_epi32((v), x, 0))
+#define VeciSetY(v, y)              ((v) = _mm_insert_epi32((v), y, 1))
+#define VeciSetZ(v, z)              ((v) = _mm_insert_epi32((v), z, 2))
+#define VeciSetW(v, w)              ((v) = _mm_insert_epi32((v), w, 3))
                                     
 #define VeciSelect1111              _mm_set1_epi32(0xFFFFFFFF)
                                     

@@ -36,13 +36,14 @@ static void DrawRenderBufferDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* 
 
     // skinned meshes bind animated vertices ahead of the shadow matrices, so their shadow
     // matrix buffer lands one slot later than the surface layout
-    SDL_GPUBuffer* storageBuffers[5];
+    SDL_GPUBuffer* storageBuffers[6];
     u32 count = 0;
     storageBuffers[count++] = buffers->entity;
     storageBuffers[count++] = buffers->primitiveGroup;
     storageBuffers[count++] = buffers->drawSparseIndices;
     if (isSkinned) storageBuffers[count++] = g_RenderState.skinned.animatedVertices;
     if (useShadow) storageBuffers[count++] = ctx->shadowMatrixBuffer;
+    if (isSkinned) storageBuffers[count++] = buffers->primitiveGroupLOD;
     SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, count);
 
     if (alphaClip)
@@ -102,7 +103,7 @@ static void DrawRenderBufferScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* 
     // skinned meshes bind animated vertices ahead of the shadow cascades, so the cascade
     // buffer lands one slot later than the surface layout. The forward pass also needs the bone
     // matrices (t5) because it re-skins the tangent frame (not cached in the position-only buffer).
-    SDL_GPUBuffer* storageBuffers[6];
+    SDL_GPUBuffer* storageBuffers[7];
     u32 count = 0;
     storageBuffers[count++] = buffers->entity;
     storageBuffers[count++] = buffers->primitiveGroup;
@@ -110,6 +111,7 @@ static void DrawRenderBufferScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* 
     if (isSkinned) storageBuffers[count++] = g_RenderState.skinned.animatedVertices;
     storageBuffers[count++] = g_RenderState.shadowCascadeBuffer;
     if (isSkinned) storageBuffers[count++] = scene->animSystem.boneBuffer;
+    if (isSkinned) storageBuffers[count++] = buffers->primitiveGroupLOD;
     SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, count);
 
     SDL_BindGPUFragmentSamplers(pass, 0, pageSamplers, 4);
@@ -137,7 +139,7 @@ static void DrawRenderBufferForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass
     SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
     SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 
-    SDL_GPUBuffer* storageBuffers[6];
+    SDL_GPUBuffer* storageBuffers[7];
     u32 count = 0;
     storageBuffers[count++] = buffers->entity;
     storageBuffers[count++] = buffers->primitiveGroup;
@@ -145,6 +147,7 @@ static void DrawRenderBufferForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass
     if (isSkinned) storageBuffers[count++] = g_RenderState.skinned.animatedVertices;
     storageBuffers[count++] = g_RenderState.shadowCascadeBuffer;
     if (isSkinned) storageBuffers[count++] = scene->animSystem.boneBuffer;
+    if (isSkinned) storageBuffers[count++] = buffers->primitiveGroupLOD;
     SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, count);
 
     SDL_BindGPUFragmentSamplers(pass, 0, fragmentSamplers, 8);
@@ -157,7 +160,7 @@ static void DrawRenderBufferForward(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass
 void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, u32 width, u32 height, u32 tilesX, bool localLightsEnabled)
 {
     Scene* scene = g_ActiveScene;
-    u32 totalGroups = scene->skinnedSet.numGroups + scene->surfaceSet.numGroups + scene->transparentSurfaceSet.numGroups;
+    u32 totalGroups = scene->skinnedSet.numGroups + scene->surfaceSet.numGroups + scene->transparentSet.numGroups;
     if (totalGroups == 0 && g_NumTerrainChunkDraws == 0)
         return;
 
@@ -233,7 +236,7 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
     RenderTerrain(cmd, pass, ctx->viewProj);
     Terrain_RenderGrass(cmd, pass);
 
-    DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSurfaceSet, &scene->transparentSurfaceBuffers,
+    DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSet, &scene->transparentBuffers,
                             g_RenderState.surface.transparentForwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
                             &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
 

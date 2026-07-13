@@ -95,9 +95,9 @@ static void IndicesForPrimitive(APrimitive* primitive, u32* currIndices, const u
     if (primitive->indices == NULL)
     {
         primitive->indices = currIndices;
-        s32* indices = (s32*)primitive->indices;
+        u32* indices = (u32*)primitive->indices;
         for (s32 i = 0; i < primitive->numIndices; i++)
-            indices[i] = i;
+            indices[i] = vertexCursor + (u32)i;
         return;
     }
 
@@ -222,7 +222,7 @@ static void BoundsForPrimitive(APrimitive* primitive)
     VecStore(primitive->max, max);
 }
 
-static void SetPrimitiveLODFallback(APrimitive* primitive, u32 vertexOffset, u32 animatedVertexOffset)
+static void SetPrimitiveLODFallback(APrimitive* primitive, u32 vertexOffset)
 {
     for (u32 lod = 0; lod < ARRAY_SIZE(primitive->lodIndexOffset); lod++)
     {
@@ -230,7 +230,6 @@ static void SetPrimitiveLODFallback(APrimitive* primitive, u32 vertexOffset, u32
         primitive->lodNumIndices[lod]  = primitive->numIndices;
         primitive->lodVertexOffset[lod] = (int)vertexOffset;
         primitive->lodNumVertices[lod] = primitive->numVertices;
-        primitive->lodAnimatedVertexOffset[lod] = (int)animatedVertexOffset;
     }
 }
 
@@ -335,7 +334,7 @@ static void GenerateStaticLODsForPrimitive(APrimitive* primitive, const u32* glo
 
 static void GenerateSkinnedLODsForPrimitive(APrimitive* primitive, const u32* globalIndices, u32 vertexBase,
                                             ASkinedVertex** vertexWrite, u32* vertexCursor, u32 vertexRangeEnd,
-                                            u32* animatedVertexCursor, u32** lodWrite, u32* lodIndexCursor,
+                                            u32** lodWrite, u32* lodIndexCursor,
                                             u32 indexRangeEnd, f32 lodBudgetScale)
 {
     const float3* positions = (const float3*)primitive->vertexAttribs[AAttribIdx_POSITION];
@@ -411,14 +410,14 @@ static void GenerateSkinnedLODsForPrimitive(APrimitive* primitive, const u32* gl
             continue;
         }
 
-        if (*animatedVertexCursor + compactVertexCount > MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE)
+        u32 lodVertexOffset = *vertexCursor;
+        if (lodVertexOffset + compactVertexCount > MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE)
         {
             AX_WARN("skinned lod generation skipped: animated vertex capacity exceeded lod=%d vertices=%d/%llu", lod,
-                    *animatedVertexCursor + compactVertexCount, (unsigned long long)MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE);
+                    lodVertexOffset + compactVertexCount, (unsigned long long)MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE);
             continue;
         }
 
-        u32 lodVertexOffset = *vertexCursor;
         for (u32 v = 0; v < (u32)numVertices; v++)
         {
             u32 remapped = vertexRemap[v];
@@ -430,14 +429,12 @@ static void GenerateSkinnedLODsForPrimitive(APrimitive* primitive, const u32* gl
         primitive->lodNumIndices[lod]   = (int)simplifiedCount;
         primitive->lodVertexOffset[lod] = (int)lodVertexOffset;
         primitive->lodNumVertices[lod]  = (int)compactVertexCount;
-        primitive->lodAnimatedVertexOffset[lod] = (int)*animatedVertexCursor;
 
         for (u32 i = 0; i < (u32)simplifiedCount; i++)
             (*lodWrite)[i] = lodVertexOffset + vertexRemap[simplified[i]];
 
         *vertexWrite += compactVertexCount;
         *vertexCursor += compactVertexCount;
-        *animatedVertexCursor += compactVertexCount;
         *lodWrite += simplifiedCount;
         *lodIndexCursor += (u32)simplifiedCount;
 
@@ -473,7 +470,7 @@ static void ValidatePrimitiveLODs(const SceneBundle* gltf, bool isSkinned, u32 v
 
                 if (isSkinned)
                 {
-                    u32 animatedOffset = (u32)primitive->lodAnimatedVertexOffset[lod];
+                    u32 animatedOffset = (u32)primitive->lodVertexOffset[lod];
                     u32 numVertices = (u32)primitive->lodNumVertices[lod];
                     if (animatedOffset + numVertices > MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE)
                     {
@@ -541,6 +538,16 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
         return 0;
     }
 
+    if (isSkinned && vertexBase + (u32)gltf->totalVertices > MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE)
+    {
+        AX_WARN("mesh bake failed: skinned vertex offsets exceed animated capacity range=%d..%d max=%llu",
+                vertexBase, vertexBase + (u32)gltf->totalVertices,
+                (unsigned long long)MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE);
+        GeometryHeapFree(vertexKind, vertexRaw);
+        GeometryHeapFree(GeometryBuffer_Index, indexRaw);
+        return 0;
+    }
+
     if (outVertexHeapPtr) *outVertexHeapPtr = vertexRaw;
     if (outIndexHeapPtr)  *outIndexHeapPtr = indexRaw;
 
@@ -559,7 +566,6 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
     u32* currIndices = (u32*)gltf->allIndices;
     u32 lodIndexCursor = indexCursor + (u32)gltf->totalIndices;
     u32* lodWrite = gGFX.IndexBuffer + lodIndexCursor;
-    u32 localAnimatedVertexCursor = 0;
     // when the allocator was too tight for the desired budget, scale the lod targets down
     u32 lodBudget = indexCapacity - 4u - (u32)gltf->totalIndices;
     f32 lodBudgetScale = desiredLODIndices > 0.0f ? Minf32((f32)lodBudget / desiredLODIndices, 1.0f) : 1.0f;
@@ -575,7 +581,6 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
 
             u32 primitiveVertexCursor = vertexCursor;
             u32 primitiveIndexCursor = indexCursor;
-            u32 primitiveAnimatedOffset = localAnimatedVertexCursor;
             IndicesForPrimitive(primitive, currIndices, primitiveVertexCursor);
             // Bounds first: surface vertices quantize their position against this AABB.
             BoundsForPrimitive(primitive);
@@ -586,7 +591,6 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
                 WeightsForPrimitive(primitive, currSkinnedVertex);
                 currSkinnedVertex += primitive->numVertices;
                 vertexCursor += primitive->numVertices;
-                localAnimatedVertexCursor += (u32)primitive->numVertices;
             }
             else
             {
@@ -597,12 +601,12 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
             }
 
             primitive->indexOffset = primitiveIndexCursor;
-            SetPrimitiveLODFallback(primitive, primitiveVertexCursor, primitiveAnimatedOffset);
+            SetPrimitiveLODFallback(primitive, primitiveVertexCursor);
             if (isSkinned)
             {
                 GenerateSkinnedLODsForPrimitive(primitive, currIndices, primitiveVertexCursor, &currSkinnedVertex,
-                                                &vertexCursor, vertexRangeEnd, &localAnimatedVertexCursor, &lodWrite,
-                                                &lodIndexCursor, indexRangeEnd, lodBudgetScale);
+                                                &vertexCursor, vertexRangeEnd, &lodWrite, &lodIndexCursor,
+                                                indexRangeEnd, lodBudgetScale);
             }
             else
             {

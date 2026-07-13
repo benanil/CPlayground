@@ -21,14 +21,28 @@ void RenderSet_InitSet(RenderSet* set, u32 maxEntities, u32 maxGroups, u32 maxBu
     set->skinned     = skinned ? 1u : 0u;
     set->materialFilter = RenderSetMaterialFilter_All;
 
-    set->entities         = (Entity*)AllocZeroTLSFGlobal(maxEntities, sizeof(Entity));
-    set->sparseID         = (u32*)AllocateTLSFGlobal(maxEntities * sizeof(u32));
+    set->entities         = (Entity*)AllocAligned(maxEntities * sizeof(Entity), 16);
+    set->sparseID         = (u32*)AllocAligned(maxEntities * sizeof(u32), 16);
     set->sparseSlots      = (u64*)AllocZeroTLSFGlobal((maxEntities + 63u) >> 6, sizeof(u64));
-    set->primitiveGroups  = (PrimitiveGroup*)AllocZeroTLSFGlobal(maxGroups, sizeof(PrimitiveGroup));
-    set->bundlePrimitiveRange = (Range*)AllocZeroTLSFGlobal(maxBundles, sizeof(Range));
+    set->primitiveGroups  = (PrimitiveGroup*)AllocAligned(maxGroups * sizeof(PrimitiveGroup), 16);
+    set->bundlePrimRange = (Range*)AllocZeroTLSFGlobal(maxBundles, sizeof(Range));
     set->bundles          = (const SceneBundle**)AllocZeroTLSFGlobal(maxBundles, sizeof(SceneBundle*));
     set->bundleSlots      = (u64*)AllocZeroTLSFGlobal((maxBundles + 63u) >> 6, sizeof(u64));
-    MemSet(set->sparseID, 0xFF, maxEntities * sizeof(u32));
+	MemSet(set->entities, 0, maxEntities * sizeof(Entity));
+	MemSet(set->primitiveGroups, 0, maxGroups * sizeof(PrimitiveGroup));
+	MemSet(set->sparseID, 0xFF, maxEntities * sizeof(u32));
+}
+
+void RenderSet_Destroy(RenderSet* set)
+{
+	FreeAligned(set->entities);
+    FreeAligned(set->sparseID); 
+    DeAllocateTLSFGlobal(set->sparseSlots);     
+    FreeAligned(set->primitiveGroups);
+	DeAllocateTLSFGlobal(set->bundlePrimRange);
+    DeAllocateTLSFGlobal(set->bundles);
+	DeAllocateTLSFGlobal(set->bundleSlots);
+	MemsetZero(set, sizeof(RenderSet));
 }
 
 void RenderSet_SetMaterialFilter(RenderSet* set, RenderSetMaterialFilter filter)
@@ -227,12 +241,6 @@ u32 RenderSet_AddSceneBundle(RenderSet* set, const SceneBundle* sceneBundle, u32
     if (bundleIdx + 1u > set->numBundles) set->numBundles = bundleIdx + 1u;
     set->bundles[bundleIdx] = sceneBundle;
     u32 primitiveStart = set->numGroups;
-    u32 vertexBase = 0;
-    u32 localVertexOffset = 0;
-    if (set->skinned)
-        vertexBase = (u32)((const ASkinedVertex*)sceneBundle->allVertices - gGFX.SkinnedVertexBuffer);
-    else
-        vertexBase = (u32)((const AVertex*)sceneBundle->allVertices - gGFX.SurfaceVertexBuffer);
     // Skinned primitives deform far outside their bind-pose AABB when they are rigidly bound
     // to a moving bone (a sword in the hand, a helmet on the head, ...). The animation shaders
     // normalize each vertex against PrimitiveGroup.aabbMin/aabbMax, so a per-primitive bind AABB
@@ -288,17 +296,15 @@ u32 RenderSet_AddSceneBundle(RenderSet* set, const SceneBundle* sceneBundle, u32
             {
                 group->lodIndexOffset[lod] = (u32)primitive->lodIndexOffset[lod];
                 group->lodNumIndices[lod]  = (u32)primitive->lodNumIndices[lod];
-                group->lodVertexOffset[lod] = set->skinned ? (u32)primitive->lodVertexOffset[lod] : vertexBase + (u32)primitive->lodVertexOffset[lod];
+                group->lodVertexOffset[lod] = (u32)primitive->lodVertexOffset[lod];
                 group->lodNumVertices[lod] = (u32)primitive->lodNumVertices[lod];
-                group->lodAnimatedVertexOffset[lod] = (u32)primitive->lodAnimatedVertexOffset[lod];
             }
-            localVertexOffset += (u32)primitive->numVertices;
         }
         totalPrimitives += mesh->numPrimitives;
     }
     set->numGroups += totalPrimitives;
-    set->bundlePrimitiveRange[bundleIdx].start = primitiveStart;
-    set->bundlePrimitiveRange[bundleIdx].count = set->numGroups - primitiveStart;
+    set->bundlePrimRange[bundleIdx].start = primitiveStart;
+    set->bundlePrimRange[bundleIdx].count = set->numGroups - primitiveStart;
     return bundleIdx;
 }
 
@@ -434,7 +440,7 @@ u32 RenderSet_AddScene(RenderSet* set, u32 bundleIdx, v128f position, v128f rota
         return 0;
     }
 
-    const Range range = set->bundlePrimitiveRange[bundleIdx];
+    const Range range = set->bundlePrimRange[bundleIdx];
     const SceneBundle* bundle = set->bundles[bundleIdx];
     const ANode* nodes = bundle->nodes;
     const int numNodes = bundle->numNodes;
@@ -664,7 +670,7 @@ void RenderSet_Clear(RenderSet* set)
     MemsetZero(set->sparseSlots, ((set->maxEntities + 63u) >> 6) * sizeof(u64));
     MemsetZero(set->entities, set->maxEntities * sizeof(Entity));
     MemsetZero(set->primitiveGroups, set->maxGroups * sizeof(PrimitiveGroup));
-    MemsetZero(set->bundlePrimitiveRange, set->maxBundles * sizeof(Range));
+    MemsetZero(set->bundlePrimRange, set->maxBundles * sizeof(Range));
     MemsetZero(set->bundles, set->maxBundles * sizeof(SceneBundle*));
     MemsetZero(set->bundleSlots, ((set->maxBundles + 63u) >> 6) * sizeof(u64));
 }
@@ -740,7 +746,7 @@ u32 RenderSet_RemoveSceneBundle(RenderSet* set, u32 bundleIdx)
 {
     if (bundleIdx >= set->numBundles) return 0;
 
-    Range range = set->bundlePrimitiveRange[bundleIdx];
+    Range range = set->bundlePrimRange[bundleIdx];
     if (range.count == 0) return 0;
 
     u32 firstGroup = range.start;
@@ -785,13 +791,13 @@ u32 RenderSet_RemoveSceneBundle(RenderSet* set, u32 bundleIdx)
     // live bundle whose range started after the removed one slides down by groupCount.
     BitsetReset(set->bundleSlots, (s32)bundleIdx);
     set->bundles[bundleIdx] = NULL;
-    set->bundlePrimitiveRange[bundleIdx] = (Range){0};
+    set->bundlePrimRange[bundleIdx] = (Range){0};
 
     for (u32 i = 0; i < set->numBundles; i++)
     {
         if (i == bundleIdx || set->bundles[i] == NULL) continue;
-        if (set->bundlePrimitiveRange[i].start > firstGroup)
-            set->bundlePrimitiveRange[i].start -= groupCount;
+        if (set->bundlePrimRange[i].start > firstGroup)
+            set->bundlePrimRange[i].start -= groupCount;
     }
 
     while (set->numBundles > 0 && !BitsetGet(set->bundleSlots, (s32)(set->numBundles - 1u)))
@@ -811,7 +817,7 @@ bool RenderSet_Validate(const RenderSet* set, const char* label)
     for (u32 b = 0; b < set->numBundles; b++)
     {
         if (set->bundles[b] == NULL) continue;
-        Range range = set->bundlePrimitiveRange[b];
+        Range range = set->bundlePrimRange[b];
         if (range.start + range.count > set->numGroups)
         {
             AX_WARN("RenderSet invalid %s: bundle %d range start=%d count=%d groups=%d",

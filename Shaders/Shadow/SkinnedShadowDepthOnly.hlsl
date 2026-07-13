@@ -10,6 +10,7 @@ StructuredBuffer<PrimitiveGroup>      sPrimitiveGroups  : register(t1);
 StructuredBuffer<uint>                sDrawSparseIndices : register(t2);
 StructuredBuffer<AnimatedVert>        sAnimatedVert     : register(t3);
 StructuredBuffer<ShadowCascadeBuffer> sShadowCascades  : register(t4);
+StructuredBuffer<PrimitiveGroupLOD>   sPrimitiveGroupLODs : register(t5);
 
 cbuffer vs_params : register(b0, space1)
 {
@@ -33,10 +34,11 @@ float4 vert(VSInput input,
     uint primitiveIdx = drawID / MESH_LOD_COUNT;
     uint lod = drawID - primitiveIdx * MESH_LOD_COUNT;
     PrimitiveGroup group = sPrimitiveGroups[primitiveIdx];
+    PrimitiveGroupLOD lodGroup = sPrimitiveGroupLODs[primitiveIdx];
     uint denseIdx  = sDrawSparseIndices[lod * uint(MAX_ANIM_INSTANCES) + PrimitiveGroup_EntityOffset(group) + instanceID];
-    uint localVertex = vertexId - group.lodVertexOffset[lod];
+    uint localVertex = vertexId - lodGroup.lodVertexOffset[lod];
     uint sparse = sEntities[denseIdx].sparse;
-    uint animatedVertex = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + group.lodAnimatedVertexOffset[lod] + localVertex;
+    uint animatedVertex = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + lodGroup.lodVertexOffset[lod] + localVertex;
     AnimatedVert animated = sAnimatedVert[animatedVertex];
     Entity entity = sEntities[denseIdx];
     float3 aabbMin = PrimitiveGroup_AABBMin(group);

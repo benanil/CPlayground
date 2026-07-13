@@ -239,6 +239,7 @@ typedef struct WindowState
 typedef struct RenderSetBuffers_
 {
     SDL_GPUBuffer* primitiveGroup;
+    SDL_GPUBuffer* primitiveGroupLOD;
     SDL_GPUBuffer* drawSparseIndices;
     SDL_GPUBuffer* drawArgs;
     SDL_GPUBuffer* sparseToDense;

@@ -267,11 +267,13 @@ RenderLightDebugInfo RendererGetLightDebugInfo(void)
 
 void CreateRenderSetBuffers(RenderSetBuffers* buffers, u32 maxEntities, u32 maxGroups)
 {
-    size_t groupBytes  = maxGroups * sizeof(PrimitiveGroup);
+    size_t groupBytes  = maxGroups * sizeof(PrimitiveGroupGPU);
+    size_t groupLODBytes = maxGroups * sizeof(PrimitiveGroupLOD);
     size_t entityBytes = maxEntities * sizeof(Entity);
     size_t lodMultiplier = MESH_LOD_COUNT;
 
     buffers->primitiveGroup    = CreateBuffer(NULL, groupBytes, BReadCompute, "CPPrimitiveGroups");
+    buffers->primitiveGroupLOD = CreateBuffer(NULL, groupLODBytes, BReadCompute, "CPPrimitiveGroupLODs");
     buffers->drawSparseIndices = CreateBuffer(NULL, maxEntities * lodMultiplier * sizeof(u32), BReadRasterBit |  BWriteComputeBit, "CPDrawSparseIndices");
     buffers->sparseToDense     = CreateBuffer(NULL, maxEntities * sizeof(u32), BReadCompute, "CPSparseToDense");
     buffers->drawArgs          = CreateBuffer(NULL, maxGroups * lodMultiplier * sizeof(SDL_GPUIndexedIndirectDrawCommand), BIndirectBit | BWriteComputeBit, "CPDrawArgs");
@@ -285,8 +287,38 @@ void CreateRenderSetBuffers(RenderSetBuffers* buffers, u32 maxEntities, u32 maxG
 // re-uploads the render set data that only changes when entities or bundles are added/removed
 static void UploadRenderSetStatics(const RenderSet* set, RenderSetBuffers* buffers)
 {
-    UpdateGPUBuffer(buffers->primitiveGroup, set->primitiveGroups, set->maxGroups * sizeof(PrimitiveGroup), 0);
+	if (set->numGroups == 0) return;
+	ArenaMark mark = ArenaSave(&GlobalArena);
+    PrimitiveGroupGPU* gpuGroups = (PrimitiveGroupGPU*)ArenaAllocAlign(&GlobalArena, set->numGroups * sizeof(PrimitiveGroupGPU), 16u);
+    PrimitiveGroupLOD* lodGroups = (PrimitiveGroupLOD*)ArenaAllocAlign(&GlobalArena, set->numGroups * sizeof(PrimitiveGroupLOD), 16u);
+	if (!gpuGroups || !lodGroups) {ArenaRestore(&GlobalArena, mark); return;} 
+	MemsetZero(gpuGroups, set->numGroups * sizeof(PrimitiveGroupGPU));
+    MemsetZero(lodGroups, set->numGroups * sizeof(PrimitiveGroupLOD));
+
+    for (u32 i = 0; i < set->numGroups; i++)
+    {
+        const PrimitiveGroup* group = &set->primitiveGroups[i];
+        v128u aabbMinEntity   = VecBitcastU32(group->aabbMin);
+        v128u aabbMaxMaterial = VecBitcastU32(group->aabbMax);
+        VeciSetW(aabbMinEntity  , (u32)group->entityOffset | ((u32)group->numEntities << 16u));
+        VeciSetW(aabbMaxMaterial, (u32)group->materialIndex);
+        VecStoreI(gpuGroups[i].aabbMinEntity  , aabbMinEntity);
+        VecStoreI(gpuGroups[i].aabbMaxMaterial, aabbMaxMaterial);
+    }
+		
+	for (u32 i = 0; i < set->numGroups; i++)
+	{
+        const PrimitiveGroup* group = &set->primitiveGroups[i];
+        VecStoreI(lodGroups[i].lodIndexOffset , VeciLoad(group->lodIndexOffset));
+        VecStoreI(lodGroups[i].lodNumIndices  , VeciLoad(group->lodNumIndices));
+        VecStoreI(lodGroups[i].lodVertexOffset, VeciLoad(group->lodVertexOffset));
+        VecStoreI(lodGroups[i].lodNumVertices , VeciLoad(group->lodNumVertices));
+    }
+
+    UpdateGPUBuffer(buffers->primitiveGroup, gpuGroups, set->numGroups * sizeof(PrimitiveGroupGPU), 0);
+    UpdateGPUBuffer(buffers->primitiveGroupLOD, lodGroups, set->numGroups * sizeof(PrimitiveGroupLOD), 0);
     UpdateGPUBuffer(buffers->sparseToDense, set->sparseID, set->maxEntities * sizeof(u32), 0);
+	ArenaRestore(&GlobalArena, mark);
 }
 
 // geometry ranges loaders queued for upload, flushed once the gpu buffers exist.
@@ -531,7 +563,7 @@ void CullScene(SDL_GPUCommandBuffer* cmd, FrustumPlanes planes, mat4x4 viewProj,
     Scene* scene = g_ActiveScene;
     DispatchCullDrawArgsCompute(cmd, &scene->skinnedSet, &scene->skinnedBuffers, planes, viewProj, flags, forcedLOD, 1u, NULL);
     DispatchCullDrawArgsCompute(cmd, &scene->surfaceSet, &scene->surfaceBuffers, planes, viewProj, flags, forcedLOD, 1u, NULL);
-    DispatchCullDrawArgsCompute(cmd, &scene->transparentSurfaceSet, &scene->transparentSurfaceBuffers, planes, viewProj, flags, forcedLOD, 1u, NULL);
+    DispatchCullDrawArgsCompute(cmd, &scene->transparentSet, &scene->transparentBuffers, planes, viewProj, flags, forcedLOD, 1u, NULL);
 }
 
 static void GatherSkinnedAnimationVisibility(SDL_GPUCommandBuffer* cmd, RenderSet* skinnedSet, RenderSetBuffers* skinnedBuffers,
@@ -648,12 +680,12 @@ void Render(void)
         {
             UploadRenderSetStatics(&scene->skinnedSet, &scene->skinnedBuffers);
             UploadRenderSetStatics(&scene->surfaceSet, &scene->surfaceBuffers);
-            UploadRenderSetStatics(&scene->transparentSurfaceSet, &scene->transparentSurfaceBuffers);
+            UploadRenderSetStatics(&scene->transparentSet, &scene->transparentBuffers);
             scene->renderDataDirty = 0;
         }
         UploadRenderSetEntities(&scene->skinnedSet, &scene->skinnedBuffers);
         UploadRenderSetEntities(&scene->surfaceSet, &scene->surfaceBuffers);
-        UploadRenderSetEntities(&scene->transparentSurfaceSet, &scene->transparentSurfaceBuffers);
+        UploadRenderSetEntities(&scene->transparentSet, &scene->transparentBuffers);
 
         // Consume the previous frame's light-visibility readback if the GPU has
         // finished it (non-blocking: if not ready, keep last frame's data). This
@@ -828,6 +860,7 @@ void DestroyRenderSetBuffers(RenderSetBuffers* buffers)
 {
     if (buffers->entity)               SDL_ReleaseGPUBuffer(g_GPUDevice, buffers->entity);
     if (buffers->primitiveGroup)       SDL_ReleaseGPUBuffer(g_GPUDevice, buffers->primitiveGroup);
+    if (buffers->primitiveGroupLOD)    SDL_ReleaseGPUBuffer(g_GPUDevice, buffers->primitiveGroupLOD);
     if (buffers->drawSparseIndices)    SDL_ReleaseGPUBuffer(g_GPUDevice, buffers->drawSparseIndices);
     if (buffers->drawArgs)             SDL_ReleaseGPUBuffer(g_GPUDevice, buffers->drawArgs);
     if (buffers->sparseToDense)        SDL_ReleaseGPUBuffer(g_GPUDevice, buffers->sparseToDense);

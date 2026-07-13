@@ -1197,7 +1197,7 @@ static bool tInit(void)
 
 void tUpdate(void)
 {
-    if (!tInit()) {
+    if (true || !tInit()) {
         RendererSetTerrainChunkDraws(NULL, 0);
         return;
     }

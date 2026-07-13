@@ -22,6 +22,7 @@
 Texture2D<float>                 hiZTexture            : register(t0);
 StructuredBuffer<Entity>         entities              : register(t1);
 StructuredBuffer<PrimitiveGroup> primitiveGroups       : register(t2);
+StructuredBuffer<PrimitiveGroupLOD> primitiveGroupLODs : register(t3);
 
 RWStructuredBuffer<uint>                drawSparseIndices    : register(u0, space1);
 RWStructuredBuffer<IndexedDrawCommand>  drawArgs             : register(u1, space1);
@@ -259,9 +260,10 @@ void Initialize(uint idx)
         uint lod = idx - primitiveIdx * lodCount;
 
         PrimitiveGroup group = primitiveGroups[primitiveIdx];
-        drawArgs[idx].numIndices    = group.lodNumIndices[lod];
+        PrimitiveGroupLOD lodGroup = primitiveGroupLODs[primitiveIdx];
+        drawArgs[idx].numIndices    = lodGroup.lodNumIndices[lod];
         drawArgs[idx].numInstances  = 0;
-        drawArgs[idx].firstIndex    = group.lodIndexOffset[lod];
+        drawArgs[idx].firstIndex    = lodGroup.lodIndexOffset[lod];
         drawArgs[idx].vertexOffset  = 0;
         drawArgs[idx].firstInstance = 0;
     }
@@ -319,6 +321,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     uint primitiveIdx = entity.primitiveIdx;
     PrimitiveGroup group = primitiveGroups[primitiveIdx];
+    PrimitiveGroupLOD lodGroup = primitiveGroupLODs[primitiveIdx];
 
     float3 worldCenter;
     float3 worldExtent;
@@ -364,7 +367,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             ProjectAABB(proj, worldMin, worldMax, viewProjection, hiZSize);
 
 		// objects that has more index will swap lod earlier
-		float indexCountModifier = saturate(float(group.lodNumIndices[0]) / 100000.0);
+		float indexCountModifier = saturate(float(lodGroup.lodNumIndices[0]) / 100000.0);
 		lod = SelectLOD(proj, indexCountModifier);
     }
 
@@ -387,7 +390,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         uint old;
         InterlockedCompareExchange(visibilityMask[visibleSparse], 0, 1, old);
 
-        InterlockedMax(dispatchArgs[1].groupCountZ, (group.lodNumVertices[lod] + 31u) / 32u);
+        InterlockedMax(dispatchArgs[1].groupCountZ, (lodGroup.lodNumVertices[lod] + 31u) / 32u);
 
         if (old == 0u)
         {

@@ -32,6 +32,8 @@ typedef struct Range_
 } Range;
 
 typedef struct PrimitiveGroup_ PrimitiveGroup;
+typedef struct PrimitiveGroupGPU_ PrimitiveGroupGPU;
+typedef struct PrimitiveGroupLOD_ PrimitiveGroupLOD;
 
 typedef enum RenderSetMaterialFilter_
 {
@@ -49,7 +51,7 @@ typedef struct RenderSet_
     u64*                sparseSlots; // bitset for used sparse id's
     
     PrimitiveGroup*     primitiveGroups;
-    Range*              bundlePrimitiveRange;
+    Range*              bundlePrimRange;
     const SceneBundle** bundles;
     u64*                bundleSlots; // bitset for used bundle slots, 1 means occupied
 
@@ -76,11 +78,27 @@ struct PrimitiveGroup_
     u16 primitiveIndex, materialIndex; 
 	u32 lodNumVertices[3];
 	u16 bundleIdx, padding0;
-    u32 lodAnimatedVertexOffset[3];
-    u32 padding;
 };
 
-STATIC_ASSERT(sizeof(PrimitiveGroup) == 112, "PrimitiveGroup CPU/GPU stride mismatch");
+STATIC_ASSERT(sizeof(PrimitiveGroup) == 96, "PrimitiveGroup CPU/GPU stride mismatch");
+
+struct PrimitiveGroupGPU_
+{
+    u32 aabbMinEntity[4]; // xyz float bits, w entityOffset | (numEntities << 16)
+    u32 aabbMaxMaterial[4]; // xyz float bits, w materialIndex
+};
+
+STATIC_ASSERT(sizeof(PrimitiveGroupGPU) == 32, "PrimitiveGroupGPU must stay 32 bytes");
+
+struct PrimitiveGroupLOD_
+{
+    u32 lodIndexOffset[4];
+    u32 lodNumIndices[4];
+    u32 lodVertexOffset[4];
+    u32 lodNumVertices[4];
+};
+
+STATIC_ASSERT(sizeof(PrimitiveGroupLOD) == 64, "PrimitiveGroupLOD must stay 64 bytes");
 
 static inline void PrimitiveGroup_SetAABB(PrimitiveGroup* group, v128f aabbMin, v128f aabbMax)
 {
@@ -114,6 +132,7 @@ u32   RenderSet_CountTriangles(const RenderSet* set);
 // debug validation for insertion/upload invariants. out: false when corruption is found.
 bool  RenderSet_Validate(const RenderSet* set, const char* label);
 
+void  RenderSet_Destroy(RenderSet* set);
 void  RenderSet_InitSet(RenderSet* set, u32 maxEntities, u32 maxGroups, u32 maxBundles, bool skinned);
 void  RenderSet_SetMaterialFilter(RenderSet* set, RenderSetMaterialFilter filter);
 void  RenderSet_SetHookScene(RenderSet* set, struct Scene_* scene);

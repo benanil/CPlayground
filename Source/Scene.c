@@ -25,6 +25,7 @@
 
 Scene* g_ActiveScene = NULL;
 extern Camera g_Camera;
+extern SDL_GPUDevice* g_GPUDevice;
 
 static Scene g_OwnedActiveScene;
 static bool  g_OwnedActiveSceneInit;
@@ -76,7 +77,7 @@ static void Scene_FreeBundleSlot(Scene* scene, u32 bundleIdx)
 // giving O(1) render-group -> scene-bundle without a reverse map.
 static void Scene_StampGroupBundle(RenderSet* set, u32 renderIdx, u32 sceneIdx)
 {
-    Range range = set->bundlePrimitiveRange[renderIdx];
+    Range range = set->bundlePrimRange[renderIdx];
     for (u32 g = 0; g < range.count; g++)
         set->primitiveGroups[range.start + g].bundleIdx = (u16)sceneIdx;
 }
@@ -86,15 +87,15 @@ void Scene_Init(Scene* scene)
     MemsetZero(scene, sizeof(*scene));
     RenderSet_InitSet(&scene->skinnedSet, MAX_ANIM_INSTANCES, MAX_GROUP, MAX_BUNDLES, true);
     RenderSet_InitSet(&scene->surfaceSet, MAX_ENTITY, MAX_GROUP, MAX_BUNDLES, false);
-    RenderSet_InitSet(&scene->transparentSurfaceSet, MAX_ENTITY, MAX_GROUP, MAX_BUNDLES, false);
+    RenderSet_InitSet(&scene->transparentSet, MAX_ENTITY, MAX_GROUP, MAX_BUNDLES, false);
     RenderSet_SetHookScene(&scene->skinnedSet, scene);
     RenderSet_SetHookScene(&scene->surfaceSet, scene);
-    RenderSet_SetHookScene(&scene->transparentSurfaceSet, scene);
+    RenderSet_SetHookScene(&scene->transparentSet, scene);
     RenderSet_SetMaterialFilter(&scene->surfaceSet, RenderSetMaterialFilter_Opaque);
-    RenderSet_SetMaterialFilter(&scene->transparentSurfaceSet, RenderSetMaterialFilter_Transparent);
+    RenderSet_SetMaterialFilter(&scene->transparentSet, RenderSetMaterialFilter_Transparent);
     CreateRenderSetBuffers(&scene->skinnedBuffers, MAX_ANIM_INSTANCES, MAX_GROUP);
     CreateRenderSetBuffers(&scene->surfaceBuffers, MAX_ENTITY, MAX_GROUP);
-    CreateRenderSetBuffers(&scene->transparentSurfaceBuffers, MAX_ENTITY, MAX_GROUP);
+    CreateRenderSetBuffers(&scene->transparentBuffers, MAX_ENTITY, MAX_GROUP);
     TextureSystem_Init(&scene->textureSystem);
     AnimationSystem_Init(&scene->animSystem);
 	Scene_InitPhysics(scene);
@@ -112,10 +113,13 @@ void Scene_Destroy(Scene* scene)
             BundleCacheRelease(scene->bundleRefs[i].path);
     DestroyRenderSetBuffers(&scene->skinnedBuffers);
     DestroyRenderSetBuffers(&scene->surfaceBuffers);
-    DestroyRenderSetBuffers(&scene->transparentSurfaceBuffers);
+    DestroyRenderSetBuffers(&scene->transparentBuffers);
     TextureSystem_Destroy(&scene->textureSystem);
     AnimationSystem_Destroy(&scene->animSystem);
-    if (scene->bundleRefs)    DeAllocateTLSFGlobal(scene->bundleRefs);
+	RenderSet_Destroy(&scene->skinnedSet);
+	RenderSet_Destroy(&scene->surfaceSet);
+	RenderSet_Destroy(&scene->transparentSet);
+	if (scene->bundleRefs)    DeAllocateTLSFGlobal(scene->bundleRefs);
     if (scene->lights)        DeAllocateTLSFGlobal(scene->lights);
     if (scene->materialSlots) DeAllocateTLSFGlobal(scene->materialSlots);
     if (scene->bundleSlots)   DeAllocateTLSFGlobal(scene->bundleSlots);
@@ -124,6 +128,7 @@ void Scene_Destroy(Scene* scene)
     scene->lights        = NULL;
     scene->materialSlots = NULL;
     scene->bundleSlots   = NULL;
+	scene->renderDataDirty = 0;
     if (scene == &g_OwnedActiveScene)
     {
         g_OwnedActiveSceneInit = false;
@@ -135,7 +140,10 @@ void Scene_Destroy(Scene* scene)
 Scene* Scene_NewActive(void)
 {
     if (g_OwnedActiveSceneInit)
+    {
+        if (g_GPUDevice) SDL_WaitForGPUIdle(g_GPUDevice);
         Scene_Destroy(&g_OwnedActiveScene);
+    }
     Scene_Init(&g_OwnedActiveScene);
     g_OwnedActiveSceneInit = true;
     g_ActiveScenePath[0] = '\0';
@@ -341,7 +349,7 @@ u32 Scene_AddBundle(Scene* scene, const char* path, bool skinned)
     u32 transparentRenderIdx = INVALID_BUNDLE;
     if (!skinned)
     {
-        transparentRenderIdx = RenderSet_AddSceneBundle(&scene->transparentSurfaceSet, bundle, materialOffset);
+        transparentRenderIdx = RenderSet_AddSceneBundle(&scene->transparentSet, bundle, materialOffset);
         if (transparentRenderIdx == INVALID_BUNDLE)
         {
             RenderSet_RemoveSceneBundle(set, renderIdx);
@@ -354,7 +362,7 @@ u32 Scene_AddBundle(Scene* scene, const char* path, bool skinned)
     {
         RenderSet_RemoveSceneBundle(set, renderIdx);
         if (transparentRenderIdx != INVALID_BUNDLE)
-            RenderSet_RemoveSceneBundle(&scene->transparentSurfaceSet, transparentRenderIdx);
+            RenderSet_RemoveSceneBundle(&scene->transparentSet, transparentRenderIdx);
         goto err_textures;
     }
     SceneBundleRef* ref     = &scene->bundleRefs[bundleIdx];
@@ -369,7 +377,7 @@ u32 Scene_AddBundle(Scene* scene, const char* path, bool skinned)
     ref->cacheKey           = StringToHash64(storedPath);
     Scene_StampGroupBundle(set, renderIdx, bundleIdx);
     if (transparentRenderIdx != INVALID_BUNDLE)
-        Scene_StampGroupBundle(&scene->transparentSurfaceSet, transparentRenderIdx, bundleIdx);
+        Scene_StampGroupBundle(&scene->transparentSet, transparentRenderIdx, bundleIdx);
 
     if (materialOffset + (u32)bundle->numMaterials > scene->numMaterials)
         scene->numMaterials = materialOffset + (u32)bundle->numMaterials;
@@ -482,7 +490,7 @@ u32 Scene_AddBundleBaked(Scene* scene, const char* path, u32 materialOffset)
     u32 transparentRenderIdx = INVALID_BUNDLE;
     if (!skinned)
     {
-        transparentRenderIdx = RenderSet_AddSceneBundle(&scene->transparentSurfaceSet, bundle, materialOffset);
+        transparentRenderIdx = RenderSet_AddSceneBundle(&scene->transparentSet, bundle, materialOffset);
         if (transparentRenderIdx == INVALID_BUNDLE)
         {
             AX_ERROR("transparent render set bundle registration failed: %s", storedPath);
@@ -496,7 +504,7 @@ u32 Scene_AddBundleBaked(Scene* scene, const char* path, u32 materialOffset)
     {
         RenderSet_RemoveSceneBundle(set, renderIdx);
         if (transparentRenderIdx != INVALID_BUNDLE)
-            RenderSet_RemoveSceneBundle(&scene->transparentSurfaceSet, transparentRenderIdx);
+            RenderSet_RemoveSceneBundle(&scene->transparentSet, transparentRenderIdx);
         goto err_bundle;
     }
     SceneBundleRef* ref = &scene->bundleRefs[bundleIdx];
@@ -511,7 +519,7 @@ u32 Scene_AddBundleBaked(Scene* scene, const char* path, u32 materialOffset)
     ref->cacheKey       = StringToHash64(storedPath);
     Scene_StampGroupBundle(set, renderIdx, bundleIdx);
     if (transparentRenderIdx != INVALID_BUNDLE)
-        Scene_StampGroupBundle(&scene->transparentSurfaceSet, transparentRenderIdx, bundleIdx);
+        Scene_StampGroupBundle(&scene->transparentSet, transparentRenderIdx, bundleIdx);
     if (materialOffset + (u32)bundle->numMaterials > scene->numMaterials)
         scene->numMaterials = materialOffset + (u32)bundle->numMaterials;
     scene->renderDataDirty = 1;
@@ -534,7 +542,7 @@ u32 Scene_RemoveBundle(Scene* scene, u32 bundleIdx)
 
     u32 removedEntities = RenderSet_RemoveSceneBundle(set, removedRenderIdx);
     if (!skinned && ref->transparentRenderIdx != INVALID_BUNDLE)
-        removedEntities += RenderSet_RemoveSceneBundle(&scene->transparentSurfaceSet, ref->transparentRenderIdx);
+        removedEntities += RenderSet_RemoveSceneBundle(&scene->transparentSet, ref->transparentRenderIdx);
     TextureSystem_RemoveBundle(&scene->textureSystem, ref->bundle, ref->materialOffset);
     BitsetSetRange(scene->materialSlots, ref->materialOffset, (u32)ref->bundle->numMaterials, false);
     Scene_UpdateMaterialWatermark(scene);
@@ -583,7 +591,7 @@ u32 Scene_Spawn(Scene* scene, u32 bundleIdx, v128f position, v128f rotation, v12
 
     bool skinned = scene->bundleRefs[bundleIdx].skinned != 0;
     RenderSet* set = skinned ? &scene->skinnedSet : &scene->surfaceSet;
-    Range range = set->bundlePrimitiveRange[scene->bundleRefs[bundleIdx].renderIdx];
+    Range range = set->bundlePrimRange[scene->bundleRefs[bundleIdx].renderIdx];
     u32* oldCounts = NULL;
     if (skinned && range.count > 0u)
     {
@@ -594,7 +602,7 @@ u32 Scene_Spawn(Scene* scene, u32 bundleIdx, v128f position, v128f rotation, v12
 
     u32 added = RenderSet_AddScene(set, scene->bundleRefs[bundleIdx].renderIdx, position, rotation, scale, skinned);
     if (!skinned && scene->bundleRefs[bundleIdx].transparentRenderIdx != INVALID_BUNDLE)
-        added += RenderSet_AddScene(&scene->transparentSurfaceSet, scene->bundleRefs[bundleIdx].transparentRenderIdx, position, rotation, scale, false);
+        added += RenderSet_AddScene(&scene->transparentSet, scene->bundleRefs[bundleIdx].transparentRenderIdx, position, rotation, scale, false);
     if (skinned && added && oldCounts)
     {
         GPUAnimationInstance instance = { .animIdx = Scene_DefaultAnimation(scene, bundleIdx), .timeOffset = 0.0f };
@@ -618,7 +626,7 @@ void Scene_ClearEntities(Scene* scene)
 {
     RenderSet_ClearEntities(&scene->skinnedSet);
     RenderSet_ClearEntities(&scene->surfaceSet);
-    RenderSet_ClearEntities(&scene->transparentSurfaceSet);
+    RenderSet_ClearEntities(&scene->transparentSet);
     scene->renderDataDirty = 1;
 }
 

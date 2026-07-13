@@ -13,6 +13,7 @@ StructuredBuffer<Entity>         sEntities          : register(t0);
 StructuredBuffer<PrimitiveGroup> sPrimitiveGroups   : register(t1);
 StructuredBuffer<uint>           sDrawSparseIndices : register(t2);
 StructuredBuffer<AnimatedVert>   sAnimatedVert      : register(t3);
+StructuredBuffer<PrimitiveGroupLOD> sPrimitiveGroupLODs : register(t4);
 
 StructuredBuffer<MaterialGPU> sMaterials : register(t1, space2);
 StructuredBuffer<TextureDescriptor> sTextureDescriptors : register(t2, space2);
@@ -43,10 +44,11 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID,
     uint primitiveIdx = drawID / MESH_LOD_COUNT;
     uint lod = drawID - primitiveIdx * MESH_LOD_COUNT;
     PrimitiveGroup group = sPrimitiveGroups[primitiveIdx];
+    PrimitiveGroupLOD lodGroup = sPrimitiveGroupLODs[primitiveIdx];
     uint denseIdx  = sDrawSparseIndices[lod * uint(MAX_ANIM_INSTANCES) + PrimitiveGroup_EntityOffset(group) + instanceID];
-    uint localVertex = vertexId - group.lodVertexOffset[lod];
+    uint localVertex = vertexId - lodGroup.lodVertexOffset[lod];
     uint sparse = sEntities[denseIdx].sparse;
-    uint animatedVertex = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + group.lodAnimatedVertexOffset[lod] + localVertex;
+    uint animatedVertex = sparse * uint(MAX_SKINNED_VERTEX_PER_ANIM_INSTANCE) + lodGroup.lodVertexOffset[lod] + localVertex;
     AnimatedVert animated = sAnimatedVert[animatedVertex];
     Entity entity = sEntities[denseIdx];
     float3 aabbMin = PrimitiveGroup_AABBMin(group);
