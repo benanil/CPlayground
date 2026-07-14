@@ -40,23 +40,18 @@ bool SpdMipInBounds(int2 pix, uint mip)
 #include "../Vendor/FFX_SPD/ffx_a.h"
 
 groupshared AU1 spdCounter;
-groupshared AF1 spdIntermediateR[16][16];
-groupshared AF1 spdIntermediateG[16][16];
-groupshared AF1 spdIntermediateB[16][16];
-groupshared AF1 spdIntermediateA[16][16];
+groupshared AF1 spdIntermediate[16][16];
 
 // Raw texel fetch, not a bilinear sample: min-reduction over 4 depths is not the same as their
 // weighted average, so we can't use SPD's linear-sampler shortcut like the bloom port does.
 // Depth is single-channel; SPD's plumbing is float4-shaped throughout, so it rides in .x only.
-AF4 SpdLoadSourceImage(ASU2 p, AU1 slice)
-{
+AF4 SpdLoadSourceImage(ASU2 p, AU1 slice) {
     uint2 clamped = min(uint2(p), sourceSize - 1u);
     float d = SourceHiZ.Load(int3(clamped, 0));
     return AF4(d, 0.0f, 0.0f, 0.0f);
 }
 
-AF4 SpdLoad(ASU2 p, AU1 slice)
-{
+AF4 SpdLoad(ASU2 p, AU1 slice) {
     return AF4(Mip6[p], 0.0f, 0.0f, 0.0f);
 }
 
@@ -76,36 +71,24 @@ void SpdStore(ASU2 pix, AF4 value, AU1 mip, AU1 slice)
     }
 }
 
-void SpdIncreaseAtomicCounter(AU1 slice)
-{
+void SpdIncreaseAtomicCounter(AU1 slice) {
     InterlockedAdd(SpdCounterBuffer[0], 1, spdCounter);
 }
 
-AU1 SpdGetAtomicCounter()
-{
+AU1 SpdGetAtomicCounter() {
     return spdCounter;
 }
 
-void SpdResetAtomicCounter(AU1 slice)
-{
+void SpdResetAtomicCounter(AU1 slice) {
     SpdCounterBuffer[0] = 0;
 }
 
-AF4 SpdLoadIntermediate(AU1 x, AU1 y)
-{
-    return AF4(
-        spdIntermediateR[x][y],
-        spdIntermediateG[x][y],
-        spdIntermediateB[x][y],
-        spdIntermediateA[x][y]);
+AF4 SpdLoadIntermediate(AU1 x, AU1 y) {
+    return AF4(spdIntermediate[x][y], 0.0f, 0.0f, 0.0f);
 }
 
-void SpdStoreIntermediate(AU1 x, AU1 y, AF4 value)
-{
-    spdIntermediateR[x][y] = value.x;
-    spdIntermediateG[x][y] = value.y;
-    spdIntermediateB[x][y] = value.z;
-    spdIntermediateA[x][y] = value.w;
+void SpdStoreIntermediate(AU1 x, AU1 y, AF4 value) {
+    spdIntermediate[x][y] = value.x;
 }
 
 // Reversed-Z: the farthest occluder has the smallest depth value, so a conservative per-tile

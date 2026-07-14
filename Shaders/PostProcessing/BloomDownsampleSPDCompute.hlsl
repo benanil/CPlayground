@@ -68,10 +68,7 @@ bool SpdMipInBounds(int2 pix, uint mip)
 #include "../Vendor/FFX_SPD/ffx_a.h"
 
 groupshared AU1 spdCounter;
-groupshared AH1 spdIntermediateR[16][16];
-groupshared AH1 spdIntermediateG[16][16];
-groupshared AH1 spdIntermediateB[16][16];
-groupshared AH1 spdIntermediateA[16][16];
+groupshared AH4 spdIntermediate[16][16];
 
 // Source is sampled once, exactly between the 2x2 texel quad each SPD thread reduces, so the
 // hardware bilinear filter does the first box-average for free (AMD's recommended fast path).
@@ -105,40 +102,27 @@ void SpdStoreH(ASU2 pix, AH4 value, AU1 mip, AU1 slice)
     }
 }
 
-void SpdIncreaseAtomicCounter(AU1 slice)
-{
+void SpdIncreaseAtomicCounter(AU1 slice) {
     InterlockedAdd(SpdCounterBuffer[0], 1, spdCounter);
 }
 
-AU1 SpdGetAtomicCounter()
-{
+AU1 SpdGetAtomicCounter() {
     return spdCounter;
 }
 
-void SpdResetAtomicCounter(AU1 slice)
-{
+void SpdResetAtomicCounter(AU1 slice) {
     SpdCounterBuffer[0] = 0;
 }
 
-AH4 SpdLoadIntermediateH(AU1 x, AU1 y)
-{
-    return AH4(
-        spdIntermediateR[x][y],
-        spdIntermediateG[x][y],
-        spdIntermediateB[x][y],
-        spdIntermediateA[x][y]);
+AH4 SpdLoadIntermediateH(AU1 x, AU1 y) {
+	return spdIntermediate[x][y];
 }
 
-void SpdStoreIntermediateH(AU1 x, AU1 y, AH4 value)
-{
-    spdIntermediateR[x][y] = value.x;
-    spdIntermediateG[x][y] = value.y;
-    spdIntermediateB[x][y] = value.z;
-    spdIntermediateA[x][y] = value.w;
+void SpdStoreIntermediateH(AU1 x, AU1 y, AH4 value) {
+	spdIntermediate[x][y] = value;
 }
 
-AH4 SpdReduce4H(AH4 v0, AH4 v1, AH4 v2, AH4 v3)
-{
+AH4 SpdReduce4H(AH4 v0, AH4 v1, AH4 v2, AH4 v3) {
     return (v0 + v1 + v2 + v3) * AH1(0.25);
 }
 
