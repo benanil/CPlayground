@@ -361,6 +361,17 @@ void CreateWindowBuffers()
     }
     winstate->tex_bloom_ping      = winstate->tex_bloom_downsample[0];
     winstate->tex_bloom_pong      = (bloomMipCount > 1u) ? winstate->tex_bloom_upsample[0] : winstate->tex_bloom_downsample[0];
+    if (!winstate->buf_bloom_spd_counter)
+    {
+        // AMD FFX SPD self-resets this to 0 at the end of every dispatch, so it only needs zeroing once, here.
+        u32 zero = 0u;
+        winstate->buf_bloom_spd_counter = CreateBuffer(&zero, sizeof(u32), BWriteComputeBit, "CPBloomSPDCounter");
+    }
+    for (u32 i = 0; i < 8u; i++)
+    {
+        if (!winstate->tex_bloom_spd_dummy[i])
+            winstate->tex_bloom_spd_dummy[i] = CreateTexture2D(1u, 1u, TEX_FMT_HALF4, TEX_COMP_WRITE, TEX_SMP_CNT1, 1, "Bloom SPD Dummy Texture");
+    }
     winstate->tex_mlaa_edge_mask  = CreateTexture2D(width, height, TEX_FMT_R32_UINT, TEX_COMP_READ | TEX_COMP_WRITE, TEX_SMP_CNT1, 1, "MLAA Edge Mask Texture");
     winstate->tex_mlaa_edge_count = CreateTexture2D(width, height, TEX_FMT_D32_FLT2, TEX_COMP_READ | TEX_COMP_WRITE, TEX_SMP_CNT1, 1, "MLAA Edge Count Texture");
     winstate->tex_mlaa_output     = CreateTexture2D(width, height, TEX_FMT_8UNORM4 , TEX_SAMPLER | TEX_COLOR_TARGET | TEX_COMP_WRITE, TEX_SMP_CNT1, 1, "MLAA Output Texture");

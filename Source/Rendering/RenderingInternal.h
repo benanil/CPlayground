@@ -89,7 +89,7 @@ extern SDL_GPUComputePipeline* g_CullDrawArgsComputePipeline;
 extern SDL_GPUComputePipeline* g_BuildLightGridComputePipeline;
 extern SDL_GPUComputePipeline* g_ReconstructNormalComputePipeline;
 extern SDL_GPUComputePipeline* g_TonemapComputePipeline;
-extern SDL_GPUComputePipeline* g_BloomPrefilterDownsampleComputePipeline;
+extern SDL_GPUComputePipeline* g_BloomDownsampleSPDComputePipeline;
 extern SDL_GPUComputePipeline* g_BloomUpsampleComputePipeline;
 extern SDL_GPUComputePipeline* g_HiZBuildComputePipeline;
 extern SDL_GPUComputePipeline* g_HiZDownscaleComputePipeline;

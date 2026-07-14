@@ -24,7 +24,7 @@
 #include "Shaders/msl/UI/UIImageVert.msl.h"
 #include "Shaders/msl/UI/UIImageFrag.msl.h"
 #include "Shaders/msl/PostProcessing/TonemapCompute.msl.h"
-#include "Shaders/msl/PostProcessing/BloomPrefilterDownsampleCompute.msl.h"
+#include "Shaders/msl/PostProcessing/BloomDownsampleSPDCompute.msl.h"
 #include "Shaders/msl/PostProcessing/BloomUpsampleCompute.msl.h"
 #include "Shaders/msl/PreProcessing/HiZBuildCompute.msl.h"
 #include "Shaders/msl/PreProcessing/HiZDownscaleCompute.msl.h"
@@ -55,7 +55,7 @@
 #define Shaders_CullDrawArgsCompute_spv Shaders_PreProcessing_CullDrawArgsCompute_msl
 #define Shaders_BuildLightGridCompute_spv Shaders_PreProcessing_BuildLightGridCompute_msl
 #define Shaders_TonemapCompute_spv Shaders_PostProcessing_TonemapCompute_msl
-#define Shaders_BloomPrefilterDownsampleCompute_spv Shaders_PostProcessing_BloomPrefilterDownsampleCompute_msl
+#define Shaders_BloomDownsampleSPDCompute_spv Shaders_PostProcessing_BloomDownsampleSPDCompute_msl
 #define Shaders_BloomUpsampleCompute_spv Shaders_PostProcessing_BloomUpsampleCompute_msl
 #define Shaders_HiZBuildCompute_spv Shaders_PreProcessing_HiZBuildCompute_msl
 #define Shaders_HiZDownscaleCompute_spv Shaders_PreProcessing_HiZDownscaleCompute_msl
@@ -118,7 +118,7 @@ extern const unsigned char Shaders_TerrainDepthOnlyFrag_msl[];
 #include "Shaders/spv/UI/UIImageVert.spv.h"
 #include "Shaders/spv/UI/UIImageFrag.spv.h"
 #include "Shaders/spv/PostProcessing/TonemapCompute.spv.h"
-#include "Shaders/spv/PostProcessing/BloomPrefilterDownsampleCompute.spv.h"
+#include "Shaders/spv/PostProcessing/BloomDownsampleSPDCompute.spv.h"
 #include "Shaders/spv/PostProcessing/BloomUpsampleCompute.spv.h"
 #include "Shaders/spv/PreProcessing/HiZBuildCompute.spv.h"
 #include "Shaders/spv/PreProcessing/HiZDownscaleCompute.spv.h"
@@ -153,8 +153,8 @@ extern const unsigned char Shaders_TerrainDepthOnlyFrag_msl[];
 #define Shaders_BuildLightGridCompute_spv_size Shaders_PreProcessing_BuildLightGridCompute_spv_size
 #define Shaders_TonemapCompute_spv Shaders_PostProcessing_TonemapCompute_spv
 #define Shaders_TonemapCompute_spv_size Shaders_PostProcessing_TonemapCompute_spv_size
-#define Shaders_BloomPrefilterDownsampleCompute_spv Shaders_PostProcessing_BloomPrefilterDownsampleCompute_spv
-#define Shaders_BloomPrefilterDownsampleCompute_spv_size Shaders_PostProcessing_BloomPrefilterDownsampleCompute_spv_size
+#define Shaders_BloomDownsampleSPDCompute_spv Shaders_PostProcessing_BloomDownsampleSPDCompute_spv
+#define Shaders_BloomDownsampleSPDCompute_spv_size Shaders_PostProcessing_BloomDownsampleSPDCompute_spv_size
 #define Shaders_BloomUpsampleCompute_spv Shaders_PostProcessing_BloomUpsampleCompute_spv
 #define Shaders_BloomUpsampleCompute_spv_size Shaders_PostProcessing_BloomUpsampleCompute_spv_size
 #define Shaders_HiZBuildCompute_spv Shaders_PreProcessing_HiZBuildCompute_spv
@@ -233,7 +233,7 @@ SDL_GPUComputePipeline* g_CullDrawArgsComputePipeline    = NULL;
 SDL_GPUComputePipeline* g_BuildLightGridComputePipeline  = NULL;
 SDL_GPUComputePipeline* g_ReconstructNormalComputePipeline = NULL;
 SDL_GPUComputePipeline* g_TonemapComputePipeline         = NULL;
-SDL_GPUComputePipeline* g_BloomPrefilterDownsampleComputePipeline = NULL;
+SDL_GPUComputePipeline* g_BloomDownsampleSPDComputePipeline = NULL;
 SDL_GPUComputePipeline* g_BloomUpsampleComputePipeline   = NULL;
 SDL_GPUComputePipeline* g_HiZBuildComputePipeline        = NULL;
 SDL_GPUComputePipeline* g_HiZDownscaleComputePipeline    = NULL;
@@ -289,10 +289,11 @@ static void InitComputePipelines(void)
         THREAD_COUNT_XYZ(8, 8, 1)
     }); CHECK_CREATE(g_TonemapComputePipeline, "Tonemap Compute Pipeline");
 
-    g_BloomPrefilterDownsampleComputePipeline = COMPUTE_DEF(Shaders_BloomPrefilterDownsampleCompute_spv),
-        .num_samplers = 1, .num_readwrite_storage_textures = 1, .num_uniform_buffers = 1,
-        THREAD_COUNT_XYZ(8, 8, 1)
-    }); CHECK_CREATE(g_BloomPrefilterDownsampleComputePipeline, "Bloom Prefilter Downsample Compute Pipeline");
+    // AMD FFX SPD: whole downsample mip chain (mip0..mipN) in one dispatch, wave/LDS reduction instead of a per-mip loop.
+    g_BloomDownsampleSPDComputePipeline = COMPUTE_DEF(Shaders_BloomDownsampleSPDCompute_spv),
+        .num_samplers = 1, .num_readwrite_storage_textures = 8, .num_readwrite_storage_buffers = 1, .num_uniform_buffers = 1,
+        THREAD_COUNT_XYZ(256, 1, 1)
+    }); CHECK_CREATE(g_BloomDownsampleSPDComputePipeline, "Bloom Downsample SPD Compute Pipeline");
 
     g_BloomUpsampleComputePipeline = COMPUTE_DEF(Shaders_BloomUpsampleCompute_spv),
         .num_samplers = 2, .num_readwrite_storage_textures = 1, .num_uniform_buffers = 1,
@@ -970,7 +971,7 @@ void DestroyRenderPipelines(void)
     if (g_BuildLightGridComputePipeline)   SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_BuildLightGridComputePipeline);
     if (g_ReconstructNormalComputePipeline) SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_ReconstructNormalComputePipeline);
     if (g_TonemapComputePipeline)          SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_TonemapComputePipeline);
-    if (g_BloomPrefilterDownsampleComputePipeline) SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_BloomPrefilterDownsampleComputePipeline);
+    if (g_BloomDownsampleSPDComputePipeline) SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_BloomDownsampleSPDComputePipeline);
     if (g_BloomUpsampleComputePipeline)    SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_BloomUpsampleComputePipeline);
     if (g_HiZBuildComputePipeline)         SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HiZBuildComputePipeline);
     if (g_HiZDownscaleComputePipeline)     SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HiZDownscaleComputePipeline);

@@ -475,76 +475,71 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
         AX_WARN("Bloom resources are not ready");
         return;
     }
-    CHECK_CREATE(g_BloomPrefilterDownsampleComputePipeline, "Bloom Prefilter Downsample Compute Pipeline");
+    if (!winstate->buf_bloom_spd_counter)
+    {
+        AX_WARN("Bloom SPD counter buffer is not ready");
+        return;
+    }
+    CHECK_CREATE(g_BloomDownsampleSPDComputePipeline, "Bloom Downsample SPD Compute Pipeline");
     CHECK_CREATE(g_BloomUpsampleComputePipeline, "Bloom Upsample Compute Pipeline");
 
+    // Capped by SDL_GPU's MAX_COMPUTE_WRITE_TEXTURES (8 read-write storage textures per compute
+    // stage), not AMD's own SPD limit of 12 — one fixed UAV slot per mip, so 8 is the ceiling.
+    const u32 kBloomSPDMaxMips = 8u;
+    u32 spdMips = Minu32(winstate->bloom_mip_count, kBloomSPDMaxMips);
+
     struct {
-        u32 outputSize[2];
-        f32 sourceTexelSize[2];
-        u32 sourceMip;
-        u32 prefilter;
+        f32 invInputSize[2];
+        u32 mip0Size[2];
+        u32 mips;
+        u32 numWorkGroups;
         f32 threshold;
         f32 knee;
         f32 clampValue;
         f32 padding0;
-    } downParams = {0};
+    } spdParams = {0};
 
-    downParams.outputSize[0] = winstate->bloom_width;
-    downParams.outputSize[1] = winstate->bloom_height;
-    downParams.sourceTexelSize[0] = 1.0f / Maxf32((f32)width, 1.0f);
-    downParams.sourceTexelSize[1] = 1.0f / Maxf32((f32)height, 1.0f);
-    downParams.sourceMip = 0u;
-    downParams.prefilter = 1u;
-    downParams.threshold = Maxf32(g_RenderSettings.bloomThreshold, 0.0f);
-    downParams.knee = Maxf32(g_RenderSettings.bloomKnee, 0.0001f);
-    downParams.clampValue = Maxf32(g_RenderSettings.bloomClamp, 1.0f);
+    u32 dispatchX = (width + 63u) / 64u;
+    u32 dispatchY = (height + 63u) / 64u;
 
-    SDL_GPUStorageTextureReadWriteBinding output = {
-        .texture = BloomDownsampleTexture(winstate, 0u),
-        .mip_level = 0,
-        .layer = 0,
-        .cycle = true
-    };
-    SDL_GPUTextureSamplerBinding sourceBinding = { .texture = winstate->tex_color, .sampler = g_RenderState.sampler };
-    SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, &output, 1, NULL, 0);
-    SDL_BindGPUComputePipeline(pass, g_BloomPrefilterDownsampleComputePipeline);
-    SDL_BindGPUComputeSamplers(pass, 0, &sourceBinding, 1);
-    SDL_PushGPUComputeUniformData(cmd, 0, &downParams, sizeof(downParams));
-    SDL_DispatchGPUCompute(pass, (downParams.outputSize[0] + 7u) / 8u, (downParams.outputSize[1] + 7u) / 8u, 1);
-    SDL_EndGPUComputePass(pass);
+    spdParams.invInputSize[0] = 1.0f / Maxf32((f32)width, 1.0f);
+    spdParams.invInputSize[1] = 1.0f / Maxf32((f32)height, 1.0f);
+    spdParams.mip0Size[0] = winstate->bloom_width;
+    spdParams.mip0Size[1] = winstate->bloom_height;
+    spdParams.mips = spdMips;
+    spdParams.numWorkGroups = dispatchX * dispatchY;
+    spdParams.threshold = Maxf32(g_RenderSettings.bloomThreshold, 0.0f);
+    spdParams.knee = Maxf32(g_RenderSettings.bloomKnee, 0.0001f);
+    spdParams.clampValue = Maxf32(g_RenderSettings.bloomClamp, 1.0f);
 
-    for (u32 mip = 1u; mip < winstate->bloom_mip_count; mip++)
+    // The shader declares 8 fixed UAV slots (Mip0..Mip7) regardless of spdMips. Slots past
+    // bloom_mip_count are padded with dedicated 1x1 dummy textures (never written, since SPD's
+    // own mip-count gate stops before reaching them) — padding with a *repeated* real mip
+    // texture would bind the same VkImage at multiple UAV slots in one pass, which desyncs
+    // SDL_GPU's per-texture layout tracker and causes barrier validation errors.
+    SDL_GPUStorageTextureReadWriteBinding spdTextures[8] = {0};
+    for (u32 i = 0; i < kBloomSPDMaxMips; i++)
     {
-        u32 sourceWidth  = BloomMipSize(winstate->bloom_width, mip - 1u);
-        u32 sourceHeight = BloomMipSize(winstate->bloom_height, mip - 1u);
-        downParams.outputSize[0] = BloomMipSize(winstate->bloom_width, mip);
-        downParams.outputSize[1] = BloomMipSize(winstate->bloom_height, mip);
-        downParams.sourceTexelSize[0] = 1.0f / (f32)sourceWidth;
-        downParams.sourceTexelSize[1] = 1.0f / (f32)sourceHeight;
-        downParams.sourceMip = 0u;
-        downParams.prefilter = 0u;
-
-        output.texture = BloomDownsampleTexture(winstate, mip);
-        if (!output.texture)
+        spdTextures[i].texture = (i < winstate->bloom_mip_count) ? BloomDownsampleTexture(winstate, i) : winstate->tex_bloom_spd_dummy[i];
+        spdTextures[i].mip_level = 0;
+        spdTextures[i].layer = 0;
+        spdTextures[i].cycle = (i == 0u);
+        if (!spdTextures[i].texture)
         {
-            AX_WARN("Bloom downsample mip texture is not ready");
+            AX_WARN("Bloom SPD mip texture is not ready");
             return;
         }
-        output.mip_level = 0;
-        output.cycle = false;
-        sourceBinding.texture = BloomDownsampleTexture(winstate, mip - 1u);
-        if (!sourceBinding.texture)
-        {
-            AX_WARN("Bloom downsample source texture is not ready");
-            return;
-        }
-        pass = SDL_BeginGPUComputePass(cmd, &output, 1, NULL, 0);
-        SDL_BindGPUComputePipeline(pass, g_BloomPrefilterDownsampleComputePipeline);
-        SDL_BindGPUComputeSamplers(pass, 0, &sourceBinding, 1);
-        SDL_PushGPUComputeUniformData(cmd, 0, &downParams, sizeof(downParams));
-        SDL_DispatchGPUCompute(pass, (downParams.outputSize[0] + 7u) / 8u, (downParams.outputSize[1] + 7u) / 8u, 1);
-        SDL_EndGPUComputePass(pass);
     }
+
+    SDL_GPUStorageBufferReadWriteBinding spdCounter = { .buffer = winstate->buf_bloom_spd_counter, .cycle = false };
+    SDL_GPUTextureSamplerBinding sourceBinding = { .texture = winstate->tex_color, .sampler = g_RenderState.sampler };
+
+    SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, spdTextures, kBloomSPDMaxMips, &spdCounter, 1);
+    SDL_BindGPUComputePipeline(pass, g_BloomDownsampleSPDComputePipeline);
+    SDL_BindGPUComputeSamplers(pass, 0, &sourceBinding, 1);
+    SDL_PushGPUComputeUniformData(cmd, 0, &spdParams, sizeof(spdParams));
+    SDL_DispatchGPUCompute(pass, dispatchX, dispatchY, 1);
+    SDL_EndGPUComputePass(pass);
 
     if (winstate->bloom_mip_count <= 1u) return;
 
@@ -557,6 +552,7 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
         f32 padding0;
     } upParams = {0};
 
+    SDL_GPUStorageTextureReadWriteBinding output = {0};
     upParams.sampleScale = Clampf32(g_RenderSettings.bloomRadius, 0.25f, 4.0f);
     for (u32 mip = winstate->bloom_mip_count - 1u; mip > 0u; mip--)
     {
