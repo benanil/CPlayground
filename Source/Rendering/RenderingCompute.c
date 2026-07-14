@@ -109,51 +109,89 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd, RenderSet* renderSet
 void DispatchHiZBuildCompute(SDL_GPUCommandBuffer* cmd)
 {
     WindowState* winstate = &g_WindowState;
-    SDL_GPUTexture* depthTexture = winstate->tex_hiz_depth; 
+    SDL_GPUTexture* depthTexture = winstate->tex_hiz_depth;
     SDL_GPUTexture* hiZTexture = winstate->tex_hiz;
     u32 width    = winstate->hiz_width;
     u32 height   = winstate->hiz_height;
     u32 mipCount = winstate->hiz_mip_count;
     if (!depthTexture || !hiZTexture || mipCount == 0) return;
-    for (u32 mip = 0; mip < mipCount; mip++)
-    {
-        u32 outputWidth  = Maxu32(width >> mip, 1);
-        u32 outputHeight = Maxu32(height >> mip, 1);
-        u32 sourceWidth  = Maxu32((mip == 0) ? width  : (width >> (mip - 1)), 1);
-        u32 sourceHeight = Maxu32((mip == 0) ? height : (height >> (mip - 1)), 1);
 
-        SDL_GPUStorageTextureReadWriteBinding rwTexture = {
-            .texture = hiZTexture,
-            .mip_level = mip,
-            .layer = 0,
-            .cycle = false
-        };
+    // Mip 0: raw depth -> r32f format copy (see HiZBuildCompute.hlsl). Not a reduction, so it
+    // sits outside the SPD chain below and stays its own tiny dispatch.
+    {
+        SDL_GPUStorageTextureReadWriteBinding rwTexture = { .texture = hiZTexture, .mip_level = 0, .layer = 0, .cycle = false };
         SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, &rwTexture, 1, NULL, 0);
         struct { u32 sourceSize[2]; u32 outputSize[2]; u32 sourceMip; u32 isBaseLevel; u32 padding[2]; } params = {
-            { sourceWidth, sourceHeight },
-            { outputWidth, outputHeight },
-            mip == 0 ? 0u : mip - 1u,
-            mip == 0 ? 1u : 0u,
-            { 0u, 0u }
+            { width, height }, { width, height }, 0u, 1u, { 0u, 0u }
         };
-
         SDL_GPUTextureSamplerBinding depthBinding = { .texture = depthTexture, .sampler = g_RenderState.hiZSampler };
+        CHECK_CREATE(g_HiZBuildComputePipeline, "Hi-Z Build Compute Pipeline")
+        SDL_BindGPUComputePipeline(pass, g_HiZBuildComputePipeline);
         SDL_BindGPUComputeSamplers(pass, 0, &depthBinding, 1);
-        if (mip == 0)
-        {
-            CHECK_CREATE(g_HiZBuildComputePipeline, "Hi-Z Build Compute Pipeline")
-            SDL_BindGPUComputePipeline(pass, g_HiZBuildComputePipeline);
-        }
-        else
-        {
-            CHECK_CREATE(g_HiZDownscaleComputePipeline, "Hi-Z Downscale Compute Pipeline");
-            SDL_BindGPUComputePipeline(pass, g_HiZDownscaleComputePipeline);
-            SDL_BindGPUComputeStorageTextures(pass, 0, &hiZTexture, 1);
-        }
         SDL_PushGPUComputeUniformData(cmd, 0, &params, sizeof(params));
-        SDL_DispatchGPUCompute(pass, (outputWidth + 7u) / 8u, (outputHeight + 7u) / 8u, 1);
+        SDL_DispatchGPUCompute(pass, (width + 7u) / 8u, (height + 7u) / 8u, 1);
         SDL_EndGPUComputePass(pass);
     }
+
+    if (mipCount <= 1u) return;
+    if (!winstate->buf_hiz_spd_counter) {
+        AX_WARN("Hi-Z SPD counter buffer is not ready");
+        return;
+    }
+    CHECK_CREATE(g_HiZDownscaleSPDComputePipeline, "Hi-Z Downscale SPD Compute Pipeline");
+
+    // Same SDL_GPU MAX_COMPUTE_WRITE_TEXTURES=8 ceiling as bloom, one fixed UAV slot per real
+    // tex_hiz mip level (1..8). Full-screen Hi-Z chains almost always need <=8 reduction levels
+    // anyway (mip 9+ would be sub-4px tiles), so this rarely bites in practice.
+    const u32 kHiZSPDMaxMips = 8u;
+    u32 reductionLevels = Minu32(mipCount - 1u, kHiZSPDMaxMips);
+
+    struct {
+        u32 sourceSize[2];
+        u32 mip1Size[2];
+        u32 mips;
+        u32 numWorkGroups;
+        u32 padding0;
+        u32 padding1;
+    } spdParams = {0};
+
+    u32 dispatchX = (width + 63u) / 64u;
+    u32 dispatchY = (height + 63u) / 64u;
+
+    spdParams.sourceSize[0] = width;
+    spdParams.sourceSize[1] = height;
+    spdParams.mip1Size[0] = Maxu32(width >> 1, 1u);
+    spdParams.mip1Size[1] = Maxu32(height >> 1, 1u);
+    spdParams.mips = reductionLevels;
+    spdParams.numWorkGroups = dispatchX * dispatchY;
+
+    // tex_hiz's own mip levels 1..8 are bound directly (distinct subresources of one texture,
+    // safe to write concurrently); levels beyond mipCount fall back to dedicated dummy textures
+    // for the same reason bloom needs them — SPD's mip-count gate never writes these, but a
+    // *repeated* real subresource bound at multiple UAV slots would desync SDL_GPU's layout tracker.
+    SDL_GPUStorageTextureReadWriteBinding spdTextures[8] = {0};
+    for (u32 i = 0; i < kHiZSPDMaxMips; i++)
+    {
+        u32 realMip = i + 1u;
+        if (realMip < mipCount) {
+            spdTextures[i].texture = hiZTexture;
+            spdTextures[i].mip_level = realMip;
+        }
+        else {
+            spdTextures[i].texture = winstate->tex_hiz_spd_dummy[i];
+            spdTextures[i].mip_level = 0;
+        }
+        spdTextures[i].layer = 0;
+        spdTextures[i].cycle = false;
+    }
+
+    SDL_GPUStorageBufferReadWriteBinding spdCounter = { .buffer = winstate->buf_hiz_spd_counter, .cycle = false };
+    SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, spdTextures, kHiZSPDMaxMips, &spdCounter, 1);
+    SDL_BindGPUComputePipeline(pass, g_HiZDownscaleSPDComputePipeline);
+    SDL_BindGPUComputeStorageTextures(pass, 0, &hiZTexture, 1); // mip 0, read-only source
+    SDL_PushGPUComputeUniformData(cmd, 0, &spdParams, sizeof(spdParams));
+    SDL_DispatchGPUCompute(pass, dispatchX, dispatchY, 1);
+    SDL_EndGPUComputePass(pass);
 }
 
 // Forward+ AO: reconstruct half-res world normals from the prepass depth into
@@ -393,8 +431,7 @@ void DispatchContactShadowsCompute(SDL_GPUCommandBuffer* cmd, bool enabled, mat4
     MemCopy(params.lightCoordinate, list.LightCoordinate_Shader, sizeof(params.lightCoordinate));
     params.enabled = 1u;
 
-    if (list.DispatchCount <= 0)
-    {
+    if (list.DispatchCount <= 0) {
         params.enabled = 0u;
         SDL_PushGPUComputeUniformData(cmd, 0, &params, sizeof(params));
         SDL_DispatchGPUCompute(pass, (shadowWidth + 63u) / 64u, shadowHeight, 1u);
@@ -422,8 +459,7 @@ static float2 GetGodRaySunPos(mat4x4 viewProj, float* intensity)
     v128f clip = Vec3Transform(Vec3Load(&sunWorld.x), viewProj.r);
     float w = VecGetW(clip);
     float facing = F3Dot(g_Camera.Front, dir);
-    if (facing <= -0.2f)
-    {
+    if (facing <= -0.2f) {
         *intensity = 0.0f;
         return (float2){ -10.0f, -10.0f };
     }
@@ -439,11 +475,9 @@ static float2 GetGodRaySunPos(mat4x4 viewProj, float* intensity)
 static f32 GetSkyPhaseTime(void)
 {
     static double startupPhase = 0.0;
-    if (startupPhase == 0.0)
-    {
+    if (startupPhase == 0.0) {
         SDL_Time wallTime = 0;
-        if (SDL_GetCurrentTime(&wallTime))
-        {
+        if (SDL_GetCurrentTime(&wallTime)) {
             const SDL_Time dayNS = (SDL_Time)86400 * 1000000000;
             startupPhase = (double)(wallTime % dayNS) / 1000000000.0;
         }
@@ -456,27 +490,23 @@ static u32 BloomMipSize(u32 size, u32 mip)
     return Maxu32(size >> mip, 1u);
 }
 
-static SDL_GPUTexture* BloomDownsampleTexture(WindowState* winstate, u32 mip)
-{
-    return (mip < winstate->bloom_mip_count && mip < BLOOM_MAX_MIPS) ? winstate->tex_bloom_downsample[mip] : NULL;
+static SDL_GPUTexture* BloomDownsampleTexture(WindowState* winstate, u32 mip) {
+    return winstate->tex_bloom_downsample[mip];
 }
 
-static SDL_GPUTexture* BloomUpsampleTexture(WindowState* winstate, u32 mip)
-{
-    return (mip < winstate->bloom_mip_count && mip < BLOOM_MAX_MIPS) ? winstate->tex_bloom_upsample[mip] : NULL;
+static SDL_GPUTexture* BloomUpsampleTexture(WindowState* winstate, u32 mip) {
+    return winstate->tex_bloom_upsample[mip];
 }
 
 void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
 {
     WindowState* winstate = &g_WindowState;
     if (!g_RenderSettings.enableBloom) return;
-    if (!winstate->tex_color || !BloomDownsampleTexture(winstate, 0u) || winstate->bloom_mip_count == 0u)
-    {
+    if (!winstate->tex_color || !BloomDownsampleTexture(winstate, 0u) || winstate->bloom_mip_count == 0u) {
         AX_WARN("Bloom resources are not ready");
         return;
     }
-    if (!winstate->buf_bloom_spd_counter)
-    {
+    if (!winstate->buf_bloom_spd_counter) {
         AX_WARN("Bloom SPD counter buffer is not ready");
         return;
     }
@@ -485,7 +515,7 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
 
     // Capped by SDL_GPU's MAX_COMPUTE_WRITE_TEXTURES (8 read-write storage textures per compute
     // stage), not AMD's own SPD limit of 12 — one fixed UAV slot per mip, so 8 is the ceiling.
-    const u32 kBloomSPDMaxMips = 8u;
+    const u32 kBloomSPDMaxMips = BLOOM_MAX_MIPS;
     u32 spdMips = Minu32(winstate->bloom_mip_count, kBloomSPDMaxMips);
 
     struct {
@@ -524,8 +554,7 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
         spdTextures[i].mip_level = 0;
         spdTextures[i].layer = 0;
         spdTextures[i].cycle = (i == 0u);
-        if (!spdTextures[i].texture)
-        {
+        if (!spdTextures[i].texture) {
             AX_WARN("Bloom SPD mip texture is not ready");
             return;
         }
@@ -567,8 +596,7 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
         upParams.highMip = 0u;
 
         output.texture = BloomUpsampleTexture(winstate, outMip);
-        if (!output.texture)
-        {
+        if (!output.texture) {
             AX_WARN("Bloom upsample mip texture is not ready");
             return;
         }
@@ -578,8 +606,7 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
             { .texture = (mip == winstate->bloom_mip_count - 1u) ? BloomDownsampleTexture(winstate, mip) : BloomUpsampleTexture(winstate, mip), .sampler = g_RenderState.sampler },
             { .texture = BloomDownsampleTexture(winstate, outMip), .sampler = g_RenderState.sampler }
         };
-        if (!inputs[0].texture || !inputs[1].texture)
-        {
+        if (!inputs[0].texture || !inputs[1].texture) {
             AX_WARN("Bloom upsample source texture is not ready");
             return;
         }
@@ -682,8 +709,7 @@ void DispatchMLAACompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height, f32 t
     WindowState* winstate = &g_WindowState;
     SDL_GPUTexture* source = winstate->tex_post;
     SDL_GPUTexture* destination = winstate->tex_mlaa_output;
-    if (!source || !destination || !winstate->tex_mlaa_edge_mask || !winstate->tex_mlaa_edge_count)
-    {
+    if (!source || !destination || !winstate->tex_mlaa_edge_mask || !winstate->tex_mlaa_edge_count) {
         AX_WARN("MLAA resources are not ready");
         return;
     }
@@ -797,7 +823,7 @@ void DispatchAnimateVerticesCompute(SDL_GPUCommandBuffer* cmd, RenderSet* render
     if (renderSet->numGroups == 0 || !anims->boneBuffer) return;
     CHECK_CREATE(g_AnimVerticesPipeline, "Animation vertices Pipeline")
 
-        struct {
+    struct {
         u32 numPrimitiveGroups;
         u32 viewportSize[2];
         u32 shadowLOD;

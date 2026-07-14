@@ -1165,10 +1165,10 @@
 //                                                          HLSL HALF
 //==============================================================================================================================
  #ifdef A_HALF
-  #define AH1 min16float
-  #define AH2 min16float2
-  #define AH3 min16float3
-  #define AH4 min16float4
+  #define AH1 float16_t
+  #define AH2 float16_t2
+  #define AH3 float16_t3
+  #define AH4 float16_t4
 //------------------------------------------------------------------------------------------------------------------------------
   #define AW1 min16uint
   #define AW2 min16uint2

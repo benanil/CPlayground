@@ -27,7 +27,7 @@
 #include "Shaders/msl/PostProcessing/BloomDownsampleSPDCompute.msl.h"
 #include "Shaders/msl/PostProcessing/BloomUpsampleCompute.msl.h"
 #include "Shaders/msl/PreProcessing/HiZBuildCompute.msl.h"
-#include "Shaders/msl/PreProcessing/HiZDownscaleCompute.msl.h"
+#include "Shaders/msl/PreProcessing/HiZDownscaleSPDCompute.msl.h"
 #include "Shaders/msl/PostProcessing/HBAOCompute.msl.h"
 #include "Shaders/msl/PostProcessing/HBAOBlurCompute.msl.h"
 #include "Shaders/msl/PostProcessing/ContactShadowsCompute.msl.h"
@@ -58,7 +58,7 @@
 #define Shaders_BloomDownsampleSPDCompute_spv Shaders_PostProcessing_BloomDownsampleSPDCompute_msl
 #define Shaders_BloomUpsampleCompute_spv Shaders_PostProcessing_BloomUpsampleCompute_msl
 #define Shaders_HiZBuildCompute_spv Shaders_PreProcessing_HiZBuildCompute_msl
-#define Shaders_HiZDownscaleCompute_spv Shaders_PreProcessing_HiZDownscaleCompute_msl
+#define Shaders_HiZDownscaleSPDCompute_spv Shaders_PreProcessing_HiZDownscaleSPDCompute_msl
 #define Shaders_HBAOCompute_spv Shaders_PostProcessing_HBAOCompute_msl
 #define Shaders_HBAOBlurCompute_spv Shaders_PostProcessing_HBAOBlurCompute_msl
 #define Shaders_ContactShadowsCompute_spv Shaders_PostProcessing_ContactShadowsCompute_msl
@@ -121,7 +121,7 @@ extern const unsigned char Shaders_TerrainDepthOnlyFrag_msl[];
 #include "Shaders/spv/PostProcessing/BloomDownsampleSPDCompute.spv.h"
 #include "Shaders/spv/PostProcessing/BloomUpsampleCompute.spv.h"
 #include "Shaders/spv/PreProcessing/HiZBuildCompute.spv.h"
-#include "Shaders/spv/PreProcessing/HiZDownscaleCompute.spv.h"
+#include "Shaders/spv/PreProcessing/HiZDownscaleSPDCompute.spv.h"
 #include "Shaders/spv/PostProcessing/HBAOCompute.spv.h"
 #include "Shaders/spv/PostProcessing/HBAOBlurCompute.spv.h"
 #include "Shaders/spv/PostProcessing/ContactShadowsCompute.spv.h"
@@ -159,8 +159,8 @@ extern const unsigned char Shaders_TerrainDepthOnlyFrag_msl[];
 #define Shaders_BloomUpsampleCompute_spv_size Shaders_PostProcessing_BloomUpsampleCompute_spv_size
 #define Shaders_HiZBuildCompute_spv Shaders_PreProcessing_HiZBuildCompute_spv
 #define Shaders_HiZBuildCompute_spv_size Shaders_PreProcessing_HiZBuildCompute_spv_size
-#define Shaders_HiZDownscaleCompute_spv Shaders_PreProcessing_HiZDownscaleCompute_spv
-#define Shaders_HiZDownscaleCompute_spv_size Shaders_PreProcessing_HiZDownscaleCompute_spv_size
+#define Shaders_HiZDownscaleSPDCompute_spv Shaders_PreProcessing_HiZDownscaleSPDCompute_spv
+#define Shaders_HiZDownscaleSPDCompute_spv_size Shaders_PreProcessing_HiZDownscaleSPDCompute_spv_size
 #define Shaders_HBAOCompute_spv Shaders_PostProcessing_HBAOCompute_spv
 #define Shaders_HBAOCompute_spv_size Shaders_PostProcessing_HBAOCompute_spv_size
 #define Shaders_HBAOBlurCompute_spv Shaders_PostProcessing_HBAOBlurCompute_spv
@@ -236,7 +236,7 @@ SDL_GPUComputePipeline* g_TonemapComputePipeline         = NULL;
 SDL_GPUComputePipeline* g_BloomDownsampleSPDComputePipeline = NULL;
 SDL_GPUComputePipeline* g_BloomUpsampleComputePipeline   = NULL;
 SDL_GPUComputePipeline* g_HiZBuildComputePipeline        = NULL;
-SDL_GPUComputePipeline* g_HiZDownscaleComputePipeline    = NULL;
+SDL_GPUComputePipeline* g_HiZDownscaleSPDComputePipeline = NULL;
 SDL_GPUComputePipeline* g_HBAOComputePipeline            = NULL;
 SDL_GPUComputePipeline* g_HBAOBlurComputePipeline        = NULL;
 SDL_GPUComputePipeline* g_ContactShadowsComputePipeline  = NULL;
@@ -279,10 +279,11 @@ static void InitComputePipelines(void)
         THREAD_COUNT_XYZ(8, 8, 1)
     }); CHECK_CREATE(g_HiZBuildComputePipeline, "Hi-Z Build Compute Pipeline");
     
-    g_HiZDownscaleComputePipeline = COMPUTE_DEF(Shaders_HiZDownscaleCompute_spv),
-        .num_readonly_storage_textures  = 1, .num_readwrite_storage_textures = 1, .num_uniform_buffers = 1,
-        THREAD_COUNT_XYZ(8, 8, 1)
-    }); CHECK_CREATE(g_HiZDownscaleComputePipeline, "Hi-Z Downscale Compute Pipeline");
+    // AMD FFX SPD: whole reduction chain (tex_hiz mip1..mipN) in one dispatch, wave/LDS min-reduction instead of a per-mip loop.
+    g_HiZDownscaleSPDComputePipeline = COMPUTE_DEF(Shaders_HiZDownscaleSPDCompute_spv),
+        .num_readonly_storage_textures = 1, .num_readwrite_storage_textures = 8, .num_readwrite_storage_buffers = 1, .num_uniform_buffers = 1,
+        THREAD_COUNT_XYZ(256, 1, 1)
+    }); CHECK_CREATE(g_HiZDownscaleSPDComputePipeline, "Hi-Z Downscale SPD Compute Pipeline");
 
     g_TonemapComputePipeline = COMPUTE_DEF(Shaders_TonemapCompute_spv),
         .num_samplers = 4, .num_readonly_storage_buffers = 1, .num_readwrite_storage_textures = 1, .num_uniform_buffers = 1,
@@ -974,7 +975,7 @@ void DestroyRenderPipelines(void)
     if (g_BloomDownsampleSPDComputePipeline) SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_BloomDownsampleSPDComputePipeline);
     if (g_BloomUpsampleComputePipeline)    SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_BloomUpsampleComputePipeline);
     if (g_HiZBuildComputePipeline)         SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HiZBuildComputePipeline);
-    if (g_HiZDownscaleComputePipeline)     SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HiZDownscaleComputePipeline);
+    if (g_HiZDownscaleSPDComputePipeline)  SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HiZDownscaleSPDComputePipeline);
     if (g_HBAOComputePipeline)             SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HBAOComputePipeline);
     if (g_HBAOBlurComputePipeline)         SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_HBAOBlurComputePipeline);
     if (g_ContactShadowsComputePipeline)   SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_ContactShadowsComputePipeline);

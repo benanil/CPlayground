@@ -49,7 +49,7 @@ COMPUTE_SHADERS = [
     ("Animation/AnimateVertices", "main"),
     ("PreProcessing/CullDrawArgsCompute", "main"),
     ("PreProcessing/HiZBuildCompute", "main"),
-    ("PreProcessing/HiZDownscaleCompute", "main"),
+    ("PreProcessing/HiZDownscaleSPDCompute", "main"),
     ("PostProcessing/TonemapCompute", "main"),
     ("PostProcessing/BloomDownsampleSPDCompute", "main"),
     ("PostProcessing/BloomUpsampleCompute", "main"),

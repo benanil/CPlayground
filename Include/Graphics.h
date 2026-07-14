@@ -15,7 +15,7 @@
 #define MAX_SCENE_TEXTURES      1024
 #define MAX_TEXTURE_DESCRIPTORS 2048
 #define MAX_GPU_MATERIALS       2048
-#define BLOOM_MAX_MIPS          16
+#define BLOOM_MAX_MIPS          8
 
 #define BReadRasterBit   SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ
 #define BWriteComputeBit SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE
@@ -259,6 +259,8 @@ typedef struct WindowState
     SDL_GPUTexture* tex_bloom_upsample[BLOOM_MAX_MIPS];
     SDL_GPUBuffer*  buf_bloom_spd_counter; // AMD FFX SPD global atomic counter, zero-initialized once at creation
     SDL_GPUTexture* tex_bloom_spd_dummy[8]; // distinct 1x1 padding targets for SPD UAV slots >= bloom_mip_count (never written; must not alias a real mip texture or SDL_GPU's layout tracker double-transitions it)
+    SDL_GPUBuffer*  buf_hiz_spd_counter; // AMD FFX SPD global atomic counter for the Hi-Z downscale chain, zero-initialized once at creation
+    SDL_GPUTexture* tex_hiz_spd_dummy[8]; // distinct 1x1 r32f padding targets for SPD UAV slots with no real tex_hiz mip level (tiny-resolution edge case)
     SDL_GPUTexture* tex_mlaa_edge_mask, *tex_mlaa_edge_count, *tex_mlaa_output;
     SDL_GPUTexture* tex_shadow_depth, *tex_shadow_color;
     SDL_GPUTexture* tex_point_shadow_depth, *tex_point_shadow_color;

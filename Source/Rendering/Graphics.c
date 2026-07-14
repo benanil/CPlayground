@@ -380,6 +380,17 @@ void CreateWindowBuffers()
     winstate->hiz_width     = width;
     winstate->hiz_height    = height;
     winstate->hiz_valid     = false;
+    if (!winstate->buf_hiz_spd_counter)
+    {
+        // AMD FFX SPD self-resets this to 0 at the end of every dispatch, so it only needs zeroing once, here.
+        u32 zero = 0u;
+        winstate->buf_hiz_spd_counter = CreateBuffer(&zero, sizeof(u32), BWriteComputeBit, "CPHiZSPDCounter");
+    }
+    for (u32 i = 0; i < 8u; i++)
+    {
+        if (!winstate->tex_hiz_spd_dummy[i])
+            winstate->tex_hiz_spd_dummy[i] = CreateTexture2D(1u, 1u, SDL_GPU_TEXTUREFORMAT_R32_FLOAT, SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE, SDL_GPU_SAMPLECOUNT_1, 1, "Hi-Z SPD Dummy Texture");
+    }
     winstate->bloom_width   = bloomWidth;
     winstate->bloom_height  = bloomHeight;
     winstate->bloom_mip_count = bloomMipCount;

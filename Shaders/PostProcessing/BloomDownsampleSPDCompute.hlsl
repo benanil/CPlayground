@@ -1,8 +1,9 @@
 // AMD FidelityFX Single Pass Downsampler (SPD) integration for the bloom downsample chain.
 // Replaces the per-mip dispatch loop in BloomPrefilterDownsampleCompute with one dispatch that
 // builds every mip via wave-intrinsic quad reduction + groupshared LDS bridging between waves.
-// Threshold/knee/clamp are folded into SpdLoadSourceImage since SPD only ever reads the raw
-// source once per output texel (no per-mip re-threshold like the old chain).
+// Threshold/knee/clamp are folded into SpdLoadSourceImageH since SPD only ever reads the raw
+// source once per output texel (no per-mip re-threshold like the old chain). Packed (half
+// precision) path: halves LDS/register traffic for the reduction, UAVs stay rgba16f either way.
 #define BLOOM_EPSILON 1e-5f
 
 cbuffer SpdBloomParams : register(b0, space2)
@@ -56,32 +57,39 @@ bool SpdMipInBounds(int2 pix, uint mip)
 
 #define A_GPU
 #define A_HLSL
+// Must be defined before ffx_a.h is included: that's where AH1/AH2/AH4 (min16float* aliases)
+// get typedef'd, gated on A_HALF already being set.
+#define A_HALF
 #define SPD_LINEAR_SAMPLER
+// We only ever call the packed (H-suffixed) entry point below; this makes ffx_spd.h stub out
+// the non-packed AF4 hook functions instead of requiring real ones from us.
+#define SPD_PACKED_ONLY
 
 #include "../Vendor/FFX_SPD/ffx_a.h"
 
 groupshared AU1 spdCounter;
-groupshared AF1 spdIntermediateR[16][16];
-groupshared AF1 spdIntermediateG[16][16];
-groupshared AF1 spdIntermediateB[16][16];
-groupshared AF1 spdIntermediateA[16][16];
+groupshared AH1 spdIntermediateR[16][16];
+groupshared AH1 spdIntermediateG[16][16];
+groupshared AH1 spdIntermediateB[16][16];
+groupshared AH1 spdIntermediateA[16][16];
 
 // Source is sampled once, exactly between the 2x2 texel quad each SPD thread reduces, so the
 // hardware bilinear filter does the first box-average for free (AMD's recommended fast path).
-AF4 SpdLoadSourceImage(ASU2 p, AU1 slice)
+// UV math stays full float — only the resulting color gets narrowed to half.
+AH4 SpdLoadSourceImageH(ASU2 p, AU1 slice)
 {
     AF2 uv = (AF2(p) + AF2(1.0f, 1.0f)) * invInputSize;
     float3 color = SafeHDR(SourceTexture.SampleLevel(SourceSampler, uv, 0.0f).rgb);
     color = QuadraticThreshold(color);
-    return AF4(color, 1.0f);
+    return AH4(color, 1.0f);
 }
 
-AF4 SpdLoad(ASU2 p, AU1 slice)
+AH4 SpdLoadH(ASU2 p, AU1 slice)
 {
-    return Mip5[p];
+    return AH4(Mip5[p]);
 }
 
-void SpdStore(ASU2 pix, AF4 value, AU1 mip, AU1 slice)
+void SpdStoreH(ASU2 pix, AH4 value, AU1 mip, AU1 slice)
 {
     if (!SpdMipInBounds(pix, mip)) return;
     switch (mip)
@@ -112,16 +120,16 @@ void SpdResetAtomicCounter(AU1 slice)
     SpdCounterBuffer[0] = 0;
 }
 
-AF4 SpdLoadIntermediate(AU1 x, AU1 y)
+AH4 SpdLoadIntermediateH(AU1 x, AU1 y)
 {
-    return AF4(
+    return AH4(
         spdIntermediateR[x][y],
         spdIntermediateG[x][y],
         spdIntermediateB[x][y],
         spdIntermediateA[x][y]);
 }
 
-void SpdStoreIntermediate(AU1 x, AU1 y, AF4 value)
+void SpdStoreIntermediateH(AU1 x, AU1 y, AH4 value)
 {
     spdIntermediateR[x][y] = value.x;
     spdIntermediateG[x][y] = value.y;
@@ -129,9 +137,9 @@ void SpdStoreIntermediate(AU1 x, AU1 y, AF4 value)
     spdIntermediateA[x][y] = value.w;
 }
 
-AF4 SpdReduce4(AF4 v0, AF4 v1, AF4 v2, AF4 v3)
+AH4 SpdReduce4H(AH4 v0, AH4 v1, AH4 v2, AH4 v3)
 {
-    return (v0 + v1 + v2 + v3) * 0.25f;
+    return (v0 + v1 + v2 + v3) * AH1(0.25);
 }
 
 #include "../Vendor/FFX_SPD/ffx_spd.h"
@@ -139,7 +147,7 @@ AF4 SpdReduce4(AF4 v0, AF4 v1, AF4 v2, AF4 v3)
 [numthreads(256, 1, 1)]
 void main(uint3 WorkGroupId : SV_GroupID, uint LocalThreadIndex : SV_GroupIndex)
 {
-    SpdDownsample(
+    SpdDownsampleH(
         AU2(WorkGroupId.xy),
         AU1(LocalThreadIndex),
         AU1(mips),
