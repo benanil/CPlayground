@@ -573,16 +573,12 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
     if (winstate->bloom_mip_count <= 1u) return;
 
     struct {
-        u32 outputSize[2];
         f32 lowTexelSize[2];
-        u32 lowMip;
-        u32 highMip;
-        f32 sampleScale;
-        f32 padding0;
+		u32 outputSize[2];
     } upParams = {0};
 
     SDL_GPUStorageTextureReadWriteBinding output = {0};
-    upParams.sampleScale = Clampf32(g_RenderSettings.bloomRadius, 0.25f, 4.0f);
+    // upParams.sampleScale = Clampf32(g_RenderSettings.bloomRadius, 0.25f, 4.0f);
     for (u32 mip = winstate->bloom_mip_count - 1u; mip > 0u; mip--)
     {
         u32 outMip = mip - 1u;
@@ -592,8 +588,6 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
         upParams.outputSize[1] = BloomMipSize(winstate->bloom_height, outMip);
         upParams.lowTexelSize[0] = 1.0f / (f32)lowWidth;
         upParams.lowTexelSize[1] = 1.0f / (f32)lowHeight;
-        upParams.lowMip = 0u;
-        upParams.highMip = 0u;
 
         output.texture = BloomUpsampleTexture(winstate, outMip);
         if (!output.texture) {
@@ -603,8 +597,8 @@ void DispatchBloomCompute(SDL_GPUCommandBuffer* cmd, u32 width, u32 height)
         output.mip_level = 0;
         output.cycle = false;
         SDL_GPUTextureSamplerBinding inputs[2] = {
-            { .texture = (mip == winstate->bloom_mip_count - 1u) ? BloomDownsampleTexture(winstate, mip) : BloomUpsampleTexture(winstate, mip), .sampler = g_RenderState.sampler },
-            { .texture = BloomDownsampleTexture(winstate, outMip), .sampler = g_RenderState.sampler }
+            { .texture = (mip == winstate->bloom_mip_count - 1u) ? BloomDownsampleTexture(winstate, mip) : BloomUpsampleTexture(winstate, mip), .sampler = g_RenderState.hiZSampler },
+            { .texture = BloomDownsampleTexture(winstate, outMip), .sampler = g_RenderState.hiZSampler }
         };
         if (!inputs[0].texture || !inputs[1].texture) {
             AX_WARN("Bloom upsample source texture is not ready");

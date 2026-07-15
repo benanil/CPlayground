@@ -1,6 +1,9 @@
 #ifndef BASIS_COMPRESSOR_C_H
 #define BASIS_COMPRESSOR_C_H
 
+#include "Texture.h"
+
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -14,9 +17,10 @@ extern "C" {
 
 // Other flags
 #define BASIS_FLAG_NORMAL_MAP     0x04   // Input is a normal map (disable sRGB, renormalize)
-#define BASIS_FLAG_NO_MIPMAPS     0x08   // Disable automatic mipmap generation
+#define BASIS_FLAG_NO_MIPMAPS     0x08   // Disable /automatic mipmap generation
 #define BASIS_FLAG_Y_FLIP         0x10   // Flip image vertically before compression
 #define BASIS_FLAG_METALLIC_ROUGHNESS 0x20
+#define BASIS_FLAG_LINEAR         0x40   // Use linear metrics without channel swizzling/BC5 preference
 
 // Quality preset for fast/slow trade-off (used when quality level is not set)
 #define BASIS_QUALITY_FASTEST     0
@@ -79,6 +83,50 @@ int basis_compress_array_memory(const unsigned char* const* layer_mips,
                                 int quality_level,
                                 int effort_level,
                                 const char* output_filename);
+
+/**
+ * Loads/resizes the same path list used by LoadTextureArray(), builds a full
+ * RGBA32 mip chain per layer, and writes it as a texture-2D-array .basis file.
+ *
+ * @param paths           layer paths, count entries.
+ * @param count           number of texture array layers.
+ * @param size            target square layer size, matching LoadTextureArray().
+ * @param srgb            use sRGB resizing for source layer normalization.
+ * @param flags           BASIS_FORMAT_* and BASIS_FLAG_*.
+ * @return 0 on success, non-zero error code on failure.
+ */
+int basis_compress_texture_array_files(const char* const* paths,
+                                       unsigned int count,
+                                       int size,
+                                       bool srgb,
+                                       unsigned int flags,
+                                       int quality_level,
+                                       int effort_level,
+                                       const char* output_filename);
+
+/**
+ * Loads a texture-2D-array .basis file and uploads it as a shader-ready Texture.
+ *
+ * flags only controls target GPU format selection for UASTC files:
+ * BASIS_FLAG_NORMAL_MAP and BASIS_FLAG_METALLIC_ROUGHNESS prefer BC5/ASTC over BC7.
+ * If the chosen compressed format is unsupported, the loader falls back to RGBA8.
+ */
+Texture basis_load_texture_array(const char* input_filename,
+                                 unsigned int flags,
+                                 const char* label);
+
+/**
+ * Loads an existing texture-2D-array .basis file or builds it from source paths,
+ * then returns a shader-ready Texture. Falls back to an uncompressed RGBA8 array
+ * if basis build/load fails.
+ */
+Texture basis_load_or_build_texture_array(const char* const* paths,
+                                          unsigned int count,
+                                          int size,
+                                          bool srgb,
+                                          const char* basis_filename,
+                                          unsigned int flags,
+                                          const char* label);
 
 #ifdef __cplusplus
 }

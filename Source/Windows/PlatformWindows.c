@@ -13,7 +13,7 @@ static void PlatformCrashLog(const char* format, ...)
 
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, AX_ANSI_RED "crash: %s" AX_ANSI_RESET, message);
 
-    HANDLE file = CreateFileA("crash.log", FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    HANDLE file = CreateFileA("crash.txt", FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE)
         return;

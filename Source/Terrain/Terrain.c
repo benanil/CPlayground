@@ -4,9 +4,13 @@
 #include "Include/Graphics.h"
 #include "Include/FileSystem.h"
 #include "Include/Algorithm.h"
+#include "Include/BasisCompressWrapper.h"
 
 #define T_ALBEDO_SIZE 2048
 #define T_DETAIL_SIZE 1024
+#define T_ALBEDO_BASIS "Assets/Textures/Terrain/TerrainAlbedo.basis"
+#define T_NORMAL_BASIS "Assets/Textures/Terrain/TerrainNormal.basis"
+#define T_ARM_BASIS    "Assets/Textures/Terrain/TerrainARM.basis"
 
 typedef struct TerrainState_
 {
@@ -45,9 +49,15 @@ const char* const tMetallicRoughnessPaths[T_LAYER_COUNT] = {
 void TerrainInitMaterialTextures(void)
 {
     if (tp.albedoLayers.handle && tp.normalLayers.handle && tp.armLayers.handle) return;
-    tp.albedoLayers = LoadTextureArray(tAlbedoPaths, T_LAYER_COUNT, T_ALBEDO_SIZE, true, "TerrainAlbedo", "terrain albedo");
-    tp.normalLayers = LoadTextureArray(tNormalPaths, T_LAYER_COUNT, T_DETAIL_SIZE, false, "TerrainNormal", "terrain normal");
-    tp.armLayers = LoadTextureArray(tMetallicRoughnessPaths, T_LAYER_COUNT, T_DETAIL_SIZE, false, "TerrainARM", "terrain arm");
+    tp.albedoLayers = basis_load_or_build_texture_array(tAlbedoPaths, T_LAYER_COUNT, T_ALBEDO_SIZE, true,
+                                                        T_ALBEDO_BASIS, BASIS_FORMAT_UASTC,
+                                                        "TerrainAlbedo");
+    tp.normalLayers = basis_load_or_build_texture_array(tNormalPaths, T_LAYER_COUNT, T_DETAIL_SIZE, false,
+                                                        T_NORMAL_BASIS, BASIS_FORMAT_UASTC | BASIS_FLAG_LINEAR,
+                                                        "TerrainNormal");
+    tp.armLayers = basis_load_or_build_texture_array(tMetallicRoughnessPaths, T_LAYER_COUNT, T_DETAIL_SIZE, false,
+                                                     T_ARM_BASIS, BASIS_FORMAT_UASTC | BASIS_FLAG_LINEAR,
+                                                     "TerrainARM");
 }
 
 static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)

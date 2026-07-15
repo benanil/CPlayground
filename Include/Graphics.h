@@ -7,6 +7,7 @@
 #include "Math/Vector.h"
 #include "GLTFParser.h"
 #include "RenderLimits.h"
+#include "Texture.h"
 
 #define CHECK_CREATE(var, thing) { if (!(var)) { AX_ERROR("Failed to create %s: %s", thing, SDL_GetError()); /*Quit(2);*/ } }
 
@@ -214,18 +215,6 @@ typedef struct GPUMesh_
     void* vertices;
     void* indices;
 } GPUMesh;
-
-typedef struct Texture_
-{
-    s32 width, height;
-    SDL_GPUTexture* handle;
-    SDL_GPUTextureFormat format;
-    void* buffer;
-    u64 bufferSize;
-    u32 channels;
-    u32 type;
-    u32 mipLevels;
-} Texture;
 
 typedef struct TextureDescriptor_
 {

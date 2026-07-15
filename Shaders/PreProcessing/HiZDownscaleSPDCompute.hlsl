@@ -93,8 +93,7 @@ void SpdStoreIntermediate(AU1 x, AU1 y, AF4 value) {
 
 // Reversed-Z: the farthest occluder has the smallest depth value, so a conservative per-tile
 // depth (the one guaranteed not to occlude anything it shouldn't) is the minimum, not the max.
-AF4 SpdReduce4(AF4 v0, AF4 v1, AF4 v2, AF4 v3)
-{
+AF4 SpdReduce4(AF4 v0, AF4 v1, AF4 v2, AF4 v3) {
     return min(min(v0, v1), min(v2, v3));
 }
 

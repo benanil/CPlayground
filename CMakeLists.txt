@@ -116,6 +116,7 @@ target_sources(${EXECUTABLE_NAME} PRIVATE
     Source/SceneBundleCache.c
     Source/SceneSerializer.c
     Source/DemoScene.c
+    Source/DDSTexture.c
     Source/Physics.c
 
     Source/Terrain/Terrain.c

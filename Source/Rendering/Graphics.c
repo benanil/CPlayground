@@ -9,6 +9,7 @@
 #include "Include/Memory.h"
 #include "Include/BasisBinding.h"
 #include "Include/Random.h"
+#include "Include/DDSTexture.h"
 #include "Source/Terrain/TerrainInternal.h"
 #include "Source/Terrain/Transvoxel.h"
 
@@ -243,6 +244,8 @@ void GraphicsInit(bool msaa)
     VkPhysicalDeviceVulkan11Features vk11_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
         .pNext = &vk12_features,
+        .storageBuffer16BitAccess = VK_TRUE,
+        .uniformAndStorageBuffer16BitAccess = VK_TRUE,
         .shaderDrawParameters = VK_TRUE,
     };
 
@@ -610,6 +613,8 @@ SDL_GPUTexture* CreateHiZTexture(u32 drawablew, u32 drawableh, u32* mipCount)
         SDL_GPU_SAMPLECOUNT_1, levels, "Hi-Z Texture");
 }
 
+
+
 Texture rImportTexture(const char* path, TexFlags flags, const char* label)
 {
     int width, height, channels;
@@ -632,7 +637,20 @@ Texture rImportTexture(const char* path, TexFlags flags, const char* label)
     void* textureLoadBuffer = ArenaPushGlobal(size);
     
     AFileRead(textureLoadBuffer, size, asset, 1);
-    image = stbi_load_from_memory(textureLoadBuffer, (int)size, &width, &height, &channels, 4);
+	if (FileHasExtension(path, (int)StringLength(path), ".dds")) {
+        DDSImage dds;
+        if (!DDSLoadDecompressImage(path, &dds)) {
+			AX_ERROR("dds image loading failed! %s", path);
+			return defTexture;
+        }
+
+        width = dds.width, height = dds.height, channels = 4;
+		image = dds.pixels;
+	}
+	else
+	{
+		image = stbi_load_from_memory(textureLoadBuffer, (int)size, &width, &height, &channels, 4);
+	}
     ArenaPopGlobal(size);
 
     AFileClose(asset);
@@ -665,9 +683,22 @@ Texture LoadTextureArray(const char* const* paths, u32 count, s32 size, bool srg
     for (s32 layer = 0; layer < (s32)count; layer++)
     {
         int w, h, channels;
-        u8* image = stbi_load(paths[layer], &w, &h, &channels, 4);
-        if (!image)
-        {
+		u8* image = NULL; 
+		if (FileHasExtension(paths[layer], (int)StringLength(paths[layer]), ".dds")) {
+			DDSImage dds;
+			if (!DDSLoadDecompressImage(paths[layer], &dds)) {
+				AX_ERROR("dds image loading failed! %s", paths[layer]);
+				return tex;
+			}
+
+			w = dds.width, h = dds.height, channels = 4;
+			image = dds.pixels;
+		}
+		else {
+			image = stbi_load(paths[layer], &w, &h, &channels, 4);
+		}
+
+        if (!image) {
             AX_ERROR("%s texture missing: %s", errorLabel, paths[layer]);
             continue;
         }
@@ -729,7 +760,7 @@ static Texture rCreateTextureEx(
     res.buffer = data;
     res.mipLevels = mipLevels;
     res.handle = SDL_CreateGPUTexture(g_GPUDevice, &texDesc);
-
+	res.numLayers = layers;
     SDL_DestroyProperties(texDesc.props);
 
     if (!res.handle)

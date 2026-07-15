@@ -4,7 +4,7 @@
 // Threshold/knee/clamp are folded into SpdLoadSourceImageH since SPD only ever reads the raw
 // source once per output texel (no per-mip re-threshold like the old chain). Packed (half
 // precision) path: halves LDS/register traffic for the reduction, UAVs stay rgba16f either way.
-#define BLOOM_EPSILON 1e-5f
+#define BLOOM_EPSILON AH1(0.0005)
 
 cbuffer SpdBloomParams : register(b0, space2)
 {
@@ -34,23 +34,7 @@ SamplerState SourceSampler : register(s0, space0);
 
 globallycoherent RWStructuredBuffer<uint> SpdCounterBuffer : register(u8, space1);
 
-float3 SafeHDR(float3 color)
-{
-    return min(max(color, 0.0f), clampValue);
-}
-
-float3 QuadraticThreshold(float3 color)
-{
-    float brightness = max(max(color.r, color.g), color.b);
-    float soft = brightness - threshold + knee;
-    soft = clamp(soft, 0.0f, knee * 2.0f);
-    soft = soft * soft / max(knee * 4.0f, BLOOM_EPSILON);
-    float contribution = max(soft, brightness - threshold) / max(brightness, BLOOM_EPSILON);
-    return color * saturate(contribution);
-}
-
-bool SpdMipInBounds(int2 pix, uint mip)
-{
+bool SpdMipInBounds(int2 pix, uint mip) {
     uint2 sz = max(mip0Size >> mip, uint2(1u, 1u));
     return (uint(pix.x) < sz.x) && (uint(pix.y) < sz.y);
 }
@@ -67,6 +51,20 @@ bool SpdMipInBounds(int2 pix, uint mip)
 
 #include "../Vendor/FFX_SPD/ffx_a.h"
 
+AH3 SafeHDR(AH3 color) {
+    return min(max(color, 0.0f), clampValue);
+}
+
+AH3 QuadraticThreshold(AH3 color)
+{
+    AH1 brightness = max(max(color.r, color.g), color.b);
+    AH1 soft = brightness - threshold + knee;
+    soft = clamp(soft, AH1(0.0f), knee * AH1(2.0f));
+    soft = soft * soft / max(knee * AH1(4.0f), BLOOM_EPSILON);
+    AH1 contribution = max(soft, brightness - threshold) / max(brightness, BLOOM_EPSILON);
+    return color * saturate(contribution);
+}
+
 groupshared AU1 spdCounter;
 groupshared AH4 spdIntermediate[16][16];
 
@@ -76,13 +74,12 @@ groupshared AH4 spdIntermediate[16][16];
 AH4 SpdLoadSourceImageH(ASU2 p, AU1 slice)
 {
     AF2 uv = (AF2(p) + AF2(1.0f, 1.0f)) * invInputSize;
-    float3 color = SafeHDR(SourceTexture.SampleLevel(SourceSampler, uv, 0.0f).rgb);
+    AH3 color = SafeHDR(SourceTexture.SampleLevel(SourceSampler, uv, 0.0f).rgb);
     color = QuadraticThreshold(color);
     return AH4(color, 1.0f);
 }
 
-AH4 SpdLoadH(ASU2 p, AU1 slice)
-{
+AH4 SpdLoadH(ASU2 p, AU1 slice) {
     return AH4(Mip5[p]);
 }
 
