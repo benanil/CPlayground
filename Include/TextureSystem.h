@@ -2,7 +2,7 @@
 #define TEXTURE_SYSTEM_H
 
 #include "Graphics.h"
-#include "Extern/stb/stb_rect_pack.h"
+#include "Extern/SmolAtlas.h"
 
 enum { TextureClass_Albedo, TextureClass_Normal, TextureClass_MetallicRoughness, TextureClass_Count };
 
@@ -19,22 +19,31 @@ enum { TextureClass_Albedo, TextureClass_Normal, TextureClass_MetallicRoughness,
 
 typedef struct TexturePageClass_
 {
-    Texture       pages;                            // 2d array texture with layerCount layers
-    u32           layerCount;                       // gpu layers, grows 1 -> 2 -> 4 -> 8
-    u32           openPages;                        // pages with live packer state
-    stbrp_context packer[TEXTURE_PAGE_LAYERS];      // persistent, packs incrementally across appends
-    stbrp_node*   packerNodes[TEXTURE_PAGE_LAYERS];
-    u8*           tailMips[TEXTURE_PAGE_LAYERS][TEXTURE_PAGE_TAIL_MIPS]; // compressed path only
+    Texture     pages;                            // 2d array texture with layerCount layers
+    u32         layerCount;                       // gpu layers, grows 1 -> 2 -> 4 -> 8
+    u32         openPages;                        // pages with live packer state
+    SmolAtlas*  packer[TEXTURE_PAGE_LAYERS];       // persistent, packs incrementally across appends, items removable
+    u8*         tailMips[TEXTURE_PAGE_LAYERS][TEXTURE_PAGE_TAIL_MIPS]; // compressed path only
 } TexturePageClass;
 
+// tracks the atlas item backing a live descriptor so its page-space can be reclaimed on
+// removal instead of leaking until TextureSystem_ResetPacking. item is NULL for descriptors
+// that never went through the packer (defaults, or restored from a baked dump)
+typedef struct TextureDescriptorPacking_
+{
+    u32            textureClass;
+    SmolAtlasItem* item;
+} TextureDescriptorPacking;
+
 // per scene texture state: page atlases, descriptors and materials.
-// material slots are stable: bundle->materialOffset never moves once assigned,
-// removal frees material/descriptor slots, while atlas page space is reclaimed by repack.
+// material slots are stable: bundle->materialOffset never moves once assigned.
+// removal frees material/descriptor slots and their atlas item, reclaiming page space immediately.
 typedef struct TextureSystem_
 {
-    TextureDescriptor* descriptors;       // MAX_TEXTURE_DESCRIPTORS
-    MaterialGPU*       materials;         // MAX_GPU_MATERIALS
-    u64*               descriptorSlots;   // MAX_TEXTURE_DESCRIPTORS bits, 1 means occupied
+    TextureDescriptor*        descriptors;       // MAX_TEXTURE_DESCRIPTORS
+    TextureDescriptorPacking* descriptorPacking;  // MAX_TEXTURE_DESCRIPTORS
+    MaterialGPU*              materials;         // MAX_GPU_MATERIALS
+    u64*                      descriptorSlots;   // MAX_TEXTURE_DESCRIPTORS bits, 1 means occupied
     u32                numDescriptors;
     u32                materialWatermark; // highest used material slot + 1
     SDL_GPUBuffer*     descriptorBuffer;
@@ -58,8 +67,9 @@ void TextureSystem_Destroy(TextureSystem* ts);
 // caller keeps ownership of the staging textures. out: 0 on failure
 s32 TextureSystem_AppendBundle(TextureSystem* ts, const SceneBundle* bundle, const Texture* stagingTextures, u32 materialOffset);
 
-// clears the bundle's material slots to defaults and releases descriptor slots.
-// page space of the bundle leaks until TextureSystem_ResetPacking
+// clears the bundle's material slots to defaults and releases descriptor slots, freeing
+// their atlas items back to the page packer (skipped for descriptors with no live item,
+// i.e. defaults or ones restored from a baked dump)
 void TextureSystem_RemoveBundle(TextureSystem* ts, const SceneBundle* bundle, u32 materialOffset);
 
 // downloads the class pages from gpu memory and writes them to path as a raw dump in

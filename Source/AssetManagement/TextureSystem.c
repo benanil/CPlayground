@@ -1,7 +1,4 @@
 #include "Include/TextureSystem.h"
-
-#define STB_RECT_PACK_IMPLEMENTATION
-#include "Extern/stb/stb_rect_pack.h"
 #include "Include/BasisBinding.h"
 #include "Include/Memory.h"
 #include "Include/Platform.h"
@@ -10,6 +7,13 @@
 #include "Include/Bitset.h"
 #include "Math/Half.h"
 #include "Math/Vector.h"
+
+#define SAAlloc(size) AllocateTLSFGlobal(size)
+#define SARealloc(mem, size) ReAllocateTLSFGlobal(mem, size)
+#define SAFree(mem) DeAllocateTLSFGlobal(mem)
+#define SAAssert(cond) ASSERT(cond)
+#define SA_SMOL_ATLAS_IMPLEMENTATION
+#include "Extern/SmolAtlas.h"
 
 #if defined(PLATFORM_MACOSX)
 #include "Shaders/msl/TexturePageCopyRGBA.msl.h"
@@ -47,6 +51,7 @@ typedef struct TexturePlacement_
     u32 x, y;
     u32 width, height;
     u32 padding;
+    SmolAtlasItem* item;
 } TexturePlacement;
 
 typedef struct PageCopyRequest_
@@ -228,7 +233,9 @@ static void ReleasePageTexture(Texture* texture)
 /*                       Descriptors and Materials                          */
 /*//////////////////////////////////////////////////////////////////////////*/
 
-static u32 AddDescriptor(TextureSystem* ts, u32 pageIndex, float x, float y, float w, float h)
+// item is the atlas placement backing this descriptor, or NULL for descriptors that
+// have no reclaimable page space (defaults, or entries restored from a baked dump)
+static u32 AddDescriptor(TextureSystem* ts, u32 textureClass, SmolAtlasItem* item, u32 pageIndex, float x, float y, float w, float h)
 {
     s32 descriptorIdx = BitsetFindFirstEmpty(ts->descriptorSlots, MAX_TEXTURE_DESCRIPTORS);
     if (descriptorIdx < 0)
@@ -248,12 +255,15 @@ static u32 AddDescriptor(TextureSystem* ts, u32 pageIndex, float x, float y, flo
     desc->uvScale.y = h / (float)TEXTURE_PAGE_SIZE;
     desc->uvBias.x = x / (float)TEXTURE_PAGE_SIZE;
     desc->uvBias.y = y / (float)TEXTURE_PAGE_SIZE;
+
+    ts->descriptorPacking[idx].textureClass = textureClass;
+    ts->descriptorPacking[idx].item = item;
     return idx;
 }
 
-static u32 AddDescriptorFlags(TextureSystem* ts, u32 pageIndex, float x, float y, float w, float h, u32 flags)
+static u32 AddDescriptorFlags(TextureSystem* ts, u32 textureClass, SmolAtlasItem* item, u32 pageIndex, float x, float y, float w, float h, u32 flags)
 {
-    u32 idx = AddDescriptor(ts, pageIndex, x, y, w, h);
+    u32 idx = AddDescriptor(ts, textureClass, item, pageIndex, x, y, w, h);
     ts->descriptors[idx].flags = flags;
     return idx;
 }
@@ -268,6 +278,15 @@ static void UpdateDescriptorWatermark(TextureSystem* ts)
 static void FreeDescriptor(TextureSystem* ts, u32 descriptorIdx)
 {
     if (descriptorIdx < TextureDesc_DefaultCount || descriptorIdx >= MAX_TEXTURE_DESCRIPTORS) return;
+
+    TextureDescriptorPacking* packing = &ts->descriptorPacking[descriptorIdx];
+    if (packing->item)
+    {
+        TexturePageClass* cls = &ts->classes[packing->textureClass];
+        SAItemRemove(cls->packer[ts->descriptors[descriptorIdx].pageIndex], packing->item);
+    }
+    *packing = (TextureDescriptorPacking){0};
+
     BitsetReset(ts->descriptorSlots, (s32)descriptorIdx);
     ts->descriptors[descriptorIdx] = (TextureDescriptor){0};
 }
@@ -295,11 +314,13 @@ static void RebuildDescriptorSlotsFromMaterials(TextureSystem* ts, const Materia
 static void AddDefaultDescriptors(TextureSystem* ts)
 {
     MemsetZero(ts->descriptorSlots, ((MAX_TEXTURE_DESCRIPTORS + 63u) >> 6) * sizeof(u64));
+    MemsetZero(ts->descriptorPacking, sizeof(TextureDescriptorPacking) * MAX_TEXTURE_DESCRIPTORS);
     ts->numDescriptors = 0;
-    AddDescriptorFlags(ts, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultAlbedo); // invalid also samples harmless default
-    AddDescriptorFlags(ts, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultAlbedo);
-    AddDescriptorFlags(ts, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultNormal);
-    AddDescriptorFlags(ts, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultMetallicRoughness);
+    // defaults sit on the permanently reserved page-0 origin block, no atlas item to track
+    AddDescriptorFlags(ts, 0, NULL, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultAlbedo); // invalid also samples harmless default
+    AddDescriptorFlags(ts, 0, NULL, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultAlbedo);
+    AddDescriptorFlags(ts, 0, NULL, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultNormal);
+    AddDescriptorFlags(ts, 0, NULL, 0, 0, 0, TextureDefaultSize, TextureDefaultSize, TextureDesc_DefaultMetallicRoughness);
 }
 
 static u32 PackMaterialFlags(const AMaterial* material)
@@ -404,8 +425,7 @@ static void OpenPage(TextureSystem* ts, u32 textureClass)
     u32 page = cls->openPages++;
     u32 alignment = ts->compressed ? CompressedPageAlign : 1u;
 
-    cls->packerNodes[page] = (stbrp_node*)AllocateTLSFGlobal(TEXTURE_PAGE_SIZE * sizeof(stbrp_node));
-    stbrp_init_target(&cls->packer[page], TEXTURE_PAGE_SIZE, TEXTURE_PAGE_SIZE, cls->packerNodes[page], TEXTURE_PAGE_SIZE);
+    cls->packer[page] = SACreate(TEXTURE_PAGE_SIZE, TEXTURE_PAGE_SIZE);
 
     if (ts->compressed)
     {
@@ -419,10 +439,9 @@ static void OpenPage(TextureSystem* ts, u32 textureClass)
 
     if (page == 0)
     {
-        // keep the default block region at the page origin
-        stbrp_rect reserve = { .id = -1, .w = (stbrp_coord)AlignUpu32(TextureDefaultSize, alignment),
-                               .h = (stbrp_coord)AlignUpu32(TextureDefaultSize, alignment) };
-        stbrp_pack_rects(&cls->packer[0], &reserve, 1);
+        // keep the default block region at the page origin, permanently reserved (never removed)
+        u32 reserveSize = AlignUpu32(TextureDefaultSize, alignment);
+        SAPack(cls->packer[0], (int)reserveSize, (int)reserveSize);
     }
 }
 
@@ -584,8 +603,8 @@ static void ReleaseClassState(TextureSystem* ts)
         ReleasePageTexture(&cls->pages);
         for (u32 page = 0; page < cls->openPages; page++)
         {
-            if (cls->packerNodes[page]) DeAllocateTLSFGlobal(cls->packerNodes[page]);
-            cls->packerNodes[page] = NULL;
+            SADestroy(cls->packer[page]);
+            cls->packer[page] = NULL;
             for (u32 t = 0; t < TEXTURE_PAGE_TAIL_MIPS; t++)
             {
                 if (cls->tailMips[page][t]) DeAllocateTLSFGlobal(cls->tailMips[page][t]);
@@ -601,6 +620,13 @@ static void ReleaseClassState(TextureSystem* ts)
 /*                          Incremental Packing                             */
 /*//////////////////////////////////////////////////////////////////////////*/
 
+typedef struct TexturePendingRect_
+{
+    u32 imageIndex;
+    u32 width, height;
+    u8  packed;
+} TexturePendingRect;
+
 // packs the wanted staging images into the class pages, continuing on the persistent
 // per page packers and opening new pages as needed. out: number of placements
 static u32 PackClassIncremental(TextureSystem* ts, u32 textureClass, const Texture* staging, const u8* wanted,
@@ -609,8 +635,7 @@ static u32 PackClassIncremental(TextureSystem* ts, u32 textureClass, const Textu
     TexturePageClass* cls = &ts->classes[textureClass];
     u32 alignment = ts->compressed ? CompressedPageAlign : 1u;
 
-    stbrp_rect* rects = (stbrp_rect*)ArenaPushGlobal(numImages * sizeof(stbrp_rect));
-    stbrp_rect* pageRects = (stbrp_rect*)ArenaPushGlobal(numImages * sizeof(stbrp_rect));
+    TexturePendingRect* rects = (TexturePendingRect*)ArenaPushGlobal(numImages * sizeof(TexturePendingRect));
     u32 numRects = 0;
 
     for (u32 i = 0; i < numImages; i++)
@@ -630,10 +655,10 @@ static u32 PackClassIncremental(TextureSystem* ts, u32 textureClass, const Textu
             AX_WARN("texture %d too large for page: %dx%d", i, tex->width, tex->height);
             continue;
         }
-        rects[numRects].id = (int)i;
-        rects[numRects].w = (stbrp_coord)physicalW;
-        rects[numRects].h = (stbrp_coord)physicalH;
-        rects[numRects].was_packed = 0;
+        rects[numRects].imageIndex = i;
+        rects[numRects].width = physicalW;
+        rects[numRects].height = physicalH;
+        rects[numRects].packed = 0;
         numRects++;
     }
 
@@ -644,34 +669,23 @@ static u32 PackClassIncremental(TextureSystem* ts, u32 textureClass, const Textu
         if (page >= cls->openPages)
             OpenPage(ts, textureClass);
 
-        u32 pageRectCount = 0;
         for (u32 r = 0; r < numRects; r++)
-            if (!rects[r].was_packed) pageRects[pageRectCount++] = rects[r];
-
-        stbrp_pack_rects(&cls->packer[page], pageRects, (int)pageRectCount);
-
-        for (u32 pr = 0; pr < pageRectCount; pr++)
         {
-            if (pageRects[pr].id < 0 || !pageRects[pr].was_packed) continue;
-            u32 imageIdx = (u32)pageRects[pr].id;
-            for (u32 r = 0; r < numRects; r++)
-            {
-                if ((u32)rects[r].id == imageIdx && !rects[r].was_packed)
-                {
-                    rects[r].was_packed = 1;
-                    remaining--;
-                    break;
-                }
-            }
+            if (rects[r].packed) continue;
+            SmolAtlasItem* item = SAPack(cls->packer[page], (int)rects[r].width, (int)rects[r].height);
+            if (!item) continue;
+
+            rects[r].packed = 1;
+            remaining--;
+            u32 imageIdx = rects[r].imageIndex;
             outPlacements[placed++] = (TexturePlacement){
-                imageIdx, page, (u32)pageRects[pr].x, (u32)pageRects[pr].y,
-                (u32)staging[imageIdx].width, (u32)staging[imageIdx].height, 0u
+                imageIdx, page, (u32)SAItemX(item), (u32)SAItemY(item),
+                (u32)staging[imageIdx].width, (u32)staging[imageIdx].height, 0u, item
             };
         }
     }
 
-    ArenaPopGlobal(numImages * sizeof(stbrp_rect));
-    ArenaPopGlobal(numImages * sizeof(stbrp_rect));
+    ArenaPopGlobal(numImages * sizeof(TexturePendingRect));
     if (remaining > 0)
         AX_WARN("texture class %d packer ran out of %d pages, %d textures fall back to defaults",
                 textureClass, TEXTURE_PAGE_LAYERS, remaining);
@@ -945,6 +959,7 @@ void TextureSystem_Init(TextureSystem* ts)
 {
     MemsetZero(ts, sizeof(*ts));
     ts->descriptors = (TextureDescriptor*)AllocZeroTLSFGlobal(MAX_TEXTURE_DESCRIPTORS, sizeof(TextureDescriptor));
+    ts->descriptorPacking = (TextureDescriptorPacking*)AllocZeroTLSFGlobal(MAX_TEXTURE_DESCRIPTORS, sizeof(TextureDescriptorPacking));
     ts->materials   = (MaterialGPU*)AllocZeroTLSFGlobal(MAX_GPU_MATERIALS, sizeof(MaterialGPU));
     ts->descriptorSlots = (u64*)AllocZeroTLSFGlobal((MAX_TEXTURE_DESCRIPTORS + 63u) >> 6, sizeof(u64));
     ts->descriptorBuffer = CreateBuffer(NULL, sizeof(TextureDescriptor) * MAX_TEXTURE_DESCRIPTORS, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, "TextureDescriptors");
@@ -963,6 +978,7 @@ void TextureSystem_Destroy(TextureSystem* ts)
     if (ts->descriptorBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, ts->descriptorBuffer);
     if (ts->materialBuffer)   SDL_ReleaseGPUBuffer(g_GPUDevice, ts->materialBuffer);
     if (ts->descriptors)      DeAllocateTLSFGlobal(ts->descriptors);
+    if (ts->descriptorPacking) DeAllocateTLSFGlobal(ts->descriptorPacking);
     if (ts->materials)        DeAllocateTLSFGlobal(ts->materials);
     if (ts->descriptorSlots)  DeAllocateTLSFGlobal(ts->descriptorSlots);
     MemsetZero(ts, sizeof(*ts));
@@ -1037,7 +1053,7 @@ s32 TextureSystem_AppendBundle(TextureSystem* ts, const SceneBundle* bundle, con
         {
             if (!placementOk[i]) continue;
             TexturePlacement* p = &placements[i];
-            descMap[c][p->imageIndex] = AddDescriptor(ts, p->page, (float)p->x, (float)p->y, (float)p->width, (float)p->height);
+            descMap[c][p->imageIndex] = AddDescriptor(ts, c, p->item, p->page, (float)p->x, (float)p->y, (float)p->width, (float)p->height);
         }
         AX_LOG("texture class %d packed %d images", c, placedCount);
     }
