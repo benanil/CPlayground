@@ -37,28 +37,27 @@ typedef struct GrassFSParams_
     f32 grassColorVariant[4];
 } GrassFSParams;
 
-static TerrainFoliageState* tfActive;
+static TerrainGrassState* tgActive;
 
 static const char* const grassPaths[2] = {
     "Assets/Textures/Grass0.png",
     "Assets/Textures/Grass1.png"
 };
 
-static f32 TerrainFoliageChunkSize0(void)
-{
+static f32 TerrainChunkSize0(void) {
     return (f32)T_CHUNK_CELLS * T_VOXEL_SIZE;
 }
 
-u32 TerrainFoliage_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* outMin, float3* outMax)
+u32 Terrain_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* outMin, float3* outMax)
 {
     TerrainAuthoring* authoring = Terrain_GetAuthoring();
     const TerrainGenParams* params = Terrain_GetGenParams();
-    f32 size0 = TerrainFoliageChunkSize0();
+    f32 size0 = TerrainChunkSize0();
     f32 originX = (f32)chunkMin.x;
     f32 originY = (f32)chunkMin.y;
     f32 originZ = (f32)chunkMin.z;
     f32 seaLevel = params ? params->seaLevel : 0.0f;
-    f32 density = authoring ? authoring->grassDensity : 0.0f;
+    f32 density = GRASS_PER_METER;
     f32 bladesPerSqM = density > 0.0f ? 2.0f * density : 0.0f;
     if (bladesPerSqM <= 0.0f) return 0u;
 
@@ -106,7 +105,7 @@ u32 TerrainFoliage_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* ou
     return count;
 }
 
-static void TerrainFoliageCreatePipeline(TerrainFoliageState* tf)
+static void TerrainGrassCreatePipeline(TerrainGrassState* tf)
 {
     SDL_GPUVertexAttribute grassAttr = { .location = 0, .buffer_slot = 0, .format = SDL_GPU_VERTEXELEMENTFORMAT_UINT2, .offset = 0 };
     SDL_GPUVertexInputState grassInput = {
@@ -161,95 +160,94 @@ static void TerrainFoliageCreatePipeline(TerrainFoliageState* tf)
     SDL_ReleaseGPUShader(g_GPUDevice, frag);
 }
 
-bool TerrainFoliage_Init(TerrainFoliageState* tf)
+bool TerrainGrass_Init(TerrainGrassState* tg)
 {
-    if (!tf) return false;
-    if (tf->initialized) { tfActive = tf; return true; }
+    if (!tg) return false;
+    if (tg->initialized) { tgActive = tg; return true; }
     if (!g_GPUDevice) return false;
 
-    MemSet(tf, 0, sizeof(*tf));
+    MemSet(tg, 0, sizeof(*tg));
     for (u32 i = 0; i < T_GRASS_MAX_SLOTS; i++)
-        tf->freeSlots[tf->freeCount++] = (u16)(T_GRASS_MAX_SLOTS - 1u - i);
+        tg->freeSlots[tg->freeCount++] = (u16)(T_GRASS_MAX_SLOTS - 1u - i);
 
-    tf->grassBuffer = CreateBuffer(NULL, sizeof(GrassInstance) * T_MAX_GRASS, BVertexBit, "TerrainGrassBuffer");
-    tf->chunkBuffer = CreateBuffer(NULL, sizeof(TerrainGrassChunkInfo) * T_GRASS_MAX_SLOTS, BReadRasterBit, "TerrainGrassChunks");
-    tf->indirectBuffer = CreateBuffer(NULL, sizeof(SDL_GPUIndirectDrawCommand) * T_GRASS_MAX_DRAWS, BIndirectBit, "TerrainGrassIndirect");
-    TerrainFoliageCreatePipeline(tf);
-    tf->grassLayers = LoadTextureArray(grassPaths, 2u, TERRAIN_GRASS_SIZE, true, "TerrainGrass", "grass");
-    tf->initialized = true;
-    tfActive = tf;
+    tg->grassBuffer = CreateBuffer(NULL, sizeof(GrassInstance) * T_MAX_GRASS, BVertexBit, "TerrainGrassBuffer");
+    tg->chunkBuffer = CreateBuffer(NULL, sizeof(TerrainGrassChunkInfo) * T_GRASS_MAX_SLOTS, BReadRasterBit, "TerrainGrassChunks");
+    tg->indirectBuffer = CreateBuffer(NULL, sizeof(SDL_GPUIndirectDrawCommand) * T_GRASS_MAX_DRAWS, BIndirectBit, "TerrainGrassIndirect");
+    TerrainGrassCreatePipeline(tg);
+    tg->grassLayers = LoadTextureArray(grassPaths, 2u, TERRAIN_GRASS_SIZE, true, "TerrainGrass", "grass");
+    tg->initialized = true;
+    tgActive = tg;
     return true;
 }
 
-void TerrainFoliage_Clear(TerrainFoliageState* tf)
+void TerrainGrass_Clear(TerrainGrassState* tg)
 {
-    if (!tf || !tf->initialized) return;
-    tf->freeCount = 0u;
+    if (!tg || !tg->initialized) return;
+    tg->freeCount = 0u;
     for (u32 i = 0; i < T_GRASS_MAX_SLOTS; i++)
-        tf->freeSlots[tf->freeCount++] = (u16)(T_GRASS_MAX_SLOTS - 1u - i);
-    tf->drawCount = 0u;
+        tg->freeSlots[tg->freeCount++] = (u16)(T_GRASS_MAX_SLOTS - 1u - i);
+    tg->drawCount = 0u;
 }
 
-void TerrainFoliage_Destroy(TerrainFoliageState* tf)
+void TerrainGrass_Destroy(TerrainGrassState* tg)
 {
-    if (!tf || !tf->initialized) return;
-    if (tf->pipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, tf->pipeline);
-    if (tf->grassBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, tf->grassBuffer);
-    if (tf->chunkBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, tf->chunkBuffer);
-    if (tf->indirectBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, tf->indirectBuffer);
-    ReleaseTexture(&tf->grassLayers);
-    if (tfActive == tf) tfActive = NULL;
-    MemSet(tf, 0, sizeof(*tf));
+    if (!tg || !tg->initialized) return;
+    if (tg->pipeline)       SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, tg->pipeline);
+    if (tg->grassBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, tg->grassBuffer);
+    if (tg->chunkBuffer)    SDL_ReleaseGPUBuffer(g_GPUDevice, tg->chunkBuffer);
+    if (tg->indirectBuffer) SDL_ReleaseGPUBuffer(g_GPUDevice, tg->indirectBuffer);
+    ReleaseTexture(&tg->grassLayers);
+    if (tgActive == tg) tgActive = NULL;
+    MemSet(tg, 0, sizeof(*tg));
 }
 
-void TerrainFoliage_BeginFrame(TerrainFoliageState* tf, const FrustumPlanes* frustum)
+void TerrainGrass_BeginFrame(TerrainGrassState* tg, const FrustumPlanes* frustum)
 {
-    if (!TerrainFoliage_Init(tf)) return;
-    tf->drawCount = 0u;
-    if (frustum) tf->frustum = *frustum;
+    if (!TerrainGrass_Init(tg)) return;
+    tg->drawCount = 0u;
+    tg->frustum = *frustum;
 }
 
-bool TerrainFoliage_UploadChunk(TerrainFoliageState* tf, TerrainGrassChunk* chunk, const GrassInstance* src)
+bool TerrainGrass_UploadChunk(TerrainGrassState* tg, TerrainGrassChunk* chunk, const GrassInstance* src)
 {
-    if (!tf || !tf->initialized || !chunk || !src || chunk->count == 0u) return false;
+    if (!tg || !tg->initialized || !chunk || !src || chunk->count == 0u) return false;
     if (chunk->slot != UINT32_MAX) return true;
-    if (tf->freeCount == 0u) return false;
+    if (tg->freeCount == 0u) return false;
 
-    u32 slot = tf->freeSlots[--tf->freeCount];
+    u32 slot = tg->freeSlots[--tg->freeCount];
     GrassInstance instances[GRASS_PER_CHUNK];
-    for (u32 i = 0; i < chunk->count; i++)
-    {
+    for (u32 i = 0; i < chunk->count; i++) {
         instances[i] = src[i];
         instances[i].positionZChunkIndex = (instances[i].positionZChunkIndex & 0xFFFFu) | (slot << 16);
     }
 
     TerrainGrassChunkInfo info = { .origin = { chunk->origin.x, 0.0f, chunk->origin.z, 0.0f } };
-    UpdateGPUBuffer(tf->grassBuffer, instances, chunk->count * sizeof(GrassInstance), (size_t)slot * GRASS_PER_CHUNK * sizeof(GrassInstance));
-    UpdateGPUBuffer(tf->chunkBuffer, &info, sizeof(info), (size_t)slot * sizeof(TerrainGrassChunkInfo));
+    UpdateGPUBuffer(tg->grassBuffer, instances, chunk->count * sizeof(GrassInstance), (size_t)slot * GRASS_PER_CHUNK * sizeof(GrassInstance));
+    UpdateGPUBuffer(tg->chunkBuffer, &info, sizeof(info), (size_t)slot * sizeof(TerrainGrassChunkInfo));
     chunk->slot = slot;
     return true;
 }
 
-void TerrainFoliage_FreeChunk(TerrainFoliageState* tf, TerrainGrassChunk* chunk)
+void TerrainGrass_FreeChunk(TerrainGrassState* tg, TerrainGrassChunk* chunk)
 {
-    if (!tf || !chunk || chunk->slot == UINT32_MAX) { if (chunk) *chunk = (TerrainGrassChunk){ .slot = UINT32_MAX }; return; }
-    if (tf->freeCount < T_GRASS_MAX_SLOTS)
-        tf->freeSlots[tf->freeCount++] = (u16)chunk->slot;
+    if (!tg || !chunk || chunk->slot == UINT32_MAX) { if (chunk) *chunk = (TerrainGrassChunk){ .slot = UINT32_MAX }; return; }
+    if (tg->freeCount < T_GRASS_MAX_SLOTS)
+        tg->freeSlots[tg->freeCount++] = (u16)chunk->slot;
     *chunk = (TerrainGrassChunk){ .slot = UINT32_MAX };
 }
 
-void TerrainFoliage_AppendDraw(TerrainFoliageState* tf, const TerrainGrassChunk* chunk)
+void TerrainFoliage_AppendDraw(TerrainGrassState* tg, const TerrainGrassChunk* chunk)
 {
-    if (!tf || !tf->initialized || !chunk || chunk->slot == UINT32_MAX || chunk->count == 0u) return;
-    if (!CheckAABBCulled(Vec3Load(&chunk->aabbMin.x), Vec3Load(&chunk->aabbMax.x), tf->frustum.planes)) return;
-    if (tf->drawCount >= T_GRASS_MAX_DRAWS) return;
-    tf->draws[tf->drawCount++] = (SDL_GPUIndirectDrawCommand){ 6u, chunk->count, 0u, chunk->slot * GRASS_PER_CHUNK };
+    if (!tg || !tg->initialized || !chunk || chunk->slot == UINT32_MAX || chunk->count == 0u) return;
+    if (!CheckAABBCulled(Vec3Load(&chunk->aabbMin.x), Vec3Load(&chunk->aabbMax.x), tg->frustum.planes)) return;
+    if (tg->drawCount >= T_GRASS_MAX_DRAWS) return;
+    tg->draws[tg->drawCount++] = (SDL_GPUIndirectDrawCommand){ 6u, chunk->count, 0u, chunk->slot * GRASS_PER_CHUNK };
 }
 
-void TerrainFoliage_EndFrame(TerrainFoliageState* tf)
+void TerrainFoliage_EndFrame(TerrainGrassState* tg)
 {
-    if (!tf || !tf->initialized || tf->drawCount == 0u) return;
-    UpdateGPUBufferCycle(tf->indirectBuffer, tf->draws, tf->drawCount * sizeof(SDL_GPUIndirectDrawCommand), 0, true);
+    if (!tg || !tg->initialized || tg->drawCount == 0u) return;
+    UpdateGPUBufferCycle(tg->indirectBuffer, tg->draws, tg->drawCount * sizeof(SDL_GPUIndirectDrawCommand), 0, true);
 }
 
 static void TerrainFoliageFillColor(GrassFSParams* fs)
@@ -264,15 +262,15 @@ static void TerrainFoliageFillColor(GrassFSParams* fs)
 
 void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
 {
-    TerrainFoliageState* tf = tfActive;
-    if (!tf || !tf->initialized || tf->drawCount == 0u || !tf->pipeline || !tf->grassLayers.handle) return;
+    TerrainGrassState* tg = tgActive;
+    if (!tg || !tg->initialized || tg->drawCount == 0u || !tg->pipeline || !tg->grassLayers.handle) return;
 
-    SDL_BindGPUGraphicsPipeline(pass, tf->pipeline);
-    SDL_GPUBufferBinding instanceBinding = { tf->grassBuffer, 0 };
+    SDL_BindGPUGraphicsPipeline(pass, tg->pipeline);
+    SDL_GPUBufferBinding instanceBinding = { tg->grassBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &instanceBinding, 1);
-    SDL_GPUBuffer* storage[1] = { tf->chunkBuffer };
+    SDL_GPUBuffer* storage[1] = { tg->chunkBuffer };
     SDL_BindGPUVertexStorageBuffers(pass, 0, storage, 1);
-    SDL_GPUTextureSamplerBinding grassTex = { .texture = tf->grassLayers.handle, .sampler = g_RenderState.sampler };
+    SDL_GPUTextureSamplerBinding grassTex = { .texture = tg->grassLayers.handle, .sampler = g_RenderState.sampler };
     SDL_BindGPUFragmentSamplers(pass, 0, &grassTex, 1);
 
     TerrainAuthoring* authoring = Terrain_GetAuthoring();
@@ -283,9 +281,6 @@ void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
     vs.cameraTime[1] = g_Camera.position.y;
     vs.cameraTime[2] = g_Camera.position.z;
     vs.cameraTime[3] = (f32)SDL_GetTicks() * 0.001f;
-    vs.grassParams[0] = authoring ? authoring->grassViewDistance : 300.0f;
-    vs.grassParams[1] = authoring ? authoring->grassScaleMin : 0.6f;
-    vs.grassParams[2] = authoring ? authoring->grassScaleMax : 1.2f;
     SDL_PushGPUVertexUniformData(cmd, 0, &vs, sizeof(vs));
 
     float3 sun = GetRenderSunDirection();
@@ -296,5 +291,5 @@ void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
     TerrainFoliageFillColor(&fs);
     SDL_PushGPUFragmentUniformData(cmd, 0, &fs, sizeof(fs));
 
-    SDL_DrawGPUPrimitivesIndirect(pass, tf->indirectBuffer, 0, tf->drawCount);
+    SDL_DrawGPUPrimitivesIndirect(pass, tg->indirectBuffer, 0, tg->drawCount);
 }

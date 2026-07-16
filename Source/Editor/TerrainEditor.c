@@ -367,14 +367,7 @@ static void TerrainLayersUI(void)
 
 static void TerrainGrassUI(void)
 {
-    UISectionHeader("Grass Blades");
-    TerrainAuthoring* authoring = Terrain_GetAuthoring();
-    UIEditFloat(CLAY_ID("TerrainGrassDensity"), CLAY_STRING("Density"), &authoring->grassDensity, 0.0f, 1000.0f, 1.0f, 3);
-    UIEditFloat(CLAY_ID("TerrainGrassViewDist"), CLAY_STRING("View distance"), &authoring->grassViewDistance, 0.0f, 2000.0f, 10.0f, 1);
-    UIEditFloat(CLAY_ID("TerrainGrassScaleMin"), CLAY_STRING("Scale min"), &authoring->grassScaleMin, 0.01f, 10.0f, 0.1f, 3);
-    UIEditFloat(CLAY_ID("TerrainGrassScaleMax"), CLAY_STRING("Scale max"), &authoring->grassScaleMax, 0.01f, 10.0f, 0.1f, 3);
-    TerrainLabeledText(CLAY_ID("TerrainGrassColor"), "Blade color hex AABBGGRR", authoring->grassColorHex, sizeof(authoring->grassColorHex));
-    UIButtonFlags(CLAY_ID("TerrainGrassGenerate"), CLAY_STRING("Generate grass"), (Clay_Dimensions){ 110.0f, 28.0f }, false, UIButtonFlag_FitText);
+
 }
 
 static void TerrainStatsUI(void)

@@ -1285,8 +1285,7 @@ static s32 RestoreBakedClass(TextureSystem* ts, u32 textureClass, const char* at
     u64 payloadBytes = (u64)perLayer * numLayers;
     SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_GPUDevice, &(SDL_GPUTransferBufferCreateInfo){
         .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = (u32)payloadBytes });
-    if (!tb)
-    {
+    if (!tb) {
         SDL_free(data);
         return 0;
     }

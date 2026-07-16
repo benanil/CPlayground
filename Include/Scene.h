@@ -80,10 +80,10 @@ typedef struct Scene_
     RenderSet        skinnedSet;
     RenderSet        surfaceSet;
     RenderSet        transparentSet;
-    RenderSetBuffers skinnedBuffers;
+	RenderSetBuffers skinnedBuffers;
     RenderSetBuffers surfaceBuffers;
     RenderSetBuffers transparentBuffers;
-    TextureSystem    textureSystem;
+	TextureSystem    textureSystem;
     AnimationSystem  animSystem;
 
     SceneBundleRef*  bundleRefs;   // fixed MAX_SCENE_BUNDLES allocation. bundle indices are stable
@@ -113,7 +113,6 @@ typedef struct Scene_
 	SDL_AtomicInt        physicsColliderBuildDone;
 	AsyncCallback        physicsColliderBuildCallback;
 	s32                  physicsColliderBuildResult;
-
 	// physics overrides parsed from a .scene file, applied once the async collider
 	// build finishes (bodies do not exist until then). tlsf-owned, freed on apply.
 	ScenePhysicsRecord* pendingPhysics;

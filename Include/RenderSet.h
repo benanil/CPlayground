@@ -157,24 +157,13 @@ u32   RenderSet_RemoveEntities(RenderSet* set, u32 groupIdx, u32 localStartIdx, 
 
 u32   RenderSet_RemoveSceneBundle(RenderSet* set, u32 bundleIdx);
 
-// shouldn't be called frequently
 void  RenderSet_CompactEntities(RenderSet* set);
 
-#ifndef RenderSet_AddEntitiesCallback
+// define these somewhere
 void RenderSet_AddEntitiesCallback(RenderSet* set, u32 groupIdx, u32 localStartIdx, u32 count);
-#endif
-
-#ifndef RenderSet_RemoveRangeCallback
 void RenderSet_RemoveRangeCallback(RenderSet* set, u32 groupIdx, u32 localStartIdx, u32 count);
-#endif
-
-#ifndef RenderSet_RemoveGroupsCallback
 void RenderSet_RemoveGroupsCallback(RenderSet* set, u32 firstGroup, u32 groupCount);
-#endif
-
-#ifndef RenderSet_ClearEntitiesCallback
 void RenderSet_ClearEntitiesCallback(RenderSet* set);
-#endif
 
 
 #endif

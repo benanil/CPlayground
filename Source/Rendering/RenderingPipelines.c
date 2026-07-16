@@ -806,8 +806,8 @@ static void InitForwardPipelines(void)
     desc.target_info.color_target_descriptions = &transparentColorTarget;
     desc.depth_stencil_state.enable_depth_write = false;
     desc.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
-    g_RenderState.surface.transparentForwardPipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &desc);
-    CHECK_CREATE(g_RenderState.surface.transparentForwardPipeline, "Transparent Surface Forward Pipeline")
+    g_RenderState.transparentForwardPipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &desc);
+    CHECK_CREATE(g_RenderState.transparentForwardPipeline, "Transparent Surface Forward Pipeline")
 
     desc.vertex_shader   = ski_vert;
     desc.fragment_shader = ski_frag;
@@ -942,7 +942,6 @@ extern void DestroyShadows();
 static void DestroyRenderSetBufferPipelines(RenderSetShared buffer)
 {
     if (buffer.forwardPipeline)     SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, buffer.forwardPipeline);
-    if (buffer.transparentForwardPipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, buffer.transparentForwardPipeline);
     if (buffer.shadowPipeline)      SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, buffer.shadowPipeline);
     if (buffer.depthPipeline)       SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, buffer.depthPipeline);
     if (buffer.pointShadowPipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, buffer.pointShadowPipeline);
@@ -955,7 +954,7 @@ void DestroyRenderPipelines(void)
     DestroyRenderSetBufferPipelines(g_RenderState.surface);
     DestroyRenderSetBufferPipelines(g_RenderState.skinned);
     
-    if (g_RenderState.linePipeline)          SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.linePipeline);
+	if (g_RenderState.linePipeline)          SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.linePipeline);
     if (g_OutlinePipeline)                   SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_OutlinePipeline);
     if (g_GizmoLinePipeline)                 SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_GizmoLinePipeline);
     if (g_TerrainTrianglePipeline)           SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_TerrainTrianglePipeline);
@@ -965,6 +964,7 @@ void DestroyRenderPipelines(void)
     if (g_RenderState.slugDepthPipeline)     SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.slugDepthPipeline);
     if (g_RenderState.uiShapePipeline)       SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.uiShapePipeline);
     if (g_RenderState.uiImagePipeline)       SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.uiImagePipeline);
+    if (g_RenderState.transparentForwardPipeline) SDL_ReleaseGPUGraphicsPipeline(g_GPUDevice, g_RenderState.transparentForwardPipeline);
     
     if (g_AnimComputePipeline)             SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_AnimComputePipeline);
     if (g_AnimVerticesPipeline)            SDL_ReleaseGPUComputePipeline(g_GPUDevice, g_AnimVerticesPipeline);

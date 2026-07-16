@@ -70,11 +70,6 @@ static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
         CopyString(authoring->layers[i].normal, sizeof(authoring->layers[i].normal), tNormalPaths[i]);
         CopyString(authoring->layers[i].metallicRoughness, sizeof(authoring->layers[i].metallicRoughness), tMetallicRoughnessPaths[i]);
     }
-    authoring->grassDensity = 4.0f;
-    authoring->grassScaleMin = 0.6f;
-    authoring->grassScaleMax = 1.2f;
-    authoring->grassViewDistance = 300.0f;
-    CopyString(authoring->grassColorHex, sizeof(authoring->grassColorHex), "77AA55FF");
 }
 
 
@@ -334,8 +329,6 @@ bool Terrain_SaveWorld(const char* path)
     p = TerrainWriteF32(p, "cave_frequency", params->carveFrequency, 6);
     p = TerrainWriteF32(p, "island_radius", params->islandRadius, 3);
     p = TerrainWriteF32(p, "island_falloff", params->islandFalloff, 3);
-    p = TerrainWriteF32(p, "grass_density", authoring->grassDensity, 3);
-    p = TerrainWriteF32(p, "grass_view_distance", authoring->grassViewDistance, 3);
 
     WriteAllBytes(path, text, (unsigned long)(p - text));
     SDL_free(text);
@@ -378,8 +371,6 @@ bool Terrain_LoadWorld(const char* path)
         else if (TerrainKeyIs(line, "cave_frequency", &value)) ParseFloat(value, &params.carveFrequency);
         else if (TerrainKeyIs(line, "island_radius", &value)) ParseFloat(value, &params.islandRadius);
         else if (TerrainKeyIs(line, "island_falloff", &value)) ParseFloat(value, &params.islandFalloff);
-        else if (TerrainKeyIs(line, "grass_density", &value)) ParseFloat(value, &tp.authoring.grassDensity);
-        else if (TerrainKeyIs(line, "grass_view_distance", &value)) ParseFloat(value, &tp.authoring.grassViewDistance);
 
         line = hadNewline ? next + 1 : NULL;
     }

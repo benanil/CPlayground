@@ -67,20 +67,20 @@ struct VSInput
 
 struct VSOutput
 {
-    float4   position   : SV_Position;
-    f16_2_io texCoords  : TEXCOORD0;
-    f16_3_io normal     : NORMAL;
-    f16_3_io tangent    : TANGENT0;
-    f16_3_io bitangent  : TEXCOORD1;
+    float4   position    : SV_Position;
+    f16_2_io texCoords   : TEXCOORD0;
+    f16_3_io normal      : NORMAL;
+    f16_3_io tangent     : TANGENT0;
+    f16_3_io bitangent   : TEXCOORD1;
     f16_4_io vertexColor : COLOR0;
-    float4   shadowPos0 : TEXCOORD3;
-    float4   shadowPos1 : TEXCOORD4;
-    float4   shadowPos2 : TEXCOORD5;
-    float    viewDepth  : TEXCOORD6;
-    float3   worldPos   : TEXCOORD11;
+    float4   shadowPos0  : TEXCOORD3;
+    float4   shadowPos1  : TEXCOORD4;
+    float4   shadowPos2  : TEXCOORD5;
+    float    viewDepth   : TEXCOORD6;
+    float3   worldPos    : TEXCOORD11;
     nointerpolation float3 cascadeSplits : TEXCOORD7;
-    nointerpolation uint materialIndex : TEXCOORD8;
-    nointerpolation float handedness : TEXCOORD9;
+    nointerpolation uint   materialIndex : TEXCOORD8;
+    nointerpolation float  handedness    : TEXCOORD9;
 	#if LOD_VISUALIZE == 1
 	nointerpolation uint lod : TEXCOORD10;
     #endif

@@ -107,7 +107,7 @@ typedef struct TerrainFoliageState_
     u32 drawCount;
     u32 freeCount;
     bool initialized;
-} TerrainFoliageState;
+} TerrainGrassState;
 
 typedef struct MaterialBlend_
 {
@@ -191,14 +191,14 @@ bool TerrainEdit_LoadChunks(const char* path);
 
 // density-driven grass helpers. Transvoxel owns the state and chunk lifetime;
 // this file owns only placement, GPU upload, draw submission, and shader binding.
-u32  TerrainFoliage_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* outMin, float3* outMax);
-bool TerrainFoliage_Init(TerrainFoliageState* tf);
-void TerrainFoliage_BeginFrame(TerrainFoliageState* tf, const FrustumPlanes* frustum);
-bool TerrainFoliage_UploadChunk(TerrainFoliageState* tf, TerrainGrassChunk* chunk, const GrassInstance* src);
-void TerrainFoliage_FreeChunk(TerrainFoliageState* tf, TerrainGrassChunk* chunk);
-void TerrainFoliage_AppendDraw(TerrainFoliageState* tf, const TerrainGrassChunk* chunk);
-void TerrainFoliage_EndFrame(TerrainFoliageState* tf);
-void TerrainFoliage_Clear(TerrainFoliageState* tf);
-void TerrainFoliage_Destroy(TerrainFoliageState* tf);
+u32  Terrain_BuildChunkGrass(int3 chunkMin, GrassInstance* out, float3* outMin, float3* outMax);
+bool TerrainGrass_Init(TerrainGrassState* tf);
+void TerrainGrass_BeginFrame(TerrainGrassState* tf, const FrustumPlanes* frustum);
+bool TerrainGrass_UploadChunk(TerrainGrassState* tf, TerrainGrassChunk* chunk, const GrassInstance* src);
+void TerrainGrass_FreeChunk(TerrainGrassState* tf, TerrainGrassChunk* chunk);
+void TerrainFoliage_AppendDraw(TerrainGrassState* tf, const TerrainGrassChunk* chunk);
+void TerrainFoliage_EndFrame(TerrainGrassState* tf);
+void TerrainGrass_Clear(TerrainGrassState* tf);
+void TerrainGrass_Destroy(TerrainGrassState* tf);
 
 #endif // TERRAIN_INTERNAL_H

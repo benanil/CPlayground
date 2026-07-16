@@ -51,11 +51,6 @@ typedef struct TerrainLayerDesc_
 typedef struct TerrainAuthoring_
 {
     TerrainLayerDesc layers[TERRAIN_MAX_LAYERS];
-    f32  grassDensity;
-    f32  grassScaleMin;
-    f32  grassScaleMax;
-    f32  grassViewDistance; // meters; blades farther than this are culled in the grass shader
-    char grassColorHex[9]; // AABBGGRR
 } TerrainAuthoring;
 
 // mutable authoring settings owned by the terrain; the editor UI binds directly to

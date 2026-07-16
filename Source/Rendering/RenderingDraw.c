@@ -46,8 +46,7 @@ static void DrawRenderBufferDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* 
     if (isSkinned) storageBuffers[count++] = buffers->primitiveGroupLOD;
     SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, count);
 
-    if (alphaClip)
-    {
+    if (alphaClip) {
         SDL_BindGPUFragmentSamplers(pass, 0, &albedoSampler, 1);
         SDL_BindGPUFragmentStorageBuffers(pass, 0, fragmentBuffers, 2);
     }
@@ -237,7 +236,7 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
     Terrain_RenderGrass(cmd, pass);
 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSet, &scene->transparentBuffers,
-                            g_RenderState.surface.transparentForwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
+                            g_RenderState.transparentForwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
                             &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
 
     SDL_EndGPURenderPass(pass);
