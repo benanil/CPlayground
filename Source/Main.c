@@ -81,10 +81,7 @@ static void MainLoopTick(void)
 
 static SDL_AppResult SDLCALL MainAppInit(void** appstate, int argc, char* argv[])
 {
-    (void)appstate;
-    (void)argc;
-    (void)argv;
-
+    (void)appstate; (void)argc; (void)argv; 
     s32 msaa = 1;
     done = 0;
 	
@@ -94,8 +91,7 @@ static SDL_AppResult SDLCALL MainAppInit(void** appstate, int argc, char* argv[]
     const SDL_WindowFlags windowFlags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_BORDERLESS;
     SDL_Window* window = SDL_CreateWindow("C Engine", 1920, 1080, windowFlags);
     g_SDLWindow = window;
-    if (!window)
-    {
+    if (!window) {
         AX_ERROR("creating window failed!");
         return SDL_APP_FAILURE;
     }
@@ -113,16 +109,10 @@ static SDL_AppResult SDLCALL MainAppInit(void** appstate, int argc, char* argv[]
     EditorInit();
 
     InitBuffers();
-    if (DemoScene_Create())
-    {
-        if (!Scene_MakeActive(DemoScene_Get())) return SDL_APP_FAILURE;
-    }
-    else
-    {
-        AX_WARN("demo scene failed to load; running transvoxel example in an empty scene");
-        if (!Scene_NewActive()) return SDL_APP_FAILURE;
-    }
-    Terrain_Init();
+    // if (DemoScene_Create()) if (!Scene_MakeActive(DemoScene_Get())) return SDL_APP_FAILURE;
+    if (!Scene_NewActive()) return SDL_APP_FAILURE;
+	tFoliage_Init();
+	Terrain_Init();
     // Keep the runnable Transvoxel example in the demo scene instead of reopening the last editor scene.
 	
     CameraInit(&g_Camera, 1920, 1080);

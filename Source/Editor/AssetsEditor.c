@@ -78,14 +78,12 @@ static void AssetCollectFn(const char* path, void* data)
 {
     (void)data;
     static int numTry = 0;
-    if (assetNumEntries >= ASSET_MAX_ENTRIES && numTry++ < 16)
-    {
+    if (assetNumEntries >= ASSET_MAX_ENTRIES && numTry++ < 16) {
         AX_WARN("asset folder ASSET_MAX_ENTRIES reached!");
         return;
     }
     u32 len = (u32)StringLength(path);
-    if ((len == 0u || len >= ASSET_MAX_PATH) && numTry++ < 16)
-    {
+    if ((len == 0u || len >= ASSET_MAX_PATH) && numTry++ < 16) {
         AX_WARN("asset folder path is too long");
         return;
     }
@@ -125,8 +123,7 @@ static void AssetRefresh(void)
 static void AssetSetCurrentFolder(const char* path)
 {
     u32 len = (u32)StringLength(path);
-    if (len >= ASSET_MAX_PATH) 
-    {
+    if (len >= ASSET_MAX_PATH) {
         AX_WARN("AssetSetCurrentFolder path is too long");
         return;
     }
@@ -181,23 +178,6 @@ static void AssetPaste(void)
     assetDbDirty = true;
 }
 
-static bool AssetExtIs(const char* ext, const char* match)
-{
-    while (*ext && *match && ToLower(*ext) == *match) { ext++; match++; }
-    return *ext == '\0' && *match == '\0';
-}
-
-static bool AssetIsMeshPath(const char* path)
-{
-    const char* ext = GetFileExtension(path, StringLength(path));
-    return AssetExtIs(ext, "fbx") ||  AssetExtIs(ext, "gltf") ||  AssetExtIs(ext, "obj") || AssetExtIs(ext, "glb") || AssetExtIs(ext, "abm");
-}
-
-static bool AssetIsScenePath(const char* path)
-{
-    const char* ext = GetFileExtension(path, StringLength(path));
-    return AssetExtIs(ext, "scene");
-}
 
 //------------------------------------------------------------------------
 // Icons
@@ -249,23 +229,23 @@ static void AssetLoadIcons(void)
 static UIImageData* AssetIconForEntry(const AssetEntry* e)
 {
     if (e->isDir) return &assetIconImages[AssetIcon_Folder];
-
-    const char* ext = GetFileExtension(e->path, (int)e->pathLen);
-    if (AssetExtIs(ext, "gltf") || AssetExtIs(ext, "glb") || AssetExtIs(ext, "fbx") || AssetExtIs(ext, "obj") || AssetExtIs(ext, "abm"))
+	const char* path = e->path;
+	int pathLen = StringLength(path);
+    if (FileHasExtension(path, pathLen, ".gltf") || FileHasExtension(path, pathLen, ".glb") || FileHasExtension(path, pathLen, ".fbx") || FileHasExtension(path, pathLen, ".obj") || FileHasExtension(path, pathLen, ".abm"))
         return &assetIconImages[AssetIcon_Mesh];
-    if (AssetExtIs(ext, "png") || AssetExtIs(ext, "jpg") || AssetExtIs(ext, "jpeg") || AssetExtIs(ext, "dds") || AssetExtIs(ext, "basis") || AssetExtIs(ext, "ctex"))
+    if (FileHasExtension(path, pathLen, ".png") || FileHasExtension(path, pathLen, ".jpg") || FileHasExtension(path, pathLen, ".jpeg") || FileHasExtension(path, pathLen, ".dds") || FileHasExtension(path, pathLen, ".basis") || FileHasExtension(path, pathLen, ".ctex"))
         return &assetIconImages[AssetIcon_Image];
-    if (AssetExtIs(ext, "wav") || AssetExtIs(ext, "ogg") || AssetExtIs(ext, "mp3"))
+    if (FileHasExtension(path, pathLen, ".wav") || FileHasExtension(path, pathLen, ".ogg") || FileHasExtension(path, pathLen, ".mp3"))
         return &assetIconImages[AssetIcon_Audio];
-    if (AssetExtIs(ext, "hlsl"))
+    if (FileHasExtension(path, pathLen, ".hlsl"))
         return &assetIconImages[AssetIcon_HLSL];
-    if (AssetExtIs(ext, "glsl") || AssetExtIs(ext, "vert") || AssetExtIs(ext, "frag"))
+    if (FileHasExtension(path, pathLen, ".glsl") || FileHasExtension(path, pathLen, ".vert") || FileHasExtension(path, pathLen, ".frag"))
         return &assetIconImages[AssetIcon_GLSL];
-    if (AssetExtIs(ext, "mat"))
+    if (FileHasExtension(path, pathLen, ".mat"))
         return &assetIconImages[AssetIcon_Material];
-    if (AssetExtIs(ext, "c") || AssetExtIs(ext, "cpp") || AssetExtIs(ext, "cs"))
+    if (FileHasExtension(path, pathLen, ".c") || FileHasExtension(path, pathLen, ".cpp") || FileHasExtension(path, pathLen, ".cs"))
         return &assetIconImages[AssetIcon_CPP];
-    if (AssetExtIs(ext, "h") || AssetExtIs(ext, "hpp"))
+    if (FileHasExtension(path, pathLen, ".h") || FileHasExtension(path, pathLen, ".hpp"))
         return &assetIconImages[AssetIcon_HPP];
     return &assetIconImages[AssetIcon_File];
 }
@@ -392,8 +372,9 @@ static void AssetDrawGridItem(u32 entryIdx, u32 itemIdx)
             AssetSelect(e);
             if (doubleClicked)
             {
+				int pathLen = StringLength(e->path);
                 if (e->isDir) AssetSetCurrentFolder(e->path);
-                else if (AssetIsScenePath(e->path)) EditorOpenScene(e->path);
+                else if (FileHasExtension(e->path, pathLen, ".scene")) EditorOpenScene(e->path);
                 else AssetOpenWithOS(e->path);
             }
         }
@@ -490,60 +471,51 @@ static void AssetNavBar(void)
     }
 }
 
-static void AssetEventOpenFolder(void* unused)
-{
+static void AssetEventOpenFolder(void* unused) {
     (void)unused;
     AssetOpenWithOS(assetCurrentFolder);
 }
 
-static void AssetEventCopy(void* unused)
-{
+static void AssetEventCopy(void* unused) {
     (void)unused;
     if (assetSelectedPath[0]) MemCopy(assetCopiedPath, assetSelectedPath, sizeof(assetCopiedPath));
 }
 
-static void AssetEventPaste(void* unused)
-{
+static void AssetEventPaste(void* unused) {
     (void)unused;
     AssetPaste();
 }
 
-static void AssetEventDelete(void* unused)
-{
+static void AssetEventDelete(void* unused) {
     (void)unused;
     if (assetSelectedPath[0]) assetDeletePopupOpen = true;
 }
 
-static void AssetEventCreateFolder(void* unused)
-{
+static void AssetEventCreateFolder(void* unused) {
     (void)unused;
     assetCreatePopupOpen = true;
     assetCreateIsFile = false;
     assetNameInput[0] = '\0';
 }
 
-static void AssetEventCreateFile(void* unused)
-{
+static void AssetEventCreateFile(void* unused) {
     (void)unused;
     assetCreatePopupOpen = true;
     assetCreateIsFile = true;
     assetNameInput[0] = '\0';
 }
 
-static void AssetEventImportToScene(void* unused)
-{
+static void AssetEventImportToScene(void* unused) {
     (void)unused;
     if (assetSelectedPath[0]) EditorImportMeshToScene(assetSelectedPath);
 }
 
-static void AssetEventImportWithDetail(void* unused)
-{
+static void AssetEventImportWithDetail(void* unused) {
     (void)unused;
     if (assetSelectedPath[0]) EditorOpenImportDetail(assetSelectedPath);
 }
 
-static void AssetEventOpenScene(void* unused)
-{
+static void AssetEventOpenScene(void* unused) {
     (void)unused;
     if (assetSelectedPath[0]) EditorOpenScene(assetSelectedPath);
 }
@@ -695,12 +667,14 @@ void DrawAssetsWindow(bool* open)
         UIRightClickAddEvent("Open Folder", AssetEventOpenFolder, NULL);
         if (assetSelectedPath[0])
         {
-            if (AssetIsMeshPath(assetSelectedPath))
+			int pathLen = StringLength(assetSelectedPath);
+            if (IsMeshPath(assetSelectedPath))
             {
                 UIRightClickAddEvent("Import to Scene", AssetEventImportToScene, NULL);
                 UIRightClickAddEvent("Import with Detail", AssetEventImportWithDetail, NULL);
             }
-            if (AssetIsScenePath(assetSelectedPath)) UIRightClickAddEvent("Open Scene", AssetEventOpenScene, NULL);
+            if (FileHasExtension(assetSelectedPath, pathLen, ".scene"))
+				UIRightClickAddEvent("Open Scene", AssetEventOpenScene, NULL);
             UIRightClickAddEvent("Copy", AssetEventCopy, NULL);
             UIRightClickAddEvent("Delete", AssetEventDelete, NULL);
         }

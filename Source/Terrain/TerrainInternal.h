@@ -196,8 +196,8 @@ bool TerrainGrass_Init(TerrainGrassState* tf);
 void TerrainGrass_BeginFrame(TerrainGrassState* tf, const FrustumPlanes* frustum);
 bool TerrainGrass_UploadChunk(TerrainGrassState* tf, TerrainGrassChunk* chunk, const GrassInstance* src);
 void TerrainGrass_FreeChunk(TerrainGrassState* tf, TerrainGrassChunk* chunk);
-void TerrainFoliage_AppendDraw(TerrainGrassState* tf, const TerrainGrassChunk* chunk);
-void TerrainFoliage_EndFrame(TerrainGrassState* tf);
+void TerrainGrass_AppendDraw(TerrainGrassState* tf, const TerrainGrassChunk* chunk);
+void TerrainGrass_EndFrame(TerrainGrassState* tf);
 void TerrainGrass_Clear(TerrainGrassState* tf);
 void TerrainGrass_Destroy(TerrainGrassState* tf);
 

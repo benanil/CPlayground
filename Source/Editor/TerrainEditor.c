@@ -193,8 +193,7 @@ bool TerrainEditorUpdate(Camera* camera)
 // runtime first so the save reflects on-screen settings.
 static bool TerrainEditorSave(void)
 {
-    if (!TerrainSyncScenePath())
-    {
+    if (!TerrainSyncScenePath()) {
         AX_WARN("terrain save skipped: active scene has no saved .scene path");
         return false;
     }
@@ -203,8 +202,7 @@ static bool TerrainEditorSave(void)
 
 static bool TerrainEditorLoad(void)
 {
-    if (!TerrainSyncScenePath())
-    {
+    if (!TerrainSyncScenePath()) {
         AX_WARN("terrain load skipped: active scene has no saved .scene path");
         return false;
     }

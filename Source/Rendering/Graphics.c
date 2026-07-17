@@ -131,7 +131,20 @@ static void DestroyGeometryHeaps(void)
 u32 GeometryHeapAlloc(GeometryBufferKind kind, u32 count, void** raw)
 {
     *raw = NULL;
+    if (kind < 0 || kind >= GeometryBuffer_Count) return GEOMETRY_ALLOC_FAIL;
     if (count == 0 || !g_GeometryTLSF[kind]) return GEOMETRY_ALLOC_FAIL;
+
+    static const u32 maxCount[GeometryBuffer_Count] = {
+        (u32)MAX_SKINNED_SOURCE_VERTEX,
+        (u32)MAX_SURFACE_VERTEX,
+        (u32)MAX_INDEX,
+        T_MAX_GRASS, T_MAX_VERTICES, T_MAX_INDICES,
+    };
+    if (count > maxCount[kind])
+    {
+        AX_WARN("geometry allocation count too large kind=%d count=%d max=%d", kind, count, maxCount[kind]);
+        return GEOMETRY_ALLOC_FAIL;
+    }
 
     // power-of-two strides align the block to the stride itself: the returned pointer
     // stays valid for SIMD-typed elements and lands exactly on an element boundary of the mega
@@ -598,7 +611,6 @@ SDL_GPUTexture* CreateSceneColorTexture(u32 drawablew, u32 drawableh, SDL_GPUSam
     return CreateTexture2D(drawablew, drawableh, TEX_FMT_HALF4, usage, sampleCount, 1, "Scene Color Texture");
 }
 
-
 SDL_GPUTexture* CreateHiZDepthTexture(u32 drawablew, u32 drawableh)
 {
     return CreateTexture2D(drawablew, drawableh, TEX_FMT_R32_FLT, TEX_COLOR_TARGET | TEX_SAMPLER, TEX_SMP_CNT1, 1, "Hi-Z Resolved Depth Texture");
@@ -613,7 +625,15 @@ SDL_GPUTexture* CreateHiZTexture(u32 drawablew, u32 drawableh, u32* mipCount)
         SDL_GPU_SAMPLECOUNT_1, levels, "Hi-Z Texture");
 }
 
-
+Texture Create64pxBitTexture(const u64 rows[64], u32 pixels[64 * 64], u32 color, const char* label)
+{
+    for (u32 y = 0; y < 64u; y++) {
+        u64 row = rows[y];
+        for (u32 x = 0; x < 64u; x++)
+            pixels[y * 64u + x] = (row & (1ull << x)) ? color : 0x00FFFFFFu;
+    }
+    return rCreateTexture(64, 64, pixels, TEX_FMT_8UNORM4, TexFlags_None, TEX_SAMPLER, label);
+}
 
 Texture rImportTexture(const char* path, TexFlags flags, const char* label)
 {

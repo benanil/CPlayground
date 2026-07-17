@@ -763,18 +763,6 @@ static void EditorWindowMenu(Clay_ElementId id, Clay_String label, const char* c
     if (clicked >= 0) *flags[clicked] ^= true;
 }
 
-static Texture EditorCreateWindowIconTexture(const u64 rows[64], u32 pixels[64 * 64], const char* label)
-{
-    for (u32 y = 0; y < 64u; y++)
-    {
-        u64 row = rows[y];
-        for (u32 x = 0; x < 64u; x++)
-            pixels[y * 64u + x] = (row & (1ull << x)) ? UCOLOR_WHITE : 0x00FFFFFFu;
-    }
-
-    return rCreateTexture(64, 64, pixels, TEX_FMT_8UNORM4, TexFlags_None, TEX_SAMPLER, label);
-}
-
 static bool EditorPointInCachedTabBarButton(f32 x, f32 y)
 {
     for (u32 i = 0; i < editorTabBarButtonBoxCount; i++)
@@ -822,10 +810,11 @@ void EditorInit(void)
 
     editorLogoTexture = rImportTexture("Assets/Icons/CLogo.png", TexFlags_MipMap, "EditorLogo");
     editorLogoImage   = UIImageFromTexture(&editorLogoTexture);
-    editorMinimizeTexture = EditorCreateWindowIconTexture(EditorMinimizeIconRows, editorMinimizePixels, "EditorMinimizeIcon");
-    editorMaximizeTexture = EditorCreateWindowIconTexture(EditorMaximizeIconRows, editorMaximizePixels, "EditorMaximizeIcon");
-    editorRestoreTexture  = EditorCreateWindowIconTexture(EditorRestoreIconRows , editorRestorePixels , "EditorRestoreIcon");
-    editorCloseTexture    = EditorCreateWindowIconTexture(EditorCloseIconRows   , editorClosePixels   , "EditorCloseIcon");
+	const u32 color = 0xFF115694;
+    editorMinimizeTexture = Create64pxBitTexture(EditorMinimizeIconRows, editorMinimizePixels, color, "EditorMinimizeIcon");
+    editorMaximizeTexture = Create64pxBitTexture(EditorMaximizeIconRows, editorMaximizePixels, color, "EditorMaximizeIcon");
+    editorRestoreTexture  = Create64pxBitTexture(EditorRestoreIconRows , editorRestorePixels , color, "EditorRestoreIcon");
+    editorCloseTexture    = Create64pxBitTexture(EditorCloseIconRows   , editorClosePixels   , color, "EditorCloseIcon");
     editorMinimizeImage = UIImageFromTexture(&editorMinimizeTexture);
     editorMaximizeImage = UIImageFromTexture(&editorMaximizeTexture);
     editorRestoreImage  = UIImageFromTexture(&editorRestoreTexture);

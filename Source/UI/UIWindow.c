@@ -96,26 +96,14 @@ enum
     UIWindowSnap_Bottom = 1u << 3
 };
 
-static Texture UIWindowCreateButtonIconTexture(const u64 rows[64], u32 pixels[64 * 64], const char* label)
-{
-    for (u32 y = 0; y < 64u; y++)
-    {
-        u64 row = rows[y];
-        for (u32 x = 0; x < 64u; x++)
-            pixels[y * 64u + x] = (row & (1ull << x)) ? UCOLOR_WHITE : 0x00FFFFFFu;
-    }
-
-    return rCreateTexture(64, 64, pixels, TEX_FMT_8UNORM4, TexFlags_None, TEX_SAMPLER, label);
-}
-
 static void UIWindowEnsureButtonIcons(void)
 {
     if (g_UIWindowButtonIconsInitialized) return;
     g_UIWindowButtonIconsInitialized = true;
 
-    g_UIWindowMinimizeTexture = UIWindowCreateButtonIconTexture(EditorMinimizeIconRows, g_UIWindowMinimizePixels, "UIWindowMinimizeIcon");
-    g_UIWindowMaximizeTexture = UIWindowCreateButtonIconTexture(EditorMaximizeIconRows, g_UIWindowMaximizePixels, "UIWindowMaximizeIcon");
-    g_UIWindowCloseTexture    = UIWindowCreateButtonIconTexture(EditorCloseIconRows   , g_UIWindowClosePixels   , "UIWindowCloseIcon");
+    g_UIWindowMinimizeTexture = Create64pxBitTexture(EditorMinimizeIconRows, g_UIWindowMinimizePixels, UCOLOR_GRAY, "UIWindowMinimizeIcon");
+    g_UIWindowMaximizeTexture = Create64pxBitTexture(EditorMaximizeIconRows, g_UIWindowMaximizePixels, UCOLOR_GRAY, "UIWindowMaximizeIcon");
+    g_UIWindowCloseTexture    = Create64pxBitTexture(EditorCloseIconRows   , g_UIWindowClosePixels   , UCOLOR_GRAY, "UIWindowCloseIcon");
     g_UIWindowMinimizeImage = UIImageFromTexture(&g_UIWindowMinimizeTexture);
     g_UIWindowMaximizeImage = UIImageFromTexture(&g_UIWindowMaximizeTexture);
     g_UIWindowCloseImage    = UIImageFromTexture(&g_UIWindowCloseTexture);

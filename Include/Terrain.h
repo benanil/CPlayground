@@ -98,6 +98,7 @@ typedef struct TerrainStats_
     u32 numIndices;
 } TerrainStats;
 
+void tFoliage_Init();
 void Terrain_Init(void);     // after RendererInit + InitBuffers, gpu device must exist
 void Terrain_Destroy(void);
 
@@ -137,6 +138,7 @@ bool Terrain_GetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** norma
 // line overlay over the lit scene, enabled by g_RenderSettings.terrainWireframe
 void RenderTerrainWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
                              SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj);
+
 
 #if defined(__cplusplus)
 }

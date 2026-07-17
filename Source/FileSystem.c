@@ -765,8 +765,6 @@ bool CombinePaths(char* dst, uint64_t dstSize, const char* a, const char* b)
     return true;
 }
 
-typedef void(*FolderVisitFn)(const char* path, void* data);
-
 // this is an function that can traverse your all computer files! very fast
 // returns 0: reading failed, 1: success, 2: not enough buffer
 int VisitFolder(const char* root, FolderVisitFn visitFn, void* data, bool recurse)

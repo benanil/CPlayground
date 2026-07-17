@@ -616,42 +616,26 @@ s32 LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale)
     return 1;
 }
 
-s32 LoadOBJ(const char* path, SceneBundle* objScene, f32 scale)
-{
-#if !AX_GAME_BUILD
-    return LoadFBX(path, objScene, scale);
-#else
-    (void)objScene;
-    (void)scale;
-    AX_WARN("obj import unavailable in game build: %s", path);
-    return 0;
-#endif
+u8 IsMeshPath(const char* path) {
+	int pathLen = StringLength(path);
+	return FileHasExtension(path, pathLen, ".fbx") || FileHasExtension(path, pathLen, ".gltf") ||  
+		FileHasExtension(path, pathLen, ".obj") || FileHasExtension(path, pathLen, ".glb") || FileHasExtension(path, pathLen, ".abm");
 }
 
+s32 LoadOBJ(const char* path, SceneBundle* objScene, f32 scale)
+{
+    return LoadFBX(path, objScene, scale);
+}
 // Parse a source mesh file into the intermediate SceneBundle, dispatching by extension.
 // FBX/OBJ import is editor-only (ufbx is excluded from game builds); shipped assets are pre-baked .abm.
-s32 ImportSceneBundle(const char* path, SceneBundle* scene, f32 scale)
+s32 ImportBundle(const char* path, SceneBundle* scene, f32 scale)
 {
     s32 pathLen = StringLength(path);
-    if (FileHasExtension(path, pathLen, ".obj"))
-    {
-#if !AX_GAME_BUILD
-        return LoadOBJ(path, scene, scale);
-#else
-        AX_WARN("obj import unavailable in game build: %s", path);
-        return 0;
-#endif
-    }
-    if (FileHasExtension(path, pathLen, ".fbx"))
-    {
-#if !AX_GAME_BUILD
+    if (FileHasExtension(path, pathLen, ".obj") || 
+		FileHasExtension(path, pathLen, ".fbx"))
         return LoadFBX(path, scene, scale);
-#else
-        AX_WARN("fbx import unavailable in game build: %s", path);
-        return 0;
-#endif
-    }
-    return ParseGLTF(path, scene, scale);
+    else 
+		return ParseGLTF(path, scene, scale);
 }
 
 void SaveSceneImages(SceneBundle* scene, const char* savePath, bool deleteRemaining)
@@ -904,56 +888,68 @@ s32 LoadSceneImages(const char* texturePath, Texture* textures, s32 numImages)
     return result;
 }
 
-s32 LoadGLTFCached(const char* path, SceneBundle* scene, Texture* textures, void** outVertexHeapPtr, void** outIndexHeapPtr)
+// loads the cached basis images of a gltf into a bundle local staging array
+s32 LoadBundleImagesFromCache(const char* gltfPath, SceneBundle* bundle, Texture* staging)
 {
-    char buffer[1024];
-    size_t pathLen = StringLength(path);
-    MemCopy(buffer, path, pathLen + 1);
-    int newLen = ChangeExtension(buffer, pathLen, "glb");
-    bool deleteRemaining = FileExist(buffer);
-    newLen = ChangeExtension(buffer, pathLen, "abm");
-    s32 result = 1;
-    if (IsABMLastVersion(buffer)) {
-        AX_LOG("asset cache hit: %s", buffer);
-        result = LoadSceneBundleBinary(buffer, scene, outVertexHeapPtr, outIndexHeapPtr);
-    }
-    else if (ImportSceneBundle(path, scene, 1.0f)) {
-        AX_LOG("asset cache rebuild: %s -> %s", path, buffer);
-        if (!BakeSceneMeshesAndAnimations(scene, outVertexHeapPtr, outIndexHeapPtr))
-        {
-            AX_WARN("asset import failed during mesh bake: %s vertices=%d indices=%d", path, scene->totalVertices, scene->totalIndices);
-            return 0;
-        }
-        if (!SaveGLTFBinary(scene, buffer))
-        {
-            AX_WARN("asset cache save failed: %s", buffer);
-            return 0;
-        }
-        ChangeExtension(buffer, newLen, "bdc");
-        if (!FileExist(buffer))
-        {
-            SaveSceneImages(scene, buffer, deleteRemaining);
-        }
-    }
-    else {
-        AX_WARN("asset import failed: %s", path);
-        return 0;
-    }
-    ChangeExtension(buffer, newLen, "bdc");
-    s32 imageResult = LoadSceneImages(buffer, textures, scene->numImages);
-    if (imageResult == 0 || imageResult == 3)
-    {
-        AX_WARN("scene image cache invalid, rebuilding: %s result=%d", buffer, imageResult);
-        SaveSceneImages(scene, buffer, deleteRemaining);
-        imageResult = LoadSceneImages(buffer, textures, scene->numImages);
-    }
-    else if (imageResult == 2)
-    {
-        AX_WARN("scene image cache has missing basis files, keeping metadata: %s", buffer);
-    }
-    return result && (imageResult != 0);
+    char path[1024];
+    int pathLen = StringLength(gltfPath);
+    MemCopy(path, gltfPath, pathLen + 1);
+    ChangeExtension(path, pathLen, "bdc");
+	if (!FileExist(path)) SaveSceneImages(bundle, path, false);
+    return LoadSceneImages(path, staging, bundle->numImages);
 }
 
+// mesh data only. Writes the .bdc image cache synchronously, but on an .abm cache miss it sets
+// *outBaked so the caller persists the .abm mesh cache asynchronously (that's the slow part).
+// staging images are the caller's concern. out: 0 on failure
+s32 LoadBundleMeshCached(const char* path, SceneBundle* bundle, void** outVertexHeapPtr, void** outIndexHeapPtr, bool* outBaked)
+{
+    *outBaked = false;
+    char buffer[1024];
+    int pathLen = StringLength(path);
+    MemCopy(buffer, path, pathLen + 1);
+    int newLen = ChangeExtension(buffer, pathLen, "abm");
+    if (IsABMLastVersion(buffer))
+    {
+        AX_LOG("asset cache hit: %s", buffer);
+        return LoadSceneBundleBinary(buffer, bundle, outVertexHeapPtr, outIndexHeapPtr);
+    }
+    // Import and bake do all their temporary work through ArenaPushGlobal. When this runs on an
+    // async worker thread (editor mesh import), sharing the main thread's GlobalArena would corrupt
+    // its LIFO bump pointer, so give this bake its own scratch arena for the duration. It's a small
+    // bump buffer (ARENA_SCRATCH_SIZE); allocations larger than it spill to the thread-safe TLSF heap.
+    ArenaScratch bakeArena;
+    if (!ArenaBeginScratch(&bakeArena, ARENA_SCRATCH_SIZE, "LoadBundleMeshCached"))
+    {
+        AX_WARN("asset import failed: scratch arena allocation failed: %s", path);
+        return 0;
+    }
+
+    if (!ImportBundle(path, bundle, 1.0f))
+    {
+        AX_WARN("asset import failed: %s", path);
+        ArenaEndScratch(&bakeArena);
+        return 0;
+    }
+    AX_LOG("asset cache rebuild: %s -> %s", path, buffer);
+    if (!BakeSceneMeshesAndAnimations(bundle, outVertexHeapPtr, outIndexHeapPtr))
+    {
+        AX_WARN("asset import failed during mesh bake: %s vertices=%d indices=%d", path, bundle->totalVertices, bundle->totalIndices);
+        ArenaEndScratch(&bakeArena);
+        return 0;
+    }
+    ArenaEndScratch(&bakeArena);
+    ChangeExtension(buffer, newLen, "bdc");
+    if (!FileExist(buffer))
+    {
+        ChangeExtension(buffer, newLen, "glb");
+        bool deleteRemaining = FileExist(buffer);
+        ChangeExtension(buffer, newLen, "bdc");
+        SaveSceneImages(bundle, buffer, deleteRemaining);
+    }
+    *outBaked = true;
+    return 1;
+}
 /*//////////////////////////////////////////////////////////////////////////*/
 /*                            Binary Save                                   */
 /*//////////////////////////////////////////////////////////////////////////*/
@@ -1339,7 +1335,13 @@ s32 LoadSceneBundleBinary(const char* path, SceneBundle* gltf, void** outVertexH
     
     AFileRead(&gltf->totalIndices, sizeof(s32), file, 1);
     AFileRead(&gltf->totalVertices, sizeof(s32), file, 1);
-    
+    if (gltf->totalIndices <= 0 || gltf->totalVertices <= 0)
+    {
+        AX_WARN("abm load failed: invalid geometry counts %s vertices=%d indices=%d", path, gltf->totalVertices, gltf->totalIndices);
+        AFileClose(file);
+        return 0;
+    }
+     
     size_t vertexSize = isSkined ? sizeof(ASkinedVertex) : sizeof(AVertex);
     size_t vertexAlignment = 4;
 

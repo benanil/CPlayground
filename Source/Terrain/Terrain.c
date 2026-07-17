@@ -6,8 +6,8 @@
 #include "Include/Algorithm.h"
 #include "Include/BasisCompressWrapper.h"
 
-#define T_ALBEDO_SIZE 2048
-#define T_DETAIL_SIZE 1024
+#define T_ALBEDO_SIZE  2048
+#define T_DETAIL_SIZE  1024
 #define T_ALBEDO_BASIS "Assets/Textures/Terrain/TerrainAlbedo.basis"
 #define T_NORMAL_BASIS "Assets/Textures/Terrain/TerrainNormal.basis"
 #define T_ARM_BASIS    "Assets/Textures/Terrain/TerrainARM.basis"
@@ -46,8 +46,7 @@ const char* const tMetallicRoughnessPaths[T_LAYER_COUNT] = {
     "Assets/Textures/Terrain/brown_mud_leaves_01_arm_2k.png"
 };
 
-void TerrainInitMaterialTextures(void)
-{
+void TerrainInitMaterialTextures(void) {
     if (tp.albedoLayers.handle && tp.normalLayers.handle && tp.armLayers.handle) return;
     tp.albedoLayers = basis_load_or_build_texture_array(tAlbedoPaths, T_LAYER_COUNT, T_ALBEDO_SIZE, true,
                                                         T_ALBEDO_BASIS, BASIS_FORMAT_UASTC,
@@ -60,9 +59,8 @@ void TerrainInitMaterialTextures(void)
                                                      "TerrainARM");
 }
 
-static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
-{
-    SDL_memset(authoring, 0, sizeof(*authoring));
+static void TerrainAuthoringDefaults(TerrainAuthoring* authoring) {
+    MemSet(authoring, 0, sizeof(*authoring));
     for (u32 i = 0; i < T_LAYER_COUNT; i++)
     {
         authoring->layers[i].enabled = true;
@@ -72,9 +70,7 @@ static void TerrainAuthoringDefaults(TerrainAuthoring* authoring)
     }
 }
 
-
-TerrainAuthoring* Terrain_GetAuthoring(void)
-{
+TerrainAuthoring* Terrain_GetAuthoring(void){
     if (!tp.initialized) Terrain_Init();
     return &tp.authoring;
 }
@@ -90,8 +86,7 @@ void Terrain_Init(void)
     tp.initialized = true;
 }
 
-void Terrain_Destroy(void)
-{
+void Terrain_Destroy(void) {
     if (!tp.initialized) return;
     ReleaseTexture(&tp.albedoLayers);
     ReleaseTexture(&tp.normalLayers);
@@ -100,29 +95,24 @@ void Terrain_Destroy(void)
     SDL_memset(&tp, 0, sizeof(tp));
 }
 
-void Terrain_Update(const Camera* camera)
-{
+void Terrain_Update(const Camera* camera) {
     (void)camera;
 }
 
-void Terrain_SetEnabled(bool enabled)
-{
+void Terrain_SetEnabled(bool enabled) {
     if (!tp.initialized) Terrain_Init();
     tp.enabled = enabled;
 }
 
-bool Terrain_GetEnabled(void)
-{
+bool Terrain_GetEnabled(void) {
     return tp.initialized && tp.enabled;
 }
 
-void Terrain_InvalidatePhysics(void)
-{
+void Terrain_InvalidatePhysics(void) {
     tInvalidatePhysics();
 }
 
-void Terrain_ApplyGenParams(const TerrainGenParams* params)
-{
+void Terrain_ApplyGenParams(const TerrainGenParams* params) {
     if (!params) return;
     if (!tp.initialized) Terrain_Init();
     tp.genParams = *params;
@@ -131,40 +121,34 @@ void Terrain_ApplyGenParams(const TerrainGenParams* params)
     tInvalidateAll();
 }
 
-const TerrainGenParams* Terrain_GetGenParams(void)
-{
+const TerrainGenParams* Terrain_GetGenParams(void) {
     if (!tp.initialized) Terrain_Init();
     return &tp.genParams;
 }
 
-void Terrain_CreateWorld(const TerrainGenParams* params)
-{
+void Terrain_CreateWorld(const TerrainGenParams* params) {
     Terrain_ApplyGenParams(params);
     tp.enabled = true;
 }
 
-void Terrain_DeleteWorld(void)
-{
+void Terrain_DeleteWorld(void) {
     tp.enabled = false;
     TerrainEdit_Clear();
     tInvalidateAll();
 }
 
-void Terrain_SetBrushCursor(float3 position, f32 radius, bool active)
-{
+void Terrain_SetBrushCursor(float3 position, f32 radius, bool active) {
     tSetBrushCursor(position, radius, active);
 }
 
-void Terrain_SculptSphere(float3 center, f32 radius, f32 strength, f32 softness)
-{
+void Terrain_SculptSphere(float3 center, f32 radius, f32 strength, f32 softness) {
     if (!Terrain_GetEnabled()) return;
     float3 mn, mx;
     TerrainEdit_SculptSphere(center, radius, strength, softness, &mn, &mx);
     tInvalidateRegion(mn, mx);
 }
 
-void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32 softness)
-{
+void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32 softness) {
     if (!Terrain_GetEnabled()) return;
     float3 mn, mx;
     TerrainEdit_PaintSphere(center, radius, (u8)Clamps32((s32)layer + 1, 1, 15), strength, softness, &mn, &mx);
@@ -172,13 +156,8 @@ void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32
 }
 
 // todo physics raycast
-s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit)
-{
-    (void)origin;
-    (void)dir;
-    (void)maxDist;
-    (void)maxLod;
-    (void)hit;
+s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit) {
+    (void)origin; (void)dir; (void)maxDist; (void)maxLod; (void)hit;
     return 0;
 }
 
@@ -221,17 +200,13 @@ s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
     return 0;
 }
 
-TerrainStats Terrain_GetStats(void)
-{
+TerrainStats Terrain_GetStats(void) {
     return (TerrainStats){0};
 }
 
 void RenderTerrainWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget, SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj)
 {
-    (void)cmd;
-    (void)colorTarget;
-    (void)depthTarget;
-    (void)viewProj;
+    (void)cmd; (void)colorTarget; (void)depthTarget; (void)viewProj;
 }
 
 bool Terrain_GetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** normal, SDL_GPUTexture** arm)
@@ -244,31 +219,26 @@ bool Terrain_GetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** norma
     return tp.albedoLayers.handle && tp.normalLayers.handle && tp.armLayers.handle;
 }
 
-u32 Terrain_NumEditedRegions(void)
-{
+u32 Terrain_NumEditedRegions(void) {
     return TerrainEdit_NumChunks();
 }
 
-bool Terrain_SaveEditChunks(const char* path)
-{
+bool Terrain_SaveEditChunks(const char* path) {
     return tp.initialized && TerrainEdit_SaveChunks(path);
 }
 
-bool Terrain_LoadEditChunks(const char* path)
-{
+bool Terrain_LoadEditChunks(const char* path) {
     if (!tp.initialized) Terrain_Init();
     return TerrainEdit_LoadChunks(path);
 }
 
-static char* TerrainWriteString(char* p, const char* s)
-{
+static char* TerrainWriteString(char* p, const char* s) {
     u32 len = (u32)StringLength(s);
     MemCopy(p, s, len);
     return p + len;
 }
 
-static char* TerrainWriteF32(char* p, const char* key, f32 value, int decimals)
-{
+static char* TerrainWriteF32(char* p, const char* key, f32 value, int decimals) {
     p = TerrainWriteString(p, key);
     *p++ = ' ';
     p += FloatToString(p, value, decimals);
@@ -276,8 +246,7 @@ static char* TerrainWriteF32(char* p, const char* key, f32 value, int decimals)
     return p;
 }
 
-static char* TerrainWriteBool(char* p, const char* key, bool value)
-{
+static char* TerrainWriteBool(char* p, const char* key, bool value) {
     p = TerrainWriteString(p, key);
     *p++ = ' ';
     *p++ = value ? '1' : '0';
@@ -285,8 +254,7 @@ static char* TerrainWriteBool(char* p, const char* key, bool value)
     return p;
 }
 
-static bool TerrainKeyIs(const char* line, const char* key, const char** value)
-{
+static bool TerrainKeyIs(const char* line, const char* key, const char** value) {
     u32 len = (u32)StringLength(key);
     for (u32 i = 0; i < len; i++)
         if (line[i] != key[i]) return false;
@@ -295,8 +263,7 @@ static bool TerrainKeyIs(const char* line, const char* key, const char** value)
     return true;
 }
 
-static bool TerrainChunksPathFromWorld(const char* terrainPath, char* dst, u32 dstSize)
-{
+static bool TerrainChunksPathFromWorld(const char* terrainPath, char* dst, u32 dstSize) {
     u32 len = Minu32((u32)StringLength(terrainPath), dstSize - 1u);
     MemCopy(dst, terrainPath, len);
     dst[len] = '\0';
@@ -304,8 +271,7 @@ static bool TerrainChunksPathFromWorld(const char* terrainPath, char* dst, u32 d
     return true;
 }
 
-bool Terrain_SaveWorld(const char* path)
-{
+bool Terrain_SaveWorld(const char* path) {
     if (!path || !path[0] || !Terrain_GetEnabled()) return false;
     EnsurePath(path);
 
@@ -339,8 +305,7 @@ bool Terrain_SaveWorld(const char* path)
     return FileExist(path) && Terrain_SaveEditChunks(chunksPath);
 }
 
-bool Terrain_LoadWorld(const char* path)
-{
+bool Terrain_LoadWorld(const char* path) {
     if (!path || !path[0]) return false;
     if (!tp.initialized) Terrain_Init();
 
@@ -351,8 +316,7 @@ bool Terrain_LoadWorld(const char* path)
     TerrainAuthoringDefaults(&tp.authoring);
     const char* value;
     char* line = text;
-    while (line && *line)
-    {
+    while (line && *line) {
         char* next = line;
         while (*next && *next != '\n') next++;
         bool hadNewline = *next == '\n';

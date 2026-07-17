@@ -20,22 +20,23 @@
 extern "C" {
 #endif
 
-s32 LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale);
-
-s32 LoadOBJ(const char* path, SceneBundle* objScene, f32 scale);
+s32  LoadFBX(const char* path, SceneBundle* fbxScene, f32 scale);
+s32  LoadOBJ(const char* path, SceneBundle* objScene, f32 scale);
 
 // Parse a source mesh file (.gltf/.glb/.fbx/.obj) into an intermediate SceneBundle by extension.
-s32 ImportSceneBundle(const char* path, SceneBundle* scene, f32 scale);
+s32 ImportBundle(const char* path, SceneBundle* scene, f32 scale);
 
 /* Binary asset cache */
 s32 SaveGLTFBinary(const SceneBundle* gltf, const char* path);
 
 s32 LoadSceneBundleBinary(const char* path, SceneBundle* gltf, void** outVertexHeapPtr, void** outIndexHeapPtr);
 
-s32 LoadGLTFCached(const char* path, SceneBundle* scene, Texture* textures, void** outVertexHeapPtr, void** outIndexHeapPtr);
+s32 LoadBundleMeshCached(const char* path, SceneBundle* bundle, void** outVertexHeapPtr, void** outIndexHeapPtr, bool* outBaked);
+s32 LoadBundleImagesFromCache(const char* gltfPath, SceneBundle* bundle, Texture* staging);
 
 // ABM = AX binary mesh
 u8 IsABMLastVersion(const char* path);
+u8 IsMeshPath(const char* path);
 
 /* Mesh baking */
 // returns 0 on not enough memory

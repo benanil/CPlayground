@@ -196,61 +196,6 @@ static SceneBundle* BundleCacheFindBundle(u64 key)
     return bundle;
 }
 
-// mesh data only. Writes the .bdc image cache synchronously, but on an .abm cache miss it sets
-// *outBaked so the caller persists the .abm mesh cache asynchronously (that's the slow part).
-// staging images are the caller's concern. out: 0 on failure
-static s32 LoadBundleMeshCached(const char* path, SceneBundle* bundle, void** outVertexHeapPtr, void** outIndexHeapPtr, bool* outBaked)
-{
-    *outBaked = false;
-    char buffer[1024];
-    int pathLen = StringLength(path);
-    MemCopy(buffer, path, pathLen + 1);
-    int newLen = ChangeExtension(buffer, pathLen, "abm");
-    if (IsABMLastVersion(buffer))
-    {
-        AX_LOG("asset cache hit: %s", buffer);
-        return LoadSceneBundleBinary(buffer, bundle, outVertexHeapPtr, outIndexHeapPtr);
-    }
-    // Import and bake do all their temporary work through ArenaPushGlobal. When this runs on an
-    // async worker thread (editor mesh import), sharing the main thread's GlobalArena would corrupt
-    // its LIFO bump pointer, so give this bake its own scratch arena for the duration. It's a small
-    // bump buffer (ARENA_SCRATCH_SIZE); allocations larger than it spill to the thread-safe TLSF heap.
-    ArenaScratch bakeArena;
-    if (!ArenaBeginScratch(&bakeArena, ARENA_SCRATCH_SIZE, "LoadBundleMeshCached"))
-    {
-        AX_WARN("asset import failed: scratch arena allocation failed: %s", path);
-        return 0;
-    }
-
-    if (!ImportSceneBundle(path, bundle, 1.0f))
-    {
-        AX_WARN("asset import failed: %s", path);
-        ArenaEndScratch(&bakeArena);
-        return 0;
-    }
-    AX_LOG("asset cache rebuild: %s -> %s", path, buffer);
-    if (!BakeSceneMeshesAndAnimations(bundle, outVertexHeapPtr, outIndexHeapPtr))
-    {
-        AX_WARN("asset import failed during mesh bake: %s vertices=%d indices=%d", path, bundle->totalVertices, bundle->totalIndices);
-        ArenaEndScratch(&bakeArena);
-        return 0;
-    }
-    ArenaEndScratch(&bakeArena);
-    // The .bdc image cache is written synchronously here (cheap relative to the .abm mesh cache, and
-    // fine to block the import). The .abm mesh cache is the slow part and is persisted asynchronously
-    // by the caller.
-    ChangeExtension(buffer, newLen, "bdc");
-    if (!FileExist(buffer))
-    {
-        ChangeExtension(buffer, newLen, "glb");
-        bool deleteRemaining = FileExist(buffer);
-        ChangeExtension(buffer, newLen, "bdc");
-        SaveSceneImages(bundle, buffer, deleteRemaining);
-    }
-    *outBaked = true;
-    return 1;
-}
-
 // Persists a freshly baked bundle's .abm mesh cache to disk on a worker thread. data is the cache
 // key: the bundle is re-found by key and a reference is held for the duration, so its resident
 // geometry stays alive while SaveGLTFBinary reads it (the save never mutates it).

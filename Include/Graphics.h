@@ -392,6 +392,8 @@ bool GetSceneViewSize(u32* w, u32* h);
 
 void GraphicsDestroy();
 
+Texture Create64pxBitTexture(const u64 rows[64], u32 pixels[64 * 64], u32 color, const char* label);
+
 Texture rImportTexture(const char* path, TexFlags flags, const char* label);
 
 Texture rCreateTexture(int width, int height, void* data, SDL_GPUTextureFormat format,

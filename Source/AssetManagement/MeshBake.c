@@ -103,6 +103,12 @@ static void IndicesForPrimitive(APrimitive* primitive, u32* currIndices, const u
 
     const u8* beforeCopy = (const u8*)primitive->indices;
     primitive->indices = currIndices;
+    if (primitive->indexType < AComponentType_BYTE || primitive->indexType > AComponentType_FLOAT)
+    {
+        AX_WARN("primitive index type invalid: %d", primitive->indexType);
+        primitive->numIndices = 0;
+        return;
+    }
     s32 indexSize = GraphicsTypeToSize(primitive->indexType);
 
     for (s32 i = 0; i < primitive->numIndices; i++)
@@ -498,6 +504,12 @@ static void ValidatePrimitiveLODs(const SceneBundle* gltf, bool isSkinned, u32 v
 s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, void** outIndexHeapPtr)
 {
     AX_LOG("mesh bake: meshes=%d vertices=%d indices=%d skins=%d", gltf->numMeshes, gltf->totalVertices, gltf->totalIndices, gltf->numSkins);
+    if (gltf->totalVertices <= 0 || gltf->totalIndices <= 0)
+    {
+        AX_WARN("mesh bake failed: empty geometry vertices=%d indices=%d", gltf->totalVertices, gltf->totalIndices);
+        return 0;
+    }
+
     AMesh* meshes    = gltf->meshes;
     bool isSkinned = gltf->numSkins > 0;
     GeometryBufferKind vertexKind = isSkinned ? GeometryBuffer_SkinnedVertex : GeometryBuffer_SurfaceVertex;
@@ -577,7 +589,15 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
         {
             APrimitive* primitive = &mesh.primitives[p];
             if (primitive->numVertices <= 0 || primitive->numIndices <= 0)
+            {
                 AX_WARN("mesh %d primitive %d has empty geometry vertices=%d indices=%d", m, p, primitive->numVertices, primitive->numIndices);
+                continue;
+            }
+            if (primitive->indices && (primitive->indexType < AComponentType_BYTE || primitive->indexType > AComponentType_FLOAT))
+            {
+                AX_WARN("mesh %d primitive %d has invalid index type: %d", m, p, primitive->indexType);
+                continue;
+            }
 
             u32 primitiveVertexCursor = vertexCursor;
             u32 primitiveIndexCursor = indexCursor;

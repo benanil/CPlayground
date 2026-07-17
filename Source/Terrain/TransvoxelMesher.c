@@ -649,12 +649,11 @@ static bool tMesherTransition(tTransvoxelMesher* mesher, tMeshDataSlot slot, tTr
     return result;
 }
 
-bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, const f32* densityData,
-                           s32 lod, s32 neighboursMask, tMeshDataContainer* meshData, void* userData)
+bool tTransvoxelMesherMesh(const tDensityGenerator* generator, const f32* densityData, tBuildJob* job)
 {
-    (void)neighboursMask;
-    (void)userData;
-    if (!generator || !densityData || !meshData || lod < 0)
+	tMeshDataContainer* meshData = &job->scratchMesh;
+    
+    if (!generator || !densityData || !meshData || job->lod < 0)
     {
         AX_WARN("transvoxel unity mesher failed: invalid argument");
         return false;
@@ -662,10 +661,10 @@ bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, co
 
     tTransvoxelMesher mesher = {0};
     mesher.generator   = generator;
-    mesher.chunkMin    = chunkMin;
+    mesher.chunkMin    = job->min;
     mesher.densityData = densityData;
-    mesher.lod         = lod;
-    mesher.lodScale    = 1 << lod;
+    mesher.lod         = job->lod;
+    mesher.lodScale    = 1 << job->lod;
     mesher.meshData    = meshData;
 
     tMeshDataContainerClear(meshData);

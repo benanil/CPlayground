@@ -122,6 +122,7 @@ target_sources(${EXECUTABLE_NAME} PRIVATE
     Source/Terrain/Terrain.c
     Source/Terrain/TerrainMaterial.c
     Source/Terrain/TerrainFoliage.c
+    Source/Terrain/TerrainGrass.c
     Source/Terrain/TerrainDensity.c
     Source/Terrain/TerrainEdit.c
     Source/Terrain/TransvoxelMesh.c

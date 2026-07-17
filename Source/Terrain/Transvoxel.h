@@ -2,6 +2,8 @@
 #define TRANSVOXEL_UNITY_H
 
 #include "Math/Bitpack.h"
+#include "Include/Memory.h"
+#include "Include/JobSystem.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -54,6 +56,53 @@ typedef struct tMeshDataContainer_
     tMeshData mesh[tMeshDataSlot_Count];
 } tMeshDataContainer;
 
+typedef struct GeometryRange_
+{
+    void* heapPtr;
+    u32   first;
+    u32   count;
+} GeometryRange;
+
+typedef struct PhysicsMesh_
+{
+    struct b3Vec3* vertices;
+    s32*    indices;
+    u32     vertexCount;
+    u32     indexCount;
+} PhysicsMesh;
+
+typedef struct tMeshHandle_
+{
+    GeometryRange vertices;
+    GeometryRange indices;
+    PhysicsMesh   physics;
+} tMeshHandle;
+
+// one in-flight chunk build on a JobSystem worker. the main thread fills the inputs,
+// launches the job and reads the outputs after JobSystem_IsJobDone; exactly one job
+// ever touches a chunk, so no locks on chunk state are needed
+typedef struct tBuildJob_
+{
+    // inputs, main thread
+    u32  chunkIndex;
+    int3 min;
+    s32  lod;
+    s32  neighboursMask;
+    // per-slot scratch, initialized once (ranges in the TerrainVertNew/Second/Index2 heaps)
+    tMeshDataContainer scratchMesh;
+    ArenaScratch scratchArena;
+    // worker-local append state, valid only while the job runs (thread scratch arena)
+    tVertexData* buildVertices;
+    u32          buildVertexCount;
+    u32*         buildIndices;
+    u32          buildIndexCount;
+    // output, worker; mesh ranges are zero when empty or failed
+    tMeshHandle  mesh;
+    JobHandle    handle;
+    bool         failed;
+    bool         busy;
+} tBuildJob;
+
 typedef f32 (*tNoise2DFn)(f32 x, f32 z, void* userData);
 typedef f32 (*tNoise3DFn)(f32 x, f32 y, f32 z, void* userData);
 
@@ -87,9 +136,9 @@ void tMeshDataContainerClear(tMeshDataContainer* container);
 bool tMeshDataContainerHasAnyData(const tMeshDataContainer* container);
 void tMeshDataContainerApplySecondaryVertices(tMeshDataContainer* container, s32 neighboursMask);
 
-bool tTransvoxelMesherMesh(const tDensityGenerator* generator, int3 chunkMin, const f32* densityData,
-                           s32 lod, s32 neighboursMask, tMeshDataContainer* meshData, void* userData);
-
+bool tTransvoxelMesherMesh(const tDensityGenerator* generator, 
+						   const f32* densityData,
+						   tBuildJob* job);
 void tUpdate(void);
 void tDestroy(void);
 void tInvalidateAll(void);

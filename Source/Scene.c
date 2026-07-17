@@ -228,16 +228,6 @@ void Scene_Deactivate(Scene* scene)
     g_ActiveScene = NULL;
 }
 
-// loads the cached basis images of a gltf into a bundle local staging array
-static s32 LoadBundleImagesFromCache(const char* gltfPath, Texture* staging, s32 numImages)
-{
-    char path[1024];
-    int pathLen = StringLength(gltfPath);
-    MemCopy(path, gltfPath, pathLen + 1);
-    ChangeExtension(path, pathLen, "bdc");
-    return LoadSceneImages(path, staging, numImages);
-}
-
 // out: scene bundle index of the path, INVALID_BUNDLE when not present
 static u32 Scene_FindBundle(const Scene* scene, const char* path)
 {
@@ -312,17 +302,7 @@ u32 Scene_AddBundle(Scene* scene, const char* path, bool skinned)
     ArenaMark mark         = ArenaSave(&GlobalArena);
     Texture* staging       = (Texture*)ArenaAllocZero(&GlobalArena, MAX_SCENE_TEXTURES * sizeof(Texture));
 
-    s32 imageResult = LoadBundleImagesFromCache(storedPath, staging, bundle->numImages);
-    if (imageResult == 0)// || imageResult == 3)
-    {
-        char buffer[1024];
-        int pathLen = StringLength(storedPath);
-        MemCopy(buffer, storedPath, pathLen + 1);
-        ChangeExtension(buffer, pathLen, "bdc");
-        AX_WARN("scene image cache invalid, rebuilding: %s result=%d", buffer, imageResult);
-        SaveSceneImages(bundle, buffer, false);
-        imageResult = LoadBundleImagesFromCache(storedPath, staging, bundle->numImages);
-    }
+    s32 imageResult = LoadBundleImagesFromCache(storedPath, bundle, staging);
     if (imageResult == 0) goto err_arena;
 
     AnimationBundleAlloc animAlloc;
@@ -569,7 +549,7 @@ s32 Scene_RepackTextures(Scene* scene)
 
         ArenaMark mark = ArenaSave(&GlobalArena);
         Texture* staging = (Texture*)ArenaAllocZero(&GlobalArena, MAX_SCENE_TEXTURES * sizeof(Texture));
-        if (LoadBundleImagesFromCache(scene->bundleRefs[b].path, staging, bundle->numImages) == 0)
+        if (LoadBundleImagesFromCache(scene->bundleRefs[b].path, bundle, staging) == 0)
         {
             AX_ERROR("scene image load failed during repack: %s", scene->bundleRefs[b].path);
             ArenaRestore(&GlobalArena, mark);

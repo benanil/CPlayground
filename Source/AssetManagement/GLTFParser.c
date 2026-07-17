@@ -358,13 +358,12 @@ static void ParseBuffersObj(sj_Value sjBufferObj, void* element, GLTFParseContex
     {
         if (StrCMP16(key.start, "uri")) // is uri
         {
-            const char* curr = key.start + sizeof("uri'"); // skip uri": 
-            while (*curr != '"') curr++;
-            if (StrCMP16(curr, "\"data:"))
+            const char* curr = val.start;
+            if (StrCMP16(curr, "data:"))
             {
                 curr = SkipAfter(curr, ',');
                 uint64_t base64Size = 0;
-                while (curr[base64Size] != '\"') {
+                while (curr + base64Size < val.end) {
                     base64Size++;
                 }
                 buffer->uri = FixedPow2Allocator_Allocate(ctx->allocator, base64Size);
@@ -373,9 +372,20 @@ static void ParseBuffersObj(sj_Value sjBufferObj, void* element, GLTFParseContex
             }
             else
             {
-                curr = GetStringInQuotes(endOfWorkDir, curr);
+                uint64_t uriLen = (uint64_t)(val.end - val.start);
+                if ((uint64_t)(endOfWorkDir - binFilePath) + uriLen + 1u > sizeof(binFilePath))
+                {
+                    AX_WARN("gltf buffer uri path is too long: %s", ctx->path);
+                    return;
+                }
+                SmallMemCpy(endOfWorkDir, val.start, uriLen);
+                endOfWorkDir[uriLen] = '\0';
                 buffer->uri = ReadAllFileAlloc(binFilePath);
-                ASSERT(buffer->uri && "uri is not exist");
+                if (!buffer->uri)
+                {
+                    AX_WARN("gltf buffer uri is not exist: %s", binFilePath);
+                    return;
+                }
             }
         }
         else if (StrCMP16(key.start, "byteLength"))
@@ -1157,6 +1167,16 @@ int ParseGLTF(const char* path, SceneBundle* result, float scale)
         return 0;
     }
 
+    for (int i = 0; i < result->numBuffers; i++)
+    {
+        if (result->buffers[i].uri == NULL || result->buffers[i].byteLength <= 0)
+        {
+            result->error = AError_BIN_NOT_EXIST;
+            AX_WARN("gltf import failed: missing buffer data path=%s buffer=%d byteLength=%d", path, i, result->buffers[i].byteLength);
+            return 0;
+        }
+    }
+
     if (result->nodes == NULL || result->numNodes <= 0)
         AX_WARN("gltf has no nodes: %s", path);
     if (result->meshes == NULL || result->numMeshes <= 0)
@@ -1414,6 +1434,8 @@ int ParseGLTF(const char* path, SceneBundle* result, float scale)
         for (int p = 0; p < mesh.numPrimitives; p++)
         {
             APrimitive* primitive = &mesh.primitives[p];
+            if (primitive->numVertices <= 0 || primitive->numIndices <= 0)
+                continue;
             totalIndexCount  += primitive->numIndices;
             totalVertexCount += primitive->numVertices;
         }
