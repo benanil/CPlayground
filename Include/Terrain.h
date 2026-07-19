@@ -99,21 +99,25 @@ typedef struct TerrainStats_
 } TerrainStats;
 
 void tFoliage_Init();
-void Terrain_Init(void);     // after RendererInit + InitBuffers, gpu device must exist
-void Terrain_Destroy(void);
 
-// streams chunks around the camera and consumes finished worker jobs, call once per
-// frame from the main loop before Render()
-void Terrain_Update(const Camera* camera);
+void tUpdate(void);
+void tInvalidateAll(void);
+void tInvalidateRegion(float3 mn, float3 mx);
+void tSetBrushCursor(float3 position, f32 radius, bool active);
 
-void Terrain_SetEnabled(bool enabled);
-bool Terrain_GetEnabled(void);
+void tInit(void);     // after RendererInit + InitBuffers, gpu device must exist
+void tDestroy(void);
+bool tMarchingInit();
+void tMarchingDestroy();
+
+void tSetEnabled(bool enabled);
+bool tGetEnabled(void);
 
 // re-creates every live terrain chunk collider on the next terrain update. call after
 // anything that destroys the scene's terrain physics bodies wholesale (the async
 // static-collider rebuild on scene load does), otherwise the wiped colliders stay gone.
 // safe from any thread
-void Terrain_InvalidatePhysics(void);
+void tInvalidatePhysics(void);
 
 // casts a world space ray against the resident terrain meshes (the same set that
 // draws: live, not hidden, retiring included). dir must be normalized, hits beyond
@@ -123,18 +127,18 @@ void Terrain_InvalidatePhysics(void);
 // fills the scene BVHHit: t/u/v/position/triIndex are valid, entityIdx holds the
 // terrain chunk slot, groupIdx the chunk lod, and skinnedSet/bundleIdx are 0xFFFFFFFF
 // to mark a terrain hit. out: 1 when hit
-s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit);
+s32 tRaycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit);
 
 // sphere-traces the analytic density field (noise + sculpt edits) instead of the
 // meshes: works at any distance, approximate within ~half a coarse cell of the
 // rendered surface. entityIdx/groupIdx are not meaningful on field hits
-s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit);
-TerrainStats Terrain_GetStats(void);
+s32 tRaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit);
+TerrainStats tGetStats(void);
 
 // grass multidraw for the port terrain path, called inside the forward pass right
 // after the port terrain surface; no-op until the grass system is initialized
-void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass);
-bool Terrain_GetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** normal, SDL_GPUTexture** arm);
+void tRenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass);
+bool tGetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** normal, SDL_GPUTexture** arm);
 // line overlay over the lit scene, enabled by g_RenderSettings.terrainWireframe
 void RenderTerrainWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
                              SDL_GPUDepthStencilTargetInfo* depthTarget, mat4x4 viewProj);

@@ -10,7 +10,6 @@
 #include "Include/Scene.h"
 #include "Include/Terrain.h"
 #include "Source/Terrain/TerrainInternal.h"
-#include "Source/Terrain/Transvoxel.h"
 
 #define RESIZE_RELEASE_DELAY 4u
 
@@ -916,7 +915,7 @@ void DestroyPipeline(void)
 
 void Quit(s32 rc)
 {
-    Terrain_Destroy();
+    tDestroy();
     DestroyPipeline();
     GraphicsDestroy();
     exit(rc);

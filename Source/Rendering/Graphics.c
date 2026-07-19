@@ -11,7 +11,6 @@
 #include "Include/Random.h"
 #include "Include/DDSTexture.h"
 #include "Source/Terrain/TerrainInternal.h"
-#include "Source/Terrain/Transvoxel.h"
 
 #if !defined(PLATFORM_MACOSX)
 #include "Extern/SDL3/src/video/khronos/vulkan/vulkan.h"

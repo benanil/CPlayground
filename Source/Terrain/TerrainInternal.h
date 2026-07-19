@@ -2,6 +2,8 @@
 #define TERRAIN_INTERNAL_H
 
 #include "Include/Graphics.h"
+#include "Include/Memory.h"
+#include "Include/JobSystem.h"
 
 #define GRASS_PER_METER        4
 #define GRASS_PER_ROW          (GRASS_PER_METER * T_CHUNK_CELLS)     // 64 blades per chunk axis
@@ -33,6 +35,8 @@
 #define T_CHUNK_VERTEX_CAP (T_CHUNK_CELLS_PER_VOLUME * 8u)
 // MC regular cells can emit up to 5 triangles/cell. Transitions add some slack.
 #define T_CHUNK_INDEX_CAP  (T_CHUNK_CELLS_PER_VOLUME * 24u)
+// Non-indexed Marching Cubes needs one vertex for every triangle index.
+#define T_MARCHING_VERTEX_CAP (T_CHUNK_INDEX_CAP * 2u / 3u)
 #define T_CHUNK_SECONDARY_VERTEX_CAP (2048u)
 #define T_MAX_BUILDS_PER_FRAME        16u
 #define T_BUILD_SCRATCH_SIZE         (3ull * 1024ull * 1024ull)
@@ -116,14 +120,104 @@ typedef struct MaterialBlend_
     u8 primaryWeight;
 } MaterialBlend;
 
+typedef struct tVertexData_
+{
+    u64 position;  // u16 fixed x/y/z local to chunk, w unused
+    u32 normal;    // packed normal/tangent (PackNormalTangent)
+    u32 materials; 
+} tVertexData;
+STATIC_ASSERT(sizeof(tVertexData) == 16, "tVertexData must stay 16 bytes");
+
+typedef struct tMeshData_
+{
+    tVertexData*  vertices;      // fixed-capacity ranges in the terrain geometry heaps
+    u32*          indices;
+	s32 numIndices;
+	s32 numVertices;
+	s32 vertexCapacity;          // pushes beyond capacity are dropped (heaps are shared,
+	s32 indexCapacity;           // an overrun would corrupt other chunks' meshes)
+	s32 secondaryCapacity;
+} tMeshData;
+
+typedef struct GeometryRange_
+{
+    void* heapPtr;
+    u32   first;
+    u32   count;
+} GeometryRange;
+
+typedef struct PhysicsMesh_
+{
+    struct b3Vec3* vertices;
+    s32*    indices;
+    u32     vertexCount;
+    u32     indexCount;
+} PhysicsMesh;
+
+typedef struct tMeshHandle_
+{
+    GeometryRange vertices;
+    GeometryRange indices;
+    PhysicsMesh   physics;
+} tMeshHandle;
+
+// one in-flight chunk build on a JobSystem worker. the main thread fills the inputs,
+// launches the job and reads the outputs after JobSystem_IsJobDone; exactly one job
+// ever touches a chunk, so no locks on chunk state are needed
+typedef struct tBuildJob_
+{
+    // inputs, main thread
+    u32          chunkIndex;
+    int3         min;
+    // per-slot scratch, initialized once (ranges in the TerrainVertNew/Second/Index2 heaps)
+    tMeshData    scratchMesh;
+    ArenaScratch scratchArena;
+    // worker-local append state, valid only while the job runs (thread scratch arena)
+    tVertexData* buildVertices;
+    u32          buildVertexCount;
+    u32*         buildIndices;
+    u32          buildIndexCount;
+    // output, worker; mesh ranges are zero when empty or failed
+    tMeshHandle  mesh;
+    JobHandle    handle;
+    bool         failed;
+    bool         busy;
+} tBuildJob;
+
+typedef f32 (*tNoise2DFn)(f32 x, f32 z, void* userData);
+typedef f32 (*tNoise3DFn)(f32 x, f32 y, f32 z, void* userData);
+
+typedef struct tDensityGenerator_
+{
+    tNoise2DFn heightMapNoise;
+    void*      heightMapUserData;
+    tNoise3DFn noise3D;
+    void*      noise3DUserData;
+    f32        heightMapStrength;
+    f32        noise3DStrength;
+} tDensityGenerator;
+
 extern const char* const tAlbedoPaths[T_LAYER_COUNT];
 extern const char* const tNormalPaths[T_LAYER_COUNT];
 extern const char* const tMetallicRoughnessPaths[T_LAYER_COUNT];
+
+// tChunkPositionKey packs the position into bits 3..63
+purefn u64 tChunkKey(int3 position)
+{
+	return ((u64)((u32)(position.x + 0x100000) & 0x1FFFFFu) << 40)
+		| ((u64)((u32)(position.y + 0x8000)   & 0xFFFFu)   << 24)
+		| ((u64)((u32)(position.z + 0x100000) & 0x1FFFFFu) << 3);
+}
+
+inline void tCoordsFromKey(u64 key, s32* x, s32* y, s32* z)
+{
+    *x = (s32)((key >> 40) & 0x1FFFFF) - 0x100000;
+    *y = (s32)((key >> 24) & 0xFFFF) - 0x8000;
+    *z = (s32)((key >> 3) & 0x1FFFFF) - 0x100000;
+}
+
 void TerrainInitMaterialTextures(void);
 void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32* blend);
-
-// logs mesher validation results against an analytic sphere, called once from Terrain_Init
-void Transvoxel_SelfTest(void);
 
 // procedural density field, pure and thread safe (TerrainDensity.c)
 f32  TerrainDensity_SDF(f32 x, f32 y, f32 z);
@@ -147,6 +241,14 @@ f32  TerrainDensity_SurfaceY(f32 x, f32 z, f32 startY, float3* outNormal);
 struct TerrainGenParams_;
 void TerrainDensity_SetParams(const struct TerrainGenParams_* params);
 const struct TerrainGenParams_* TerrainDensity_GetParams(void);
+
+bool tMeshDataInit(tMeshData* data);
+void tMeshDataDestroy(tMeshData* data);
+void tMeshDataClear(tMeshData* data);
+bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex);
+bool tMeshDataPushIndex(tMeshData* data, u32 index);
+u32* tMeshDataBuildValidIndices(const tMeshData* data);
+bool tMesherMesh(const tDensityGenerator* generator, const f32* density, tBuildJob* job);
 
 // ---------------------------------------------------------------------------------
 // sparse sculpt/paint edits (TerrainEdit.c): 16^3 grids of s8 density deltas and u8

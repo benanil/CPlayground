@@ -260,7 +260,7 @@ static void TerrainGrassFillColor(GrassFSParams* fs)
     fs->grassColorVariant[2] = Minf32(fs->grassColor[2] * 1.35f, 1.0f);
 }
 
-void Terrain_RenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
+void tRenderGrass(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass)
 {
     TerrainGrassState* tg = tgActive;
     if (!tg || !tg->initialized || tg->drawCount == 0u || !tg->pipeline || !tg->grassLayers.handle) return;

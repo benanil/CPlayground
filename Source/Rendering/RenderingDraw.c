@@ -233,7 +233,7 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
                             &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
 
     RenderTerrain(cmd, pass, ctx->viewProj);
-    Terrain_RenderGrass(cmd, pass);
+    tRenderGrass(cmd, pass);
 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSet, &scene->transparentBuffers,
                             g_RenderState.transparentForwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
@@ -293,7 +293,7 @@ void RenderTerrain(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 vi
     SDL_GPUTexture* albedo = NULL;
     SDL_GPUTexture* normal = NULL;
     SDL_GPUTexture* arm = NULL;
-    if (!Terrain_GetMaterialTextures(&albedo, &normal, &arm)) return;
+    if (!tGetMaterialTextures(&albedo, &normal, &arm)) return;
 
     SDL_BindGPUGraphicsPipeline(pass, g_TerrainTrianglePipeline);
     SDL_GPUTextureSamplerBinding samplers[3] = {

@@ -1,4 +1,3 @@
-#include "Source/Terrain/Transvoxel.h"
 #include "Source/Terrain/TerrainInternal.h"
 #include "Include/Camera.h"
 #include "Include/Terrain.h"
@@ -11,16 +10,18 @@
 #include "Include/Bitset.h"
 #include "Math/Bitpack.h"
 
+#define T_MARCHING_DRAW_DISTANCE 112.0f
+
 typedef enum ChunkBuildState_
 {
     // Valid lifecycle transitions:
-    // UNBUILT -> QUEUED -> BUILDING -> PENDING -> READY
-    // UNBUILT -> BUILDING
+    // UNBUILT  -> QUEUED -> BUILDING -> PENDING -> READY
+    // UNBUILT  -> BUILDING
     // BUILDING -> QUEUED    (job submit/drain failed; retry later)
     // BUILDING -> READY     (build produced an empty, presentable chunk)
     // BUILDING -> FAILED    (first build failed and no live/pending mesh exists)
-    // READY -> PENDING      (background rebuild finished; old mesh stays visible until promote)
-    // FAILED -> QUEUED/BUILDING
+    // READY    -> PENDING   (background rebuild finished; old mesh stays visible until promote)
+    // FAILED   -> QUEUED/BUILDING
     // READY can also have a rebuild in flight without changing state; ChunkBuildInFlight
     // tracks that so the existing mesh/empty chunk remains presentable.
     CHUNK_UNBUILT,
@@ -44,14 +45,12 @@ typedef struct tChunk_
     int3   min;
     float3 aabbMin;
     float3 aabbMax;
-    s32    lod;
     // chunk mesh lives in the tVertexData geometry heap; the GPU mirror draws it
     // without any per-frame copy
     tMeshHandle mesh;
     tMeshHandle pendingMesh;
     u32   lastTouchedFrame;
     u8    pendingFrames;
-    s32   neighboursMask; // bit per face (-x,-y,-z,+x,+y,+z): neighbor renders at a finer lod
     s32   physicsSlot;    // scene terrain collider slot, -1 = none. chunk indices can
 	// exceed MAX_TERRAIN_PHYSICS_CHUNKS, so slots are pooled
     ChunkBuildState  buildState;
@@ -60,7 +59,7 @@ typedef struct tChunk_
     bool  physicsDirty;
 } tChunk;
 
-typedef struct tTransvoxelState_
+typedef struct tMarchingTerrainState_
 {
     tDensityGenerator generator;
 	JobSystem* jobSystem;
@@ -82,26 +81,23 @@ typedef struct tTransvoxelState_
     SDL_AtomicInt physicsInvalidated;
     SDL_AtomicInt heapPressure;
 	// todo use occupiedChunkBitset
-    // free-list of scene terrain collider slots; only near lod0/1 chunks hold one
+    // free-list of scene terrain collider slots
     u16    physicsSlotPool[MAX_TERRAIN_PHYSICS_CHUNKS];
     u32    physicsSlotCount;
-    f32    lodFactor;   // this frame's lod distance scale, read by the mask computation
-    bool   fixedArea;  // fixed-area worlds are lod0-only: no lod seams, masks stay 0
     u64    lastStatsTicks;
     float3 brushPos;
     f32    brushRadius;
     bool   brushActive;
     bool   initialized;
-} tTransvoxel;
+} tMarchingTerrain;
 
 extern Camera g_Camera;
 extern Graphics gGFX; // geometry heap CPU mirrors (defined in Graphics.c)
 
-static tTransvoxel gTransvoxel;
+static tMarchingTerrain gMarchingTerrain;
 
 static void tPruneChunkCache(u32 targetVertices, u32 targetIndices, bool respectKeepFrames);
 static void tClearChunkCache(void);
-static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, bool useFrustum);
 
 static void CalculateProceduralMaterial(float3 worldPos, float3 normal, f32 weights[4], f32* seaLevel);
 
@@ -124,15 +120,15 @@ static f32 tDensityNoise(f32 x, f32 y, f32 z, void* userData) {
 }
 
 // thread safe: TerrainDensity_SampleChunk is pure + edit overlay is mutex guarded
-static void tBuildDensity(int3 chunkMin, s32 lod, f32* out)
+static void tBuildDensity(int3 chunkMin, f32* out)
 {
     s32 densitySize = T_CHUNK_CELLS + 3;
-    s32 step = T_CHUNK_CELLS << lod;
+    s32 step = T_CHUNK_CELLS;
     s32 cx = chunkMin.x / step;
     s32 cy = chunkMin.y / step;
     s32 cz = chunkMin.z / step;
     s8 samples[T_SAMPLES_TOTAL];
-    TerrainDensity_SampleChunk(cx, cy, cz, (u32)lod, samples);
+    TerrainDensity_SampleChunk(cx, cy, cz, 0u, samples);
 
     const f32 invScale = -(TERRAIN_SDF_CLAMP / 127.0f);
     for (s32 x = 0; x < densitySize; x++)
@@ -145,66 +141,6 @@ static void tBuildDensity(int3 chunkMin, s32 lod, f32* out)
     }
 }
 
-static const f32 tLODDistance[T_LOD_COUNT] = { 48.0f, 112.0f, 240.0f, 448.0f };
-
-static f32 ChunkColumnDistanceSq(s32 chunkX, s32 chunkZ, s32 lod)
-{
-    s32 step = T_CHUNK_CELLS << lod;
-    f32 minX = (f32)(chunkX * step);
-    f32 minZ = (f32)(chunkZ * step);
-    f32 closestX = Clampf32(g_Camera.position.x, minX, minX + (f32)step);
-    f32 closestZ = Clampf32(g_Camera.position.z, minZ, minZ + (f32)step);
-    f32 dx = closestX - g_Camera.position.x;
-    f32 dz = closestZ - g_Camera.position.z;
-    return dx * dx + dz * dz;
-}
-
-// true when the quadtree node at (nodeX, nodeZ, lod) splits into finer children:
-// the closest point of its XZ box lies inside the next-finer lod's distance ring.
-// same test tSubmitNode uses, so the mask stays consistent with traversal
-static bool tNodeSplits(s32 nodeX, s32 nodeZ, s32 lod, f32 lodFactor)
-{
-    if (lod <= 0) return false;
-    f32 splitDistance = tLODDistance[lod - 1] * lodFactor;
-    return ChunkColumnDistanceSq(nodeX, nodeZ, lod) < splitDistance * splitDistance;
-}
-
-// does the column at (chunkX, chunkZ) on this lod's grid render at a finer lod?
-// walks the quadtree top-down: every ancestor must split to reach this lod, and the
-// node at this lod itself must split for its children to render instead
-static bool tNeighbourFiner(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor)
-{
-    if (lod == 0) return false;
-    for (s32 l = (s32)T_LOD_COUNT - 1; l >= lod; l--)
-    {
-        // arithmetic shift floors negative chunk coords onto the coarser grid
-        s32 nodeX = chunkX >> (l - lod);
-        s32 nodeZ = chunkZ >> (l - lod);
-        if (!tNodeSplits(nodeX, nodeZ, l, lodFactor))
-            return false;
-    }
-    return true;
-}
-
-// transvoxel neighbour mask for a chunk column: transition cells live on the COARSE
-// side in this port (the mesher samples the face at half steps, i.e. the finer
-// neighbour's resolution), so a bit is set when that face's neighbour renders finer.
-// vertical neighbours share the column and lod, so the y bits are never set
-static s32 tColumnMask(int3 min, s32 lod)
-{
-    if (gTransvoxel.fixedArea || lod == 0) return 0;
-    s32 step = T_CHUNK_CELLS << lod;
-    s32 chunkX = FloorDiv(min.x, step);
-    s32 chunkZ = FloorDiv(min.z, step);
-    f32 lodFactor = gTransvoxel.lodFactor;
-    s32 mask = 0;
-    if (tNeighbourFiner(chunkX - 1, chunkZ, lod, lodFactor)) mask |= 1;  // -x
-    if (tNeighbourFiner(chunkX + 1, chunkZ, lod, lodFactor)) mask |= 8;  // +x
-    if (tNeighbourFiner(chunkX, chunkZ - 1, lod, lodFactor)) mask |= 4;  // -z
-    if (tNeighbourFiner(chunkX, chunkZ + 1, lod, lodFactor)) mask |= 32; // +z
-    return mask;
-}
-
 static v128f tUnpackNormal(u32 packed)
 {
     f32 x = (f32)((s32)(packed << 21) >> 21) * (1.0f / 1023.0f);
@@ -212,22 +148,13 @@ static v128f tUnpackNormal(u32 packed)
     return OctDecode(VecSetR(x, y, 0.0f, 0.0f));
 }
 
-static void AppendBuildVertex(tBuildJob* job, u64 position, u32 normal, u32 materials, u32 blend)
-{
-    tVertexData vertex = {0};
-    vertex.position = position;
-    vertex.normal = normal;
-    vertex.materials = materials | (blend << 16);
-    job->buildVertices[job->buildVertexCount++] = vertex;
-}
-
 // runs on a worker: reads only the job's own scratch mesh and buffers, plus the
 // thread safe density/edit/params reads inside tTerrainMaterial. emits an indexed mesh
 // (shared source vertices materialized once, triangles reference them) so shared verts
 // are shaded once instead of once per triangle, and the GPU draws indexed
-static void tAppendMeshSlotTriangles(tBuildJob* job, tMeshDataSlot slot)
+static void tAppendMeshSlotTriangles(tBuildJob* job)
 {
-	const tMeshData* mesh = &job->scratchMesh.mesh[slot];
+	const tMeshData* mesh = &job->scratchMesh;
     if (!mesh || !mesh->vertices || !mesh->indices || !job->buildVertices || !job->buildIndices)
         return;
 
@@ -235,25 +162,28 @@ static void tAppendMeshSlotTriangles(tBuildJob* job, tMeshDataSlot slot)
     size_t indexCount = (size_t)mesh->numIndices;
     if (vertexCount == 0 || indexCount < 3)
         return;
-    // this slot's vertices land contiguously after everything emitted so far; the source
-    // indices are local to the slot, so shift them by that base to stay chunk-local
-    if (job->buildVertexCount + vertexCount > T_CHUNK_VERTEX_CAP)
+
+    if (job->buildVertexCount + vertexCount > T_MARCHING_VERTEX_CAP)
         return;
     u32 base = job->buildVertexCount;
 
     v128f offset = VecI32ToF32(VeciLoad((const u32*)&job->min.x));
-    f32 chunkSize = (f32)(T_CHUNK_CELLS << job->lod);
+    f32 chunkSize = (f32)(T_CHUNK_CELLS);
     for (size_t v = 0; v < vertexCount; v++)
     {
         v128f local = Unpack16x4Fixed(mesh->vertices[v].position, chunkSize);
         v128f p = VecAdd(local, offset);
-        // safe normalize: secondary-vertex snapping can leave zero-length normals, a
-        // plain normalize would spray NaN colors
+        // Safe normalize: flat or nearly collapsed triangles can leave zero-length
+        // normals; a plain normalize would spray NaN colors.
         float3 world = Vec3Get(p);
         float3 n = Vec3Get(tUnpackNormal(mesh->vertices[v].normal));
-        u32 m, b;
-        tTerrainMaterial(world, n, &m, &b);
-        AppendBuildVertex(job, mesh->vertices[v].position, mesh->vertices[v].normal, m, b);
+        u32 materials, blend;
+        tTerrainMaterial(world, n, &materials, &blend);
+		tVertexData vertex = {0};
+		vertex.position  = mesh->vertices[v].position;
+		vertex.normal    = mesh->vertices[v].normal;
+		vertex.materials = materials | (blend << 16);
+		job->buildVertices[job->buildVertexCount++] = vertex;
     }
 
     for (size_t i = 0; i + 2 < indexCount; i += 3)
@@ -271,8 +201,7 @@ static void tAppendMeshSlotTriangles(tBuildJob* job, tMeshDataSlot slot)
         v128f pb = Unpack16x4Fixed(mesh->vertices[ib].position, chunkSize);
         v128f pc = Unpack16x4Fixed(mesh->vertices[ic].position, chunkSize);
 
-        // secondary-vertex snapping and transition cells produce degenerate triangles
-        // (verts collapse onto each other); skip them here instead of shading zero-area
+        // Skip zero-area marching-cubes triangles instead of shading degenerate faces.
         v128f ab = VecSub(pb, pa);
         v128f ac = VecSub(pc, pa);
         v128f cross = Vec3Cross(ab, ac);
@@ -294,11 +223,11 @@ static void tFreeMeshHandle(tMeshHandle* mesh)
 {
     if (mesh->vertices.heapPtr) {
         GeometryHeapFree(GeometryBuffer_TerrainVert, mesh->vertices.heapPtr);
-        SaturatingSubtractU32(&gTransvoxel.cacheVertices, mesh->vertices.count);
+        SaturatingSubtractU32(&gMarchingTerrain.cacheVertices, mesh->vertices.count);
     }
     if (mesh->indices.heapPtr) {
         GeometryHeapFree(GeometryBuffer_TerrainIndex, mesh->indices.heapPtr);
-        SaturatingSubtractU32(&gTransvoxel.cacheIndices, mesh->indices.count);
+        SaturatingSubtractU32(&gMarchingTerrain.cacheIndices, mesh->indices.count);
     }
     DeAllocateTLSFGlobal(mesh->physics.vertices);
     DeAllocateTLSFGlobal(mesh->physics.indices);
@@ -316,9 +245,6 @@ static void tFreePendingMesh(tChunk* chunk) {
     tClearChunkPending(chunk);
 }
 
-// releases the chunk's collider slot back to the pool. chunk indices are NOT valid
-// collider slots (the chunk pool is 16384, the scene only has MAX_TERRAIN_PHYSICS_CHUNKS
-// collider slots), so every physics call goes through the pooled chunk->physicsSlot
 static void tDestroyChunkPhysics(tChunk* chunk)
 {
     if (!chunk || chunk->physicsSlot < 0) 
@@ -326,7 +252,7 @@ static void tDestroyChunkPhysics(tChunk* chunk)
     Scene* scene = Scene_GetActive();
     if (scene)
         Scene_PhysicsDestroyTerrainChunk(scene, (u32)chunk->physicsSlot);
-    gTransvoxel.physicsSlotPool[gTransvoxel.physicsSlotCount++] = (u16)chunk->physicsSlot;
+    gMarchingTerrain.physicsSlotPool[gMarchingTerrain.physicsSlotCount++] = (u16)chunk->physicsSlot;
     chunk->physicsSlot = -1;
 }
 
@@ -355,14 +281,14 @@ static void tSetChunkState(tChunk* chunk, ChunkBuildState newState)
     ChunkBuildState oldState = chunk->buildState;
     if (oldState == newState) return;
     if (!tChunkStateTransitionAllowed(oldState, newState)) {
-        AX_WARN("invalid transvoxel chunk state transition: %s -> %s", tChunkStateName(oldState), tChunkStateName(newState));
+        AX_WARN("invalid marching terrain chunk state transition: %s -> %s", tChunkStateName(oldState), tChunkStateName(newState));
     }
     chunk->buildState = newState;
     if (newState != CHUNK_PENDING)
         chunk->pendingFrames = 0;
     if (newState == CHUNK_READY)
     {
-        if (chunk->lod <= 1 && chunk->mesh.vertices.heapPtr && chunk->mesh.vertices.count >= 3u)
+        if (chunk->mesh.vertices.heapPtr && chunk->mesh.vertices.count >= 3u)
             chunk->physicsDirty = true;
         else {
             tDestroyChunkPhysics(chunk);
@@ -387,7 +313,7 @@ static void tSyncChunkPhysics(tChunk* chunk)
 {
     Scene* scene = Scene_GetActive();
     if (!scene) return;
-    if (!chunk || chunk->lod > 1 || !chunk->mesh.vertices.heapPtr || chunk->mesh.vertices.count < 3u ||
+    if (!chunk || !chunk->mesh.vertices.heapPtr || chunk->mesh.vertices.count < 3u ||
         !chunk->mesh.physics.vertices || !chunk->mesh.physics.indices || chunk->mesh.physics.indexCount < 3u) {
         tDestroyChunkPhysics(chunk);
         return;
@@ -395,11 +321,11 @@ static void tSyncChunkPhysics(tChunk* chunk)
 
     if (chunk->physicsSlot < 0)
     {
-        if (gTransvoxel.physicsSlotCount == 0u) {
-            AX_WARN("transvoxel terrain physics slots exhausted");
+        if (gMarchingTerrain.physicsSlotCount == 0u) {
+            AX_WARN("marching terrain physics slots exhausted");
             return;
         }
-        chunk->physicsSlot = (s32)gTransvoxel.physicsSlotPool[--gTransvoxel.physicsSlotCount];
+        chunk->physicsSlot = (s32)gMarchingTerrain.physicsSlotPool[--gMarchingTerrain.physicsSlotCount];
     }
 
     if (!Scene_PhysicsSyncTerrainChunkMesh(scene, (u32)chunk->physicsSlot,
@@ -409,7 +335,7 @@ static void tSyncChunkPhysics(tChunk* chunk)
 }
 
 void tInvalidatePhysics(void) {
-    SDL_SetAtomicInt(&gTransvoxel.physicsInvalidated, 1);
+    SDL_SetAtomicInt(&gMarchingTerrain.physicsInvalidated, 1);
 }
 
 static void BeginBuildJob(tBuildJob* job)
@@ -429,10 +355,10 @@ static bool PrepareBuildScratch(tBuildJob* job, f32** density)
     s32 densitySize = T_CHUNK_CELLS + 3;
     size_t densityCount = (size_t)densitySize * (size_t)densitySize * (size_t)densitySize;
     *density = (f32*)ArenaPushGlobal(sizeof(f32) * densityCount);
-    job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * T_CHUNK_VERTEX_CAP);
+    job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * T_MARCHING_VERTEX_CAP);
     job->buildIndices = (u32*)ArenaPushGlobal(sizeof(u32) * T_CHUNK_INDEX_CAP);
     if (!*density || !job->buildVertices || !job->buildIndices) {
-        AX_WARN("transvoxel build scratch allocation failed");
+        AX_WARN("marching terrain build scratch allocation failed");
         return false;
     }
     return true;
@@ -440,27 +366,18 @@ static bool PrepareBuildScratch(tBuildJob* job, f32** density)
 
 static bool GenerateChunkMesh(tBuildJob* job, f32* density)
 {
-    tBuildDensity(job->min, job->lod, density);
-    if (!tTransvoxelMesherMesh(&gTransvoxel.generator, density, job)) {
-        AX_WARN("transvoxel chunk mesh build failed");
+    tBuildDensity(job->min, density);
+    if (!tMesherMesh(&gMarchingTerrain.generator, density, job)) {
+        AX_WARN("marching cubes chunk mesh build failed");
         return false;
     }
-    // lod stitching: snap boundary vertices to their secondary positions (shrinks the
-    // regular mesh half a cell inward on faces with a finer neighbour) and fill the gap
-    // with that face's transition cell strip. faces without a finer neighbour keep
-    // primary positions and skip their transition slot
-    tMeshDataContainerApplySecondaryVertices(&job->scratchMesh, job->neighboursMask);
-    tAppendMeshSlotTriangles(job, tMeshDataSlot_Main);
-    for (u32 bit = 0; bit < 6u; bit++) 
-        if (job->neighboursMask & (1 << bit))
-            tAppendMeshSlotTriangles(job, (tMeshDataSlot)(tMeshDataSlot_LeftTransition + bit));
-    
+    tAppendMeshSlotTriangles(job);
 	return true;
 }
 
 static bool BuildPhysicsMesh(tBuildJob* job, u32 vertexCount, u32 indexCount)
 {
-    if (job->lod > 1 || indexCount < 3u) return true;
+    if (indexCount < 3u) return true;
 
     job->mesh.physics.vertexCount = vertexCount;
     job->mesh.physics.indexCount = indexCount;
@@ -468,7 +385,7 @@ static bool BuildPhysicsMesh(tBuildJob* job, u32 vertexCount, u32 indexCount)
     job->mesh.physics.indices = (s32*)AllocateTLSFGlobal(sizeof(s32) * indexCount);
     if (job->mesh.physics.vertices && job->mesh.physics.indices)
     {
-        f32 chunkSize = (f32)(T_CHUNK_CELLS << job->lod);
+        f32 chunkSize = (f32)(T_CHUNK_CELLS);
         v128f offset = VecI32ToF32(VeciLoad((const u32*)&job->min.x));
         for (u32 v = 0; v < vertexCount; v++) {
             v128f local = Unpack16x4Fixed(job->buildVertices[v].position, chunkSize);
@@ -480,7 +397,7 @@ static bool BuildPhysicsMesh(tBuildJob* job, u32 vertexCount, u32 indexCount)
         return true;
     }
 
-    AX_WARN("transvoxel terrain physics mesh allocation failed");
+    AX_WARN("marching terrain physics mesh allocation failed");
     DeAllocateTLSFGlobal(job->mesh.physics.vertices);
     DeAllocateTLSFGlobal(job->mesh.physics.indices);
     job->mesh.physics = (PhysicsMesh){0};
@@ -502,7 +419,7 @@ static bool UploadChunkMesh(tBuildJob* job)
     {
         if (first != GEOMETRY_ALLOC_FAIL) GeometryHeapFree(GeometryBuffer_TerrainVert, raw);
         if (idxFirst != GEOMETRY_ALLOC_FAIL) GeometryHeapFree(GeometryBuffer_TerrainIndex, idxRaw);
-		SDL_SetAtomicInt(&gTransvoxel.heapPressure, 1);
+		SDL_SetAtomicInt(&gMarchingTerrain.heapPressure, 1);
         return false;
     }
 
@@ -526,7 +443,7 @@ static void FailBuildJob(tBuildJob* job) {
     tFreeMeshHandle(&job->mesh);
 }
 
-// worker-side chunk build: density -> transvoxel mesh -> indexed terrain geometry ->
+// worker-side chunk build: density -> marching cubes mesh -> indexed terrain geometry ->
 // parked heap ranges. touches only the job slot; shared systems synchronize internally.
 static void RunBuildJob(void* userData)
 {
@@ -547,7 +464,7 @@ static void RunBuildJob(void* userData)
 static bool ChunkBuildInFlight(u32 chunkIndex)
 {
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++) {
-        tBuildJob* job = &gTransvoxel.buildJobs[i];
+        tBuildJob* job = &gMarchingTerrain.buildJobs[i];
         if (job->busy && job->chunkIndex == chunkIndex)
             return true;
     }
@@ -556,21 +473,21 @@ static bool ChunkBuildInFlight(u32 chunkIndex)
 
 static bool ScheduleChunkBuild(u32 chunkIndex, tChunk* chunk)
 {
-    if (gTransvoxel.builtThisFrame >= T_MAX_BUILDS_PER_FRAME) {
+    if (gMarchingTerrain.builtThisFrame >= T_MAX_BUILDS_PER_FRAME) {
         if (chunk->buildState == CHUNK_UNBUILT || chunk->buildState == CHUNK_FAILED)
             tSetChunkState(chunk, CHUNK_QUEUED);
         return false;
     }
-    if (gTransvoxel.cacheVertices > T_VERTEX_CACHE_BUDGET ||
-        gTransvoxel.cacheIndices > T_INDEX_CACHE_BUDGET)
+    if (gMarchingTerrain.cacheVertices > T_VERTEX_CACHE_BUDGET ||
+        gMarchingTerrain.cacheIndices > T_INDEX_CACHE_BUDGET)
     {
         tPruneChunkCache(T_VERTEX_CACHE_TARGET, T_INDEX_CACHE_TARGET, true);
     }
 
     tBuildJob* job = NULL;
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++) {
-        if (!gTransvoxel.buildJobs[i].busy) {
-            job = &gTransvoxel.buildJobs[i];
+        if (!gMarchingTerrain.buildJobs[i].busy) {
+            job = &gMarchingTerrain.buildJobs[i];
             break;
         }
     }
@@ -583,15 +500,13 @@ static bool ScheduleChunkBuild(u32 chunkIndex, tChunk* chunk)
 
     job->chunkIndex = chunkIndex;
     job->min = chunk->min;
-    job->lod = chunk->lod;
-    job->neighboursMask = chunk->neighboursMask;
     job->busy = true;
     // dirty clears at schedule time: a sculpt landing while the job flies re-sets it
     // and the chunk reschedules after integration, so stale results self-heal
     chunk->dirty = false;
     if (!chunk->mesh.vertices.heapPtr && chunk->buildState != CHUNK_READY)
         tSetChunkState(chunk, CHUNK_BUILDING);
-    job->handle = JobSystem_Execute(gTransvoxel.jobSystem, RunBuildJob, job);
+    job->handle = JobSystem_Execute(gMarchingTerrain.jobSystem, RunBuildJob, job);
     if (job->handle == 0)
     {
         job->busy = false;
@@ -600,7 +515,7 @@ static bool ScheduleChunkBuild(u32 chunkIndex, tChunk* chunk)
             tSetChunkState(chunk, CHUNK_QUEUED);
         return false;
     }
-    gTransvoxel.builtThisFrame++;
+    gMarchingTerrain.builtThisFrame++;
     return true;
 }
 
@@ -610,11 +525,11 @@ static void IntegrateFinishedBuilds(void)
 {
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++)
     {
-        tBuildJob* job = &gTransvoxel.buildJobs[i];
-        if (!job->busy || !JobSystem_IsJobDone(gTransvoxel.jobSystem, job->handle))
+        tBuildJob* job = &gMarchingTerrain.buildJobs[i];
+        if (!job->busy || !JobSystem_IsJobDone(gMarchingTerrain.jobSystem, job->handle))
             continue;
 
-        tChunk* chunk = &gTransvoxel.chunks[job->chunkIndex];
+        tChunk* chunk = &gMarchingTerrain.chunks[job->chunkIndex];
         job->busy = false;
 
         if (job->failed) {
@@ -635,14 +550,14 @@ static void IntegrateFinishedBuilds(void)
             else {
                 tSetChunkState(chunk, CHUNK_READY);
             }
-            gTransvoxel.emptyChunks++;
+            gMarchingTerrain.emptyChunks++;
             continue;
         }
 
         chunk->pendingMesh = job->mesh;
         tSetChunkPending(chunk, PENDING_MESH);
-        gTransvoxel.cacheVertices += job->mesh.vertices.count;
-        gTransvoxel.cacheIndices += job->mesh.indices.count;
+        gMarchingTerrain.cacheVertices += job->mesh.vertices.count;
+        gMarchingTerrain.cacheIndices += job->mesh.indices.count;
         job->mesh = (tMeshHandle){0};
     }
 }
@@ -651,40 +566,25 @@ static void IntegrateFinishedBuilds(void)
 // must run before anything invalidates chunk indices or tears the system down
 static void tDrainBuildJobs(void)
 {
-    if (!gTransvoxel.jobSystem) return;
-    JobSystem_Wait(gTransvoxel.jobSystem);
+    if (!gMarchingTerrain.jobSystem) return;
+    JobSystem_Wait(gMarchingTerrain.jobSystem);
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++)
     {
-        tBuildJob* job = &gTransvoxel.buildJobs[i];
+        tBuildJob* job = &gMarchingTerrain.buildJobs[i];
         if (!job->busy) continue;
         tFreeMeshHandle(&job->mesh);
         job->busy = false;
-        tChunk* chunk = &gTransvoxel.chunks[job->chunkIndex];
+        tChunk* chunk = &gMarchingTerrain.chunks[job->chunkIndex];
         if (chunk->buildState == CHUNK_BUILDING)
             tSetChunkState(chunk, CHUNK_QUEUED);
     }
-}
-
-// tChunkPositionKey packs the position into bits 3..63, so the 2-bit lod fits in
-// the free low bits and one map covers all LOD levels
-static u64 tChunkKey(int3 position, s32 lod)
-{
-	return ((u64)((u32)(position.x + 0x100000) & 0x1FFFFFu) << 40)
-		| ((u64)((u32)(position.y + 0x8000)   & 0xFFFFu)   << 24)
-		| ((u64)((u32)(position.z + 0x100000) & 0x1FFFFFu) << 3) | (u64)(u32)lod;
-}
-
-static tChunk* FindChunk(int3 min, s32 lod)
-{
-    u32* found = (u32*)HMFind(&gTransvoxel.chunkLookup, tChunkKey(min, lod));
-    return found ? &gTransvoxel.chunks[*found] : NULL;
 }
 
 static void tRemapBuildJobChunkIndex(u32 oldIndex, u32 newIndex)
 {
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++)
     {
-        tBuildJob* job = &gTransvoxel.buildJobs[i];
+        tBuildJob* job = &gMarchingTerrain.buildJobs[i];
         if (job->busy && job->chunkIndex == oldIndex)
             job->chunkIndex = newIndex;
     }
@@ -692,41 +592,41 @@ static void tRemapBuildJobChunkIndex(u32 oldIndex, u32 newIndex)
 
 static void tFreeChunkSlot(u32 index)
 {
-    if (index >= gTransvoxel.chunkCount) return;
-    tChunk* chunk = &gTransvoxel.chunks[index];
-    HMErase(&gTransvoxel.chunkLookup, tChunkKey(chunk->min, chunk->lod));
+    if (index >= gMarchingTerrain.chunkCount) return;
+    tChunk* chunk = &gMarchingTerrain.chunks[index];
+    HMErase(&gMarchingTerrain.chunkLookup, tChunkKey(chunk->min));
     tDestroyChunkPhysics(chunk);
     tFreeMeshHandle(&chunk->mesh);
     tFreePendingMesh(chunk);
 
-    u32 lastIndex = gTransvoxel.chunkCount - 1u;
+    u32 lastIndex = gMarchingTerrain.chunkCount - 1u;
     if (index != lastIndex)
     {
-        gTransvoxel.chunks[index] = gTransvoxel.chunks[lastIndex];
-        u64 movedKey = tChunkKey(gTransvoxel.chunks[index].min, gTransvoxel.chunks[index].lod);
-        HMInsertOrAssign(&gTransvoxel.chunkLookup, movedKey, &index);
+        gMarchingTerrain.chunks[index] = gMarchingTerrain.chunks[lastIndex];
+        u64 movedKey = tChunkKey(gMarchingTerrain.chunks[index].min);
+        HMInsertOrAssign(&gMarchingTerrain.chunkLookup, movedKey, &index);
         tRemapBuildJobChunkIndex(lastIndex, index);
     }
 
-    MemsetZero(&gTransvoxel.chunks[lastIndex], sizeof(gTransvoxel.chunks[lastIndex]));
-    BitsetReset(gTransvoxel.occupiedChunksBitset, (s32)lastIndex);
-    gTransvoxel.chunkCount--;
-    if (gTransvoxel.physicsSyncCursor >= gTransvoxel.chunkCount)
-        gTransvoxel.physicsSyncCursor = 0u;
+    MemsetZero(&gMarchingTerrain.chunks[lastIndex], sizeof(gMarchingTerrain.chunks[lastIndex]));
+    BitsetReset(gMarchingTerrain.occupiedChunksBitset, (s32)lastIndex);
+    gMarchingTerrain.chunkCount--;
+    if (gMarchingTerrain.physicsSyncCursor >= gMarchingTerrain.chunkCount)
+        gMarchingTerrain.physicsSyncCursor = 0u;
 }
 
 static bool tFreeOldestChunkSlot(bool requireMesh, bool respectKeepFrames)
 {
     u32 evictIndex  = UINT32_MAX;
     u32 oldestFrame = UINT32_MAX;
-    for (u32 i = 0; i < gTransvoxel.chunkCount; i++)
+    for (u32 i = 0; i < gMarchingTerrain.chunkCount; i++)
     {
-        tChunk* chunk = &gTransvoxel.chunks[i];
-		bool chunkVisible = tAABBVisible(chunk->aabbMin, chunk->aabbMax, gTransvoxel.frustum);
+        tChunk* chunk = &gMarchingTerrain.chunks[i];
+		bool chunkVisible = tAABBVisible(chunk->aabbMin, chunk->aabbMax, gMarchingTerrain.frustum);
         if (ChunkBuildInFlight(i) || chunkVisible) continue;
         if (requireMesh && !chunk->mesh.vertices.heapPtr && !chunk->pendingMesh.vertices.heapPtr)
             continue;
-        if (respectKeepFrames && chunk->lastTouchedFrame + T_CACHE_KEEP_FRAMES >= gTransvoxel.frameIndex)
+        if (respectKeepFrames && chunk->lastTouchedFrame + T_CACHE_KEEP_FRAMES >= gMarchingTerrain.frameIndex)
             continue;
         if (chunk->lastTouchedFrame < oldestFrame) {
             oldestFrame = chunk->lastTouchedFrame;
@@ -741,42 +641,42 @@ static bool tFreeOldestChunkSlot(bool requireMesh, bool respectKeepFrames)
 
 static u32 tAllocChunkSlot(void)
 {
-    if (gTransvoxel.chunkCount >= T_MAX_CHUNKS) 
+    if (gMarchingTerrain.chunkCount >= T_MAX_CHUNKS) 
         if (!tFreeOldestChunkSlot(false, false)) 
             tClearChunkCache(); 
 
-    s32 index = BitsetFindFirstEmpty(gTransvoxel.occupiedChunksBitset, (s32)T_MAX_CHUNKS);
+    s32 index = BitsetFindFirstEmpty(gMarchingTerrain.occupiedChunksBitset, (s32)T_MAX_CHUNKS);
     if (index < 0) return UINT32_MAX;
 
-    BitsetSet(gTransvoxel.occupiedChunksBitset, index);
-    gTransvoxel.chunkCount++;
+    BitsetSet(gMarchingTerrain.occupiedChunksBitset, index);
+    gMarchingTerrain.chunkCount++;
     return (u32)index;
 }
 
 static void tClearChunkCache(void)
 {
-	AX_LOG("transvoxel chunk cache reset");
+	AX_LOG("marching terrain chunk cache reset");
     tDrainBuildJobs();
     RendererSetTerrainChunkDraws(NULL, 0);
-    for (u32 i = 0; i < gTransvoxel.chunkCount; i++)
+    for (u32 i = 0; i < gMarchingTerrain.chunkCount; i++)
     {
-        tDestroyChunkPhysics(&gTransvoxel.chunks[i]);
-        tFreeMeshHandle(&gTransvoxel.chunks[i].mesh);
-        tFreePendingMesh(&gTransvoxel.chunks[i]);
+        tDestroyChunkPhysics(&gMarchingTerrain.chunks[i]);
+        tFreeMeshHandle(&gMarchingTerrain.chunks[i].mesh);
+        tFreePendingMesh(&gMarchingTerrain.chunks[i]);
     }
-    gTransvoxel.chunkCount = 0;
-    gTransvoxel.cacheVertices = 0u;
-    gTransvoxel.cacheIndices = 0u;
-    gTransvoxel.physicsSyncCursor = 0;
-    if (gTransvoxel.occupiedChunksBitset)
-        MemsetZero(gTransvoxel.occupiedChunksBitset, T_CHUNK_BITSET_WORDS * sizeof(u64));
-    HMClear(&gTransvoxel.chunkLookup);
+    gMarchingTerrain.chunkCount = 0;
+    gMarchingTerrain.cacheVertices = 0u;
+    gMarchingTerrain.cacheIndices = 0u;
+    gMarchingTerrain.physicsSyncCursor = 0;
+    if (gMarchingTerrain.occupiedChunksBitset)
+        MemsetZero(gMarchingTerrain.occupiedChunksBitset, T_CHUNK_BITSET_WORDS * sizeof(u64));
+    HMClear(&gMarchingTerrain.chunkLookup);
 }
 
 static void tPruneChunkCache(u32 targetVertices, u32 targetIndices, bool respectKeepFrames)
 {
 	int numFreed = 0;
-	while (numFreed < 8 && (gTransvoxel.cacheVertices > targetVertices || gTransvoxel.cacheIndices > targetIndices))
+	while (numFreed < 8 && (gMarchingTerrain.cacheVertices > targetVertices || gMarchingTerrain.cacheIndices > targetIndices))
 	{
 		if (!tFreeOldestChunkSlot(true, respectKeepFrames))
             break;
@@ -786,18 +686,18 @@ static void tPruneChunkCache(u32 targetVertices, u32 targetIndices, bool respect
 
 static void tResolveHeapPressure(void)
 {
-    if (SDL_GetAtomicInt(&gTransvoxel.heapPressure) == 0)
+    if (SDL_GetAtomicInt(&gMarchingTerrain.heapPressure) == 0)
         return;
-    SDL_SetAtomicInt(&gTransvoxel.heapPressure, 0);
-    AX_WARN("transvoxel terrain heap pressure; pruning chunk cache");
+    SDL_SetAtomicInt(&gMarchingTerrain.heapPressure, 0);
+    AX_WARN("marching terrain heap pressure; pruning chunk cache");
     tPruneChunkCache(T_VERTEX_CACHE_TARGET / 2u, T_INDEX_CACHE_TARGET / 2u, false);
 }
 
 static void tPromotePendingMeshes(void)
 {
-    for (u32 i = 0; i < gTransvoxel.chunkCount; i++)
+    for (u32 i = 0; i < gMarchingTerrain.chunkCount; i++)
     {
-        tChunk* chunk = &gTransvoxel.chunks[i];
+        tChunk* chunk = &gMarchingTerrain.chunks[i];
         if (chunk->pendingState == PENDING_NONE)
             continue;
 
@@ -823,29 +723,29 @@ static void tPromotePendingMeshes(void)
 
 static void tSyncDirtyPhysics(void)
 {
-    if (SDL_GetAtomicInt(&gTransvoxel.physicsInvalidated) != 0)
+    if (SDL_GetAtomicInt(&gMarchingTerrain.physicsInvalidated) != 0)
     {
-        SDL_SetAtomicInt(&gTransvoxel.physicsInvalidated, 0);
-        for (u32 i = 0; i < gTransvoxel.chunkCount; i++)
+        SDL_SetAtomicInt(&gMarchingTerrain.physicsInvalidated, 0);
+        for (u32 i = 0; i < gMarchingTerrain.chunkCount; i++)
         {
-            tChunk* chunk = &gTransvoxel.chunks[i];
-            if (chunk->physicsSlot >= 0 || (chunk->lod <= 1 && chunk->mesh.vertices.heapPtr && chunk->mesh.vertices.count >= 3u))
+            tChunk* chunk = &gMarchingTerrain.chunks[i];
+            if (chunk->physicsSlot >= 0 || (chunk->mesh.vertices.heapPtr && chunk->mesh.vertices.count >= 3u))
                 chunk->physicsDirty = true;
         }
     }
 
-    if (gTransvoxel.chunkCount == 0u) return;
+    if (gMarchingTerrain.chunkCount == 0u) return;
 
     u32 synced = 0u;
     u32 visited = 0u;
-    while (visited < gTransvoxel.chunkCount && synced < T_MAX_PHYSICS_SYNCS_PER_FRAME)
+    while (visited < gMarchingTerrain.chunkCount && synced < T_MAX_PHYSICS_SYNCS_PER_FRAME)
     {
-        u32 i = gTransvoxel.physicsSyncCursor++;
-        if (gTransvoxel.physicsSyncCursor >= gTransvoxel.chunkCount)
-            gTransvoxel.physicsSyncCursor = 0u;
+        u32 i = gMarchingTerrain.physicsSyncCursor++;
+        if (gMarchingTerrain.physicsSyncCursor >= gMarchingTerrain.chunkCount)
+            gMarchingTerrain.physicsSyncCursor = 0u;
         visited++;
 
-        tChunk* chunk = &gTransvoxel.chunks[i];
+        tChunk* chunk = &gMarchingTerrain.chunks[i];
         if (!chunk->physicsDirty) continue;
         
 		tSyncChunkPhysics(chunk);
@@ -854,24 +754,13 @@ static void tSyncDirtyPhysics(void)
     }
 }
 
-static tChunk* GetOrCreateChunk(int3 min, s32 lod)
+static tChunk* GetOrCreateChunk(int3 min)
 {
-    s32 neighboursMask = tColumnMask(min, lod);
-    u32* found = (u32*)HMFind(&gTransvoxel.chunkLookup, tChunkKey(min, lod));
-    tChunk* chunk = found ? &gTransvoxel.chunks[*found] : NULL;
+    u32* found = (u32*)HMFind(&gMarchingTerrain.chunkLookup, tChunkKey(min));
+    tChunk* chunk = found ? &gMarchingTerrain.chunks[*found] : NULL;
     if (chunk)
     {
-        chunk->lastTouchedFrame = gTransvoxel.frameIndex;
-        // a neighbour crossed a lod ring: this chunk's boundary shrink + transition
-        // strips no longer match, remesh with the new mask (old mesh keeps drawing
-        // until the pending rebuild promotes, so the seam heals without a flash).
-        // while a build flies the stored mask must stay the job's snapshot, otherwise
-        // the stale result would look up to date; the diff re-checks after integration
-        if (!ChunkBuildInFlight(*found) && chunk->neighboursMask != neighboursMask)
-        {
-            chunk->neighboursMask = neighboursMask;
-            chunk->dirty = true;
-        }
+        chunk->lastTouchedFrame = gMarchingTerrain.frameIndex;
         if (chunk->dirty && !ChunkBuildInFlight(*found) && chunk->pendingState == PENDING_NONE)
             ScheduleChunkBuild(*found, chunk);
         return chunk;
@@ -879,39 +768,37 @@ static tChunk* GetOrCreateChunk(int3 min, s32 lod)
 
     u32 index = tAllocChunkSlot();
     if (index == UINT32_MAX) {
-        AX_WARN("transvoxel chunk allocation failed");
+        AX_WARN("marching terrain chunk allocation failed");
         return NULL;
     }
-    chunk = &gTransvoxel.chunks[index];
+    chunk = &gMarchingTerrain.chunks[index];
     *chunk = (tChunk){
         .min = min,
-        .lod = lod,
-        .neighboursMask = neighboursMask,
         .physicsSlot = -1,
         .buildState = CHUNK_UNBUILT,
         .pendingState = PENDING_NONE,
     };
-    chunk->lastTouchedFrame = gTransvoxel.frameIndex;
-    s32 worldSize = T_CHUNK_CELLS << lod;
+    chunk->lastTouchedFrame = gMarchingTerrain.frameIndex;
+    s32 worldSize = T_CHUNK_CELLS;
     chunk->aabbMin = ToFloat3(min);
     chunk->aabbMax = F3AddF(chunk->aabbMin, (f32)worldSize);
-    HMInsert(&gTransvoxel.chunkLookup, tChunkKey(min, lod), &index);
+    HMInsert(&gMarchingTerrain.chunkLookup, tChunkKey(min), &index);
     chunk->dirty = true;
     ScheduleChunkBuild(index, chunk);
     return chunk;
 }
 
 // returns false only when the draw list is full; empty chunks are a successful no-op so
-// one air/solid chunk does not abort the rest of the LOD ring. every chunk submits a heap
+// one air/solid chunk does not abort the rest of the ring. every chunk submits a heap
 // draw range (no vertex copy); the brush highlight is a terrain shader uniform now
 static bool tDrawChunk(const tChunk* chunk)
 {
     if (!chunk || chunk->mesh.indices.count == 0 || !chunk->mesh.vertices.heapPtr || !chunk->mesh.indices.heapPtr)
         return true;
 
-    if (gTransvoxel.numChunkDraws >= MAX_TERRAIN_CHUNK_DRAWS)
+    if (gMarchingTerrain.numChunkDraws >= MAX_TERRAIN_CHUNK_DRAWS)
         return false;
-    s32 step = T_CHUNK_CELLS << chunk->lod;
+    s32 step = T_CHUNK_CELLS;
     s32 chunkX = chunk->min.x / step;
     s32 chunkY = chunk->min.y / step;
     s32 chunkZ = chunk->min.z / step;
@@ -921,21 +808,22 @@ static bool tDrawChunk(const tChunk* chunk)
         return true;
     }
 
-    // indexed draw: first_index into the terrain index heap, base_vertex = vertex heap offset
+	// Marching cubes emits an indexed mesh. Indirect commands address index heap
+	// ranges; using vertex ranges here made every draw fetch unrelated indices.
 	TerrainChunkDraw draw;
 	draw.firstIndex = chunk->mesh.indices.first;
 	draw.indexCount = chunk->mesh.indices.count;
 	draw.baseVertex = (s32)chunk->mesh.vertices.first;
     draw.chunkXY    = (u32)(u16)(s16)chunkX | ((u32)(u16)(s16)chunkY << 16);
-    draw.chunkZLod  = (u32)(u16)(s16)chunkZ | ((u32)(u16)chunk->lod << 16);
-	gTransvoxel.chunkDraws[gTransvoxel.numChunkDraws++] = draw;
+    draw.chunkZLod  = (u32)(u16)(s16)chunkZ;
+	gMarchingTerrain.chunkDraws[gMarchingTerrain.numChunkDraws++] = draw;
     return true;
 }
 
 // a chunk counts as presentable when it either has a live mesh
 // or is genuinely empty. a fresh build whose mesh still sits in the pending slot is NOT
 // presentable: it has no drawable geometry until tPromotePendingMeshes swaps it
-// in, and treating it as ready made the LOD descend draw nothing for the promote frames.
+// in, and treating it as ready made fresh chunks disappear for the promote frames.
 static bool tChunkPresentable(const tChunk* chunk)
 {
     if (!chunk) return false;
@@ -943,9 +831,8 @@ static bool tChunkPresentable(const tChunk* chunk)
     return chunk->buildState == CHUNK_READY && chunk->pendingState == PENDING_NONE;
 }
 
-// vertical band of chunks that can hold surface geometry for the engine density field,
-// on this lod's grid (step = chunk world size). one place so every traversal query
-// floors the range identically
+// vertical band of chunks that can hold surface geometry for the engine density field
+// one place so every traversal query, floors the range identically
 static void tChunkYRange(s32 step, s32* chunkYMin, s32* chunkYMax)
 {
     f32 yMin, yMax;
@@ -954,111 +841,9 @@ static void tChunkYRange(s32 step, s32* chunkYMin, s32* chunkYMax)
     *chunkYMax = (s32)Floorf32(yMax / (f32)step);
 }
 
-// child column coords on the next-finer grid: i in [0,4), bit0 = x, bit1 = z
-static void tChildColumn(s32 chunkX, s32 chunkZ, u32 i, s32* outX, s32* outZ)
+static bool tSubmitChunkColumn(s32 chunkX, s32 chunkZ, bool useFrustum)
 {
-    *outX = chunkX * 2 + (s32)(i & 1u);
-    *outZ = chunkZ * 2 + (s32)(i >> 1u);
-}
-
-// true when every chunk of the column at this lod is presentable. requestBuilds=true
-// asks GetOrCreateChunk to schedule missing chunks (within the per-frame budget) and always
-// walks the whole column; requestBuilds=false is find-only for the coarser-lod
-// fallback checks and bails on the first absent chunk
-static bool tColumnReady(s32 chunkX, s32 chunkZ, s32 lod, bool requestBuilds)
-{
-    s32 step = T_CHUNK_CELLS << lod;
-    s32 chunkYMin, chunkYMax;
-    tChunkYRange(step, &chunkYMin, &chunkYMax);
-
-    bool ready = true;
-    for (s32 y = chunkYMin; y <= chunkYMax; y++)
-    {
-        int3 min = { chunkX * step, y * step, chunkZ * step };
-        const tChunk* chunk;
-        if (requestBuilds)  chunk = GetOrCreateChunk(min, lod);
-        else                chunk = FindChunk(min, lod);
-
-        if (!tChunkPresentable(chunk))
-        {
-            ready = false;
-            if (!requestBuilds) return false;
-        }
-    }
-    return ready;
-}
-
-static bool AreChildColumnsReady(s32 chunkX, s32 chunkZ, s32 lod, bool requestBuilds)
-{
-    for (u32 i = 0; i < 4u; i++)
-    {
-        s32 cx, cz;
-        tChildColumn(chunkX, chunkZ, i, &cx, &cz);
-        if (!tColumnReady(cx, cz, lod - 1, requestBuilds))
-            return false;
-    }
-    return true;
-}
-
-static bool SubmitChildNodes(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, bool useFrustum)
-{
-    for (u32 i = 0; i < 4u; i++)
-    {
-        s32 cx, cz;
-        tChildColumn(chunkX, chunkZ, i, &cx, &cz);
-        if (!tSubmitNode(cx, cz, lod - 1, lodFactor, useFrustum))
-            return false;
-    }
-    return true;
-}
-
-// chunked-LOD quadtree: split a node when its closest point lies inside the finer
-// LOD's range, otherwise emit it at this lod. every split child is always handled,
-// so the selection is gap-free — the old per-ring center-distance test dropped
-// chunks whose center fell between two rings. returns false when the submit
-// buffer is full and traversal must stop.
-static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, bool useFrustum)
-{
-    s32 step = T_CHUNK_CELLS << lod;
-    f32 distanceSq = ChunkColumnDistanceSq(chunkX, chunkZ, lod);
-
-    // global draw distance, applied only at the tree root: inner nodes always emit
-    // or split so a split parent can never leave uncovered children
-    if (lod == (s32)T_LOD_COUNT - 1)
-    {
-        f32 drawDistance = tLODDistance[lod] * lodFactor;
-        if (distanceSq >= drawDistance * drawDistance)
-            return true;
-    }
-
-    if (lod > 0)
-    {
-        f32 splitDistance = tLODDistance[lod - 1] * lodFactor;
-        if (distanceSq < splitDistance * splitDistance)
-        {
-            // descend only when every child column is presentable; otherwise keep
-            // drawing this coarser node while the children build over the next frames
-            // (tColumnBuilt requests the missing builds within the frame budget),
-            // so camera motion refines the LOD instead of leaving holes
-            if (AreChildColumnsReady(chunkX, chunkZ, lod, true))
-            {
-                return SubmitChildNodes(chunkX, chunkZ, lod, lodFactor, useFrustum);
-            }
-        }
-    }
-
-    // own column: request builds within the budget. when it is still building (e.g. the
-    // camera moved away and this coarser lod never existed here) but the finer children
-    // from previous frames are still cached, draw those instead — the mirror image of
-    // the descend fallback above, so lod transitions never flash invisible chunks
-    if (!tColumnReady(chunkX, chunkZ, lod, true) && lod > 0)
-    {
-        if (AreChildColumnsReady(chunkX, chunkZ, lod, false))
-        {
-            return SubmitChildNodes(chunkX, chunkZ, lod, lodFactor, useFrustum);
-        }
-    }
-
+    const s32 step = T_CHUNK_CELLS;
     s32 chunkYMin, chunkYMax;
     tChunkYRange(step, &chunkYMin, &chunkYMax);
 
@@ -1067,13 +852,13 @@ static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, bool use
         int3 min = { chunkX * step, y * step, chunkZ * step };
         float3 aabbMin = ToFloat3(min);
         float3 aabbMax = F3AddF(aabbMin, (f32)step);
-        if (useFrustum && !tAABBVisible(aabbMin, aabbMax, gTransvoxel.frustum))
+        if (useFrustum && !tAABBVisible(aabbMin, aabbMax, gMarchingTerrain.frustum))
         {
-            gTransvoxel.culledChunks++;
+            gMarchingTerrain.culledChunks++;
             continue;
         }
 
-        tChunk* chunk = GetOrCreateChunk(min, lod);
+        tChunk* chunk = GetOrCreateChunk(min);
         if (!tChunkPresentable(chunk))
             continue;
         if (!tDrawChunk(chunk))
@@ -1083,24 +868,22 @@ static bool tSubmitNode(s32 chunkX, s32 chunkZ, s32 lod, f32 lodFactor, bool use
     return true;
 }
 
-static void tSubmitTerrain(f32 lodFactor, bool useFrustum)
+static void tSubmitTerrain(bool useFrustum)
 {
-    const TerrainGenParams* params = Terrain_GetGenParams();
-    const s32 rootLOD = (s32)T_LOD_COUNT - 1;
-    s32 rootStep = T_CHUNK_CELLS << rootLOD;
-    f32 drawDistance = tLODDistance[rootLOD] * lodFactor;
-    s32 centerX = (s32)Floorf32(g_Camera.position.x / (f32)rootStep);
-    s32 centerZ = (s32)Floorf32(g_Camera.position.z / (f32)rootStep);
-    s32 radius = (s32)(drawDistance / (f32)rootStep) + 1;
+    const s32 step = T_CHUNK_CELLS;
+	f32 drawDistance = T_MARCHING_DRAW_DISTANCE;
+    s32 centerX = (s32)Floorf32(g_Camera.position.x / (f32)step);
+    s32 centerZ = (s32)Floorf32(g_Camera.position.z / (f32)step);
+    s32 radius = (s32)(drawDistance / (f32)step) + 1;
 
-    // near shells first so the per-frame build budget fills terrain around the camera
+    // Near shells first so the build budget fills terrain around the camera.
     for (s32 shell = 0; shell <= radius; shell++)
     for (s32 z = -shell; z <= shell; z++)
     for (s32 x = -shell; x <= shell; x++)
 	{
 		if (Maxs32(Abss32(x), Abss32(z)) != shell)
 			continue;
-		if (!tSubmitNode(centerX + x, centerZ + z, rootLOD, lodFactor, useFrustum))
+		if (!tSubmitChunkColumn(centerX + x, centerZ + z, useFrustum))
 			return;
 	}
 }
@@ -1109,68 +892,68 @@ static void tLogStats(void)
 {
 #if T_ENABLE_STATS
     u64 now = SDL_GetTicks();
-    if (now - gTransvoxel.lastStatsTicks < 1000u)
+    if (now - gMarchingTerrain.lastStatsTicks < 1000u)
         return;
-    gTransvoxel.lastStatsTicks = now;
-    AX_LOG("transvoxel : draws=%u built=%u cached=%u culled=%u empty=%u",
-           gTransvoxel.numChunkDraws, gTransvoxel.builtThisFrame,
-           gTransvoxel.chunkCount, gTransvoxel.culledChunks, gTransvoxel.emptyChunks);
+    gMarchingTerrain.lastStatsTicks = now;
+    AX_LOG("marching terrain : draws=%u built=%u cached=%u culled=%u empty=%u",
+           gMarchingTerrain.numChunkDraws, gMarchingTerrain.builtThisFrame,
+           gMarchingTerrain.chunkCount, gMarchingTerrain.culledChunks, gMarchingTerrain.emptyChunks);
 #endif
 }
 
 static void BeginTerrainFrame(void)
 {
-    gTransvoxel.numChunkDraws = 0;
-    gTransvoxel.builtThisFrame = 0;
-    gTransvoxel.culledChunks = 0;
-    gTransvoxel.emptyChunks = 0;
+    gMarchingTerrain.numChunkDraws = 0;
+    gMarchingTerrain.builtThisFrame = 0;
+    gMarchingTerrain.culledChunks = 0;
+    gMarchingTerrain.emptyChunks = 0;
 }
 
-static bool tInit(void)
+bool tMarchingInit(void)
 {
-    if (gTransvoxel.initialized)
+    if (gMarchingTerrain.initialized)
         return true;
-    MemSet(&gTransvoxel, 0, sizeof(gTransvoxel));
+    MemSet(&gMarchingTerrain, 0, sizeof(gMarchingTerrain));
 	
-    gTransvoxel.jobSystem = JobSystem_Create(0, 0);
-    if (!gTransvoxel.jobSystem)
+    gMarchingTerrain.jobSystem = JobSystem_Create(0, 0);
+    if (!gMarchingTerrain.jobSystem)
     {
         AX_WARN("terrain job system create failed!");
         return false;
     }
 
-    gTransvoxel.generator.noise3D = tDensityNoise;
-    gTransvoxel.generator.noise3DStrength = 1.0f;
+    gMarchingTerrain.generator.noise3D = tDensityNoise;
+    gMarchingTerrain.generator.noise3DStrength = 1.0f;
 
     for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
-        gTransvoxel.physicsSlotPool[i] = (u16)i;
-    gTransvoxel.physicsSlotCount = MAX_TERRAIN_PHYSICS_CHUNKS;
+        gMarchingTerrain.physicsSlotPool[i] = (u16)i;
+    gMarchingTerrain.physicsSlotCount = MAX_TERRAIN_PHYSICS_CHUNKS;
 
-    gTransvoxel.chunkDraws = (TerrainChunkDraw*)AllocateTLSFGlobal(sizeof(TerrainChunkDraw) * MAX_TERRAIN_CHUNK_DRAWS);
-    gTransvoxel.occupiedChunksBitset = (u64*)AllocateTLSFGlobal(T_CHUNK_BITSET_WORDS * sizeof(u64));
-    gTransvoxel.chunkLookup = HMCreate(T_MAX_CHUNKS, sizeof(u32));
-    if (!gTransvoxel.chunkDraws || !gTransvoxel.occupiedChunksBitset)
+    gMarchingTerrain.chunkDraws = (TerrainChunkDraw*)AllocateTLSFGlobal(sizeof(TerrainChunkDraw) * MAX_TERRAIN_CHUNK_DRAWS);
+    gMarchingTerrain.occupiedChunksBitset = (u64*)AllocateTLSFGlobal(T_CHUNK_BITSET_WORDS * sizeof(u64));
+    gMarchingTerrain.chunkLookup = HMCreate(T_MAX_CHUNKS, sizeof(u32));
+    if (!gMarchingTerrain.chunkDraws || !gMarchingTerrain.occupiedChunksBitset)
     {
-        AX_WARN("transvoxel allocation failed");
+        AX_WARN("marching terrain allocation failed");
         tDestroy();
         return false;
     }
-    MemsetZero(gTransvoxel.occupiedChunksBitset, T_CHUNK_BITSET_WORDS * sizeof(u64));
+    MemsetZero(gMarchingTerrain.occupiedChunksBitset, T_CHUNK_BITSET_WORDS * sizeof(u64));
 
     // one scratch mesh container and bump arena per job slot so workers never share output
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++)
     {
-        if (!tMeshDataContainerInit(&gTransvoxel.buildJobs[i].scratchMesh)) { tDestroy(); return false; }
-		if (!ArenaScratchCreate(&gTransvoxel.buildJobs[i].scratchArena, T_BUILD_SCRATCH_SIZE, "terrainChunkBuild")) { tDestroy(); return false; }
+		if (!tMeshDataInit(&gMarchingTerrain.buildJobs[i].scratchMesh)) { tDestroy(); return false; }
+		if (!ArenaScratchCreate(&gMarchingTerrain.buildJobs[i].scratchArena, T_BUILD_SCRATCH_SIZE, "terrainChunkBuild")) { tDestroy(); return false; }
     }
 
-    gTransvoxel.initialized = true;
+    gMarchingTerrain.initialized = true;
     return true;
 }
 
 void tUpdate(void)
 {
-    if (!tInit()) {
+    if (!tMarchingInit()) {
         RendererSetTerrainChunkDraws(NULL, 0);
         return;
     }
@@ -1178,44 +961,41 @@ void tUpdate(void)
     IntegrateFinishedBuilds();
     tResolveHeapPressure();
     tPromotePendingMeshes();
-    gTransvoxel.frameIndex++;
+    gMarchingTerrain.frameIndex++;
     tPruneChunkCache(T_VERTEX_CACHE_TARGET, T_INDEX_CACHE_TARGET, true);
     BeginTerrainFrame();
     mat4x4 viewProj = M44Multiply(g_Camera.view, g_Camera.projection);
     FrustumPlanes frustum = CreateFrustumPlanesRevZ(viewProj);
-	gTransvoxel.frustum = &frustum;
+	gMarchingTerrain.frustum = &frustum;
 
-    f32 lodFactor = Maxf32(g_RenderSettings.terrainLodFactor, 0.25f);
-    const TerrainGenParams* genParams = Terrain_GetGenParams();
-    gTransvoxel.lodFactor = lodFactor;
-    tSubmitTerrain(lodFactor, true);
-    if (gTransvoxel.numChunkDraws == 0) {
-        tSubmitTerrain(lodFactor, false);
+    tSubmitTerrain(true);
+    if (gMarchingTerrain.numChunkDraws == 0) {
+        tSubmitTerrain(false);
     }
 
     tSyncDirtyPhysics();
     tLogStats();
-    RendererSetTerrainChunkDraws(gTransvoxel.chunkDraws, gTransvoxel.numChunkDraws);
-    RendererSetTerrainBrush(gTransvoxel.brushPos, gTransvoxel.brushActive ? gTransvoxel.brushRadius : 0.0f);
+    RendererSetTerrainChunkDraws(gMarchingTerrain.chunkDraws, gMarchingTerrain.numChunkDraws);
+    RendererSetTerrainBrush(gMarchingTerrain.brushPos, gMarchingTerrain.brushActive ? gMarchingTerrain.brushRadius : 0.0f);
 }
 
 void tInvalidateAll(void)
 {
-    if (gTransvoxel.initialized)
+    if (gMarchingTerrain.initialized)
         tClearChunkCache();
 }
 
 void tInvalidateRegion(float3 mn, float3 mx)
 {
-    if (!gTransvoxel.initialized)
+    if (!gMarchingTerrain.initialized)
         return;
 
-    for (u32 i = 0; i < gTransvoxel.chunkCount; i++)
+    for (u32 i = 0; i < gMarchingTerrain.chunkCount; i++)
     {
-        tChunk* chunk = &gTransvoxel.chunks[i];
+        tChunk* chunk = &gMarchingTerrain.chunks[i];
         // the chunk's 19^3 sample grid reaches one voxel below aabbMin and two above
         // aabbMax, and gradients read one more; pad like TerrainRemeshRegion does
-        f32 pad = 2.0f * (f32)(1 << chunk->lod);
+        f32 pad = 2.0f;
         if (mx.x < chunk->aabbMin.x - pad || mn.x > chunk->aabbMax.x + pad ||
             mx.y < chunk->aabbMin.y - pad || mn.y > chunk->aabbMax.y + pad ||
             mx.z < chunk->aabbMin.z - pad || mn.z > chunk->aabbMax.z + pad)
@@ -1229,28 +1009,28 @@ void tInvalidateRegion(float3 mn, float3 mx)
 
 void tSetBrushCursor(float3 position, f32 radius, bool active)
 {
-    gTransvoxel.brushPos = position;
-    gTransvoxel.brushRadius = radius;
-    gTransvoxel.brushActive = active && radius > 0.0f;
+    gMarchingTerrain.brushPos = position;
+    gMarchingTerrain.brushRadius = radius;
+    gMarchingTerrain.brushActive = active && radius > 0.0f;
 }
 
-void tDestroy(void)
+void tMarchingDestroy()
 {
-    if (!gTransvoxel.initialized && !gTransvoxel.jobSystem && !gTransvoxel.chunkDraws &&
-        !gTransvoxel.occupiedChunksBitset && !gTransvoxel.chunkLookup.keys) {
+    if (!gMarchingTerrain.initialized && !gMarchingTerrain.jobSystem && !gMarchingTerrain.chunkDraws &&
+        !gMarchingTerrain.occupiedChunksBitset && !gMarchingTerrain.chunkLookup.keys) {
         return;
     }
 
     RendererSetTerrainChunkDraws(NULL, 0);
     tClearChunkCache(); // drains in-flight builds first
-    HMDestroy(&gTransvoxel.chunkLookup);
-    DeAllocateTLSFGlobal(gTransvoxel.chunkDraws);
-    DeAllocateTLSFGlobal(gTransvoxel.occupiedChunksBitset);
+    HMDestroy(&gMarchingTerrain.chunkLookup);
+    DeAllocateTLSFGlobal(gMarchingTerrain.chunkDraws);
+    DeAllocateTLSFGlobal(gMarchingTerrain.occupiedChunksBitset);
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++) {
-        tMeshDataContainerDestroy(&gTransvoxel.buildJobs[i].scratchMesh);
-        ArenaScratchDestroy(&gTransvoxel.buildJobs[i].scratchArena);
+        tMeshDataDestroy(&gMarchingTerrain.buildJobs[i].scratchMesh);
+        ArenaScratchDestroy(&gMarchingTerrain.buildJobs[i].scratchArena);
     }
-    if (gTransvoxel.jobSystem)
-        JobSystem_Destroy(gTransvoxel.jobSystem);
-    MemSet(&gTransvoxel, 0, sizeof(gTransvoxel));
+    if (gMarchingTerrain.jobSystem)
+        JobSystem_Destroy(gMarchingTerrain.jobSystem);
+    MemSet(&gMarchingTerrain, 0, sizeof(gMarchingTerrain));
 }

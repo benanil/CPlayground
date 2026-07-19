@@ -1,6 +1,6 @@
 #include "RenderingInternal.h"
+#include "Source/Terrain/TerrainInternal.h"
 #include "Include/Slug.h"
-#include "Source/Terrain/Transvoxel.h"
 
 #if defined(PLATFORM_MACOSX)
 #include "Shaders/msl/SurfaceForwardFrag.msl.h"

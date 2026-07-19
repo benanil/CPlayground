@@ -55,20 +55,6 @@ typedef struct TerrainEditState_
 
 static TerrainEditState g_TerrainEdit;
 
-static u64 TerrainEditKey(s32 x, s32 y, s32 z)
-{
-    return ((u64)((x + 0x100000) & 0x1FFFFF) << 40) |
-           ((u64)((y + 0x8000) & 0xFFFF) << 24) |
-           ((u64)((z + 0x100000) & 0x1FFFFF) << 3);
-}
-
-static void TerrainEditCoordsFromKey(u64 key, s32* x, s32* y, s32* z)
-{
-    *x = (s32)((key >> 40) & 0x1FFFFF) - 0x100000;
-    *y = (s32)((key >> 24) & 0xFFFF) - 0x8000;
-    *z = (s32)((key >> 3) & 0x1FFFFF) - 0x100000;
-}
-
 void TerrainEdit_Init(void)
 {
     if (g_TerrainEdit.initialized) return;
@@ -105,7 +91,7 @@ u32 TerrainEdit_NumChunks(void)
 
 static TerrainEditChunk* TerrainEditFind(s32 ex, s32 ey, s32 ez)
 {
-    TerrainEditChunk** slot = (TerrainEditChunk**)HMFind(&g_TerrainEdit.map, TerrainEditKey(ex, ey, ez));
+	TerrainEditChunk** slot = (TerrainEditChunk* *)HMFind(&g_TerrainEdit.map, tChunkKey((int3){ex, ey, ez}));
     return slot ? *slot : NULL;
 }
 
@@ -116,7 +102,7 @@ static TerrainEditChunk* TerrainEditGetOrCreate(s32 ex, s32 ey, s32 ez)
     if (chunk) return chunk;
     chunk = (TerrainEditChunk*)SDL_calloc(1, sizeof(TerrainEditChunk));
     if (!chunk) return NULL;
-    HMInsert(&g_TerrainEdit.map, TerrainEditKey(ex, ey, ez), &chunk);
+	HMInsert(&g_TerrainEdit.map, tChunkKey((int3){ex, ey, ez}), &chunk);
     return chunk;
 }
 
@@ -367,7 +353,7 @@ bool TerrainEdit_SaveChunks(const char* path)
     for (u32 i = 0; i < chunkCount; i++)
     {
         TerrainEditChunkFileRecord* record = &records[i];
-        TerrainEditCoordsFromKey(g_TerrainEdit.map.keys[i], &record->x, &record->y, &record->z);
+        tCoordsFromKey(g_TerrainEdit.map.keys[i], &record->x, &record->y, &record->z);
         TerrainEditChunk* chunk = ((TerrainEditChunk**)g_TerrainEdit.map.values)[i];
         MemCopy(record->delta, chunk->delta, sizeof(record->delta));
         MemCopy(record->material, chunk->material, sizeof(record->material));

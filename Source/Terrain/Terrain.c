@@ -1,5 +1,4 @@
 #include "Include/Terrain.h"
-#include "Source/Terrain/Transvoxel.h"
 #include "Source/Terrain/TerrainInternal.h"
 #include "Include/Graphics.h"
 #include "Include/FileSystem.h"
@@ -71,11 +70,11 @@ static void TerrainAuthoringDefaults(TerrainAuthoring* authoring) {
 }
 
 TerrainAuthoring* Terrain_GetAuthoring(void){
-    if (!tp.initialized) Terrain_Init();
+    if (!tp.initialized) tInit();
     return &tp.authoring;
 }
 
-void Terrain_Init(void)
+void tInit(void)
 {
     if (tp.initialized) return;
     tp.genParams = Terrain_DefaultGenParams();
@@ -86,7 +85,7 @@ void Terrain_Init(void)
     tp.initialized = true;
 }
 
-void Terrain_Destroy(void) {
+void tDestroy(void) {
     if (!tp.initialized) return;
     ReleaseTexture(&tp.albedoLayers);
     ReleaseTexture(&tp.normalLayers);
@@ -95,26 +94,18 @@ void Terrain_Destroy(void) {
     SDL_memset(&tp, 0, sizeof(tp));
 }
 
-void Terrain_Update(const Camera* camera) {
-    (void)camera;
-}
-
-void Terrain_SetEnabled(bool enabled) {
-    if (!tp.initialized) Terrain_Init();
+void tSetEnabled(bool enabled) {
+    if (!tp.initialized) tInit();
     tp.enabled = enabled;
 }
 
-bool Terrain_GetEnabled(void) {
+bool tGetEnabled(void) {
     return tp.initialized && tp.enabled;
-}
-
-void Terrain_InvalidatePhysics(void) {
-    tInvalidatePhysics();
 }
 
 void Terrain_ApplyGenParams(const TerrainGenParams* params) {
     if (!params) return;
-    if (!tp.initialized) Terrain_Init();
+    if (!tp.initialized) tInit();
     tp.genParams = *params;
     tp.genParams.fixedWorldSize = (u32)Clamps32((s32)tp.genParams.fixedWorldSize, TERRAIN_FIXED_WORLD_MIN_SIZE, TERRAIN_FIXED_WORLD_MAX_SIZE);
     TerrainDensity_SetParams(&tp.genParams);
@@ -122,7 +113,7 @@ void Terrain_ApplyGenParams(const TerrainGenParams* params) {
 }
 
 const TerrainGenParams* Terrain_GetGenParams(void) {
-    if (!tp.initialized) Terrain_Init();
+    if (!tp.initialized) tInit();
     return &tp.genParams;
 }
 
@@ -142,28 +133,28 @@ void Terrain_SetBrushCursor(float3 position, f32 radius, bool active) {
 }
 
 void Terrain_SculptSphere(float3 center, f32 radius, f32 strength, f32 softness) {
-    if (!Terrain_GetEnabled()) return;
+    if (!tGetEnabled()) return;
     float3 mn, mx;
     TerrainEdit_SculptSphere(center, radius, strength, softness, &mn, &mx);
     tInvalidateRegion(mn, mx);
 }
 
 void Terrain_PaintSphere(float3 center, f32 radius, u32 layer, f32 strength, f32 softness) {
-    if (!Terrain_GetEnabled()) return;
+    if (!tGetEnabled()) return;
     float3 mn, mx;
     TerrainEdit_PaintSphere(center, radius, (u8)Clamps32((s32)layer + 1, 1, 15), strength, softness, &mn, &mx);
     tInvalidateRegion(mn, mx);
 }
 
 // todo physics raycast
-s32 Terrain_Raycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit) {
+s32 tRaycast(float3 origin, float3 dir, f32 maxDist, u32 maxLod, BVHHit* hit) {
     (void)origin; (void)dir; (void)maxDist; (void)maxLod; (void)hit;
     return 0;
 }
 
-s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
+s32 tRaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
 {
-    if (!Terrain_GetEnabled()) return 0;
+    if (!tGetEnabled()) return 0;
     f32 t = 0.0f;
     f32 lastT = 0.0f;
     for (u32 step = 0; step < 256u && t < maxDist; step++)
@@ -200,7 +191,7 @@ s32 Terrain_RaycastField(float3 origin, float3 dir, f32 maxDist, BVHHit* hit)
     return 0;
 }
 
-TerrainStats Terrain_GetStats(void) {
+TerrainStats tGetStats(void) {
     return (TerrainStats){0};
 }
 
@@ -209,9 +200,9 @@ void RenderTerrainWireframe(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* c
     (void)cmd; (void)colorTarget; (void)depthTarget; (void)viewProj;
 }
 
-bool Terrain_GetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** normal, SDL_GPUTexture** arm)
+bool tGetMaterialTextures(SDL_GPUTexture** albedo, SDL_GPUTexture** normal, SDL_GPUTexture** arm)
 {
-    if (!tp.initialized) Terrain_Init();
+    if (!tp.initialized) tInit();
     TerrainInitMaterialTextures();
     if (albedo) *albedo = tp.albedoLayers.handle;
     if (normal) *normal = tp.normalLayers.handle;
@@ -228,7 +219,7 @@ bool Terrain_SaveEditChunks(const char* path) {
 }
 
 bool Terrain_LoadEditChunks(const char* path) {
-    if (!tp.initialized) Terrain_Init();
+    if (!tp.initialized) tInit();
     return TerrainEdit_LoadChunks(path);
 }
 
@@ -272,7 +263,7 @@ static bool TerrainChunksPathFromWorld(const char* terrainPath, char* dst, u32 d
 }
 
 bool Terrain_SaveWorld(const char* path) {
-    if (!path || !path[0] || !Terrain_GetEnabled()) return false;
+    if (!path || !path[0] || !tGetEnabled()) return false;
     EnsurePath(path);
 
     char* text = (char*)SDL_malloc(4096u);
@@ -307,7 +298,7 @@ bool Terrain_SaveWorld(const char* path) {
 
 bool Terrain_LoadWorld(const char* path) {
     if (!path || !path[0]) return false;
-    if (!tp.initialized) Terrain_Init();
+    if (!tp.initialized) tInit();
 
     char* text = ReadAllFileAlloc(path);
     if (!text) return false;

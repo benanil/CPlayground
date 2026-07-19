@@ -42,7 +42,7 @@ static void SceneSaveTerrainSidecar(const char* scenePath)
     char terrainPath[512];
     SceneTerrainPath(scenePath, terrainPath, sizeof(terrainPath));
 
-    if (Terrain_GetEnabled())
+    if (tGetEnabled())
         Terrain_SaveWorld(terrainPath);
     else if (FileExist(terrainPath))
         RemoveFile(terrainPath);

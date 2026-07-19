@@ -19,7 +19,6 @@
 #include "Include/Terrain.h"
 #include "Include/Editor.h"
 #include "Include/JobSystem.h"
-#include "Source/Terrain/Transvoxel.h"
 #include "Math/Quaternion.h"
 
 static s32 done = 0;
@@ -112,7 +111,7 @@ static SDL_AppResult SDLCALL MainAppInit(void** appstate, int argc, char* argv[]
     // if (DemoScene_Create()) if (!Scene_MakeActive(DemoScene_Get())) return SDL_APP_FAILURE;
     if (!Scene_NewActive()) return SDL_APP_FAILURE;
 	tFoliage_Init();
-	Terrain_Init();
+	tInit();
     // Keep the runnable Transvoxel example in the demo scene instead of reopening the last editor scene.
 	
     CameraInit(&g_Camera, 1920, 1080);

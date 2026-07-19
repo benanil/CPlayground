@@ -70,7 +70,7 @@ static void TerrainEditorInit(void)
 {
     if (terrainUI.initialized) return;
     terrainUI.initialized = true;
-    terrainUI.created = Terrain_GetEnabled();
+    terrainUI.created = tGetEnabled();
     terrainUI.fixedChunkSize = false;
     terrainUI.island   = true;
     terrainUI.editMode = false;
@@ -136,7 +136,7 @@ static void TerrainEditorApplyParams(const TerrainGenParams* params)
 bool TerrainEditorUpdate(Camera* camera)
 {
     bool wantsBrush = terrainUI.initialized && terrainUI.editMode && terrainUI.created &&
-                      Terrain_GetEnabled() && EditorSceneInteractAllowed();
+                      tGetEnabled() && EditorSceneInteractAllowed();
     if (!wantsBrush)
     {
         Terrain_SetBrushCursor(F3Zero(), 0.0f, false);
@@ -149,8 +149,8 @@ bool TerrainEditorUpdate(Camera* camera)
     BVHHit hit;
     // the mesh raycast only covers the near lod rings (cpu copies), distant terrain
     // falls back to tracing the analytic density field so everywhere stays editable
-    if (!Terrain_Raycast(origin, dir, 600.0f, 1u, &hit) &&
-        !Terrain_RaycastField(origin, dir, 600.0f, &hit))
+    if (!tRaycast(origin, dir, 600.0f, 1u, &hit) &&
+        !tRaycastField(origin, dir, 600.0f, &hit))
     {
         Terrain_SetBrushCursor(F3Zero(), 0.0f, false);
         return false;
@@ -219,7 +219,7 @@ void TerrainEditorSceneChanged(bool loadSidecar)
 {
     (void)loadSidecar;
     TerrainEditorInit();
-    terrainUI.created = Terrain_GetEnabled();
+    terrainUI.created = tGetEnabled();
     terrainUI.editMode = false;
     terrainUI.lastSaveOk = false;
     TerrainSyncScenePath();
@@ -371,7 +371,7 @@ static void TerrainGrassUI(void)
 static void TerrainStatsUI(void)
 {
     UISectionHeader("Runtime Stats");
-    TerrainStats stats = Terrain_GetStats();
+    TerrainStats stats = tGetStats();
     UITextU32("Live chunks", stats.liveChunks);
     UITextU32("Empty chunks", stats.emptyChunks);
     UITextU32("Queued chunks", stats.queuedChunks);
@@ -415,7 +415,7 @@ void DrawTerrainWindow(bool* open)
 {
     TerrainEditorInit();
     terrainTextDataCount = 0u;
-    terrainUI.created = terrainUI.created || Terrain_GetEnabled();
+    terrainUI.created = terrainUI.created || tGetEnabled();
 
     Clay_ElementId windowID = CLAY_ID("TerrainWindow");
     if (UIBeginWindowId(windowID, "Terrain", (float2){ 540.0f, 80.0f }, (float2){ 520.0f, 760.0f }, open, 0u))

@@ -33,6 +33,8 @@ purefn float2 F2MulF(float2 a, f32 b)  { return (float2) { a.x * b, a.y * b }; }
 purefn float2 F2DivF(float2 a, f32 b)  { return (float2) { a.x / b, a.y / b }; }
 purefn float2 F2Neg (float2 a)         { return (float2) { -a.x, -a.y }; }
 purefn float3 F3Neg (float3 a)         { return (float3) { -a.x, -a.y, -a.z }; }
+purefn int3 I3Min (int3 a, int3 b)     { return (int3) { Mins32(a.x, b.x), Mins32(a.y, b.y), Mins32(a.z, b.z) }; }
+purefn int3 I3Max (int3 a, int3 b)     { return (int3) { Maxs32(a.x, b.x), Maxs32(a.y, b.y), Maxs32(a.z, b.z) }; }
 purefn int3 I3Add (int3 a, int3 b)     { return (int3) { a.x + b.x, a.y + b.y, a.z + b.z }; }
 purefn int3 I3Sub (int3 a, int3 b)     { return (int3) { a.x - b.x, a.y - b.y, a.z - b.z }; }
 purefn int3 I3Mul (int3 a, int3 b)     { return (int3) { a.x * b.x, a.y * b.y, a.z * b.z }; }
@@ -95,8 +97,6 @@ purefn float2 F2Lerp    (float2 a, float2 b, f32 t) { return (float2) { a.x + (b
 purefn float3 F3Abs     (float3 a)            { return Vec3Get(VecFabs(Vec3Load(&a.x)));                        }
 purefn float3 F3Min     (float3 a, float3 b)  { return Vec3Get(VecMin(Vec3Load(&a.x), Vec3Load(&b.x))); }
 purefn float3 F3Max     (float3 a, float3 b)  { return Vec3Get(VecMax(Vec3Load(&a.x), Vec3Load(&b.x))); }
-purefn int3   I3Min(int3 a, int3 b) { return (int3){Mins32(a.x, b.x), Mins32(a.y, b.y), Mins32(a.z, b.z)}; }
-purefn int3   I3Max(int3 a, int3 b) { return (int3){Maxs32(a.x, b.x), Maxs32(a.y, b.y), Maxs32(a.z, b.z)}; }
 
 purefn float2 F2Min(float2 a, float2 b) { return (float2) { Minf32(a.x, b.x), Minf32(a.y, b.y) }; }
 purefn float2 F2Max(float2 a, float2 b) { return (float2) { Maxf32(a.x, b.x), Maxf32(a.y, b.y) }; }

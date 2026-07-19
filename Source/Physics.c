@@ -239,7 +239,7 @@ void Scene_PhysicsUpdate(Scene* scene, float deltaTime)
 		{
 			BuildCollidersForSet(scene, &scene->surfaceSet, false);
 			BuildCollidersForSet(scene, &scene->transparentSet, true);
-			Terrain_InvalidatePhysics();
+			tInvalidatePhysics();
 			AX_LOG("physics: built %u static collider meshes\n", PhysicsCountMeshes(scene, false) + PhysicsCountMeshes(scene, true));
 		}
 
@@ -850,7 +850,7 @@ void Scene_BuildStaticColliders(Scene* scene)
 	BuildCollidersForSet(scene, &scene->transparentSet, true);
 	// the wholesale destroy above also dropped every terrain chunk collider; tell the
 	// terrain to re-create them on its next update (this can run on the async loader)
-	Terrain_InvalidatePhysics();
+	tInvalidatePhysics();
 	AX_LOG("physics: built %u static collider meshes\n", PhysicsCountMeshes(scene, false) + PhysicsCountMeshes(scene, true));
 }
 
