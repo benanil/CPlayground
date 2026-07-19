@@ -10,7 +10,7 @@
 #include "Include/Bitset.h"
 #include "Math/Bitpack.h"
 
-#define T_MARCHING_DRAW_DISTANCE 112.0f
+#define T_MARCHING_DRAW_DISTANCE 250.0f
 
 typedef enum ChunkBuildState_
 {
@@ -69,6 +69,7 @@ typedef struct tMarchingTerrainState_
     HashMap chunkLookup; // key: tChunkKey, value: u32 index into chunks
 	const FrustumPlanes* frustum;
 	u64*    occupiedChunksBitset;
+	s8*     chunkDensity; // T_MAX_BUILD_JOBS * T_SAMPLES_TOTAL, one (T_CHUNK_CELLS+3)^3 slab per build-job slot
     u32     numChunkDraws;
 	u32     chunkCount;
     u32     builtThisFrame; // jobs scheduled this frame, capped by T_MAX_BUILDS_PER_FRAME
@@ -120,24 +121,22 @@ static f32 tDensityNoise(f32 x, f32 y, f32 z, void* userData) {
 }
 
 // thread safe: TerrainDensity_SampleChunk is pure + edit overlay is mutex guarded
-static void tBuildDensity(int3 chunkMin, f32* out)
+static void tBuildDensity(int3 chunkMin, s8* out)
 {
-    s32 densitySize = T_CHUNK_CELLS + 3;
-    s32 step = T_CHUNK_CELLS;
-    s32 cx = chunkMin.x / step;
-    s32 cy = chunkMin.y / step;
-    s32 cz = chunkMin.z / step;
+    const s32 densitySize = T_CHUNK_CELLS + 3;
+    s32 cx = chunkMin.x / T_CHUNK_CELLS;
+    s32 cy = chunkMin.y / T_CHUNK_CELLS;
+    s32 cz = chunkMin.z / T_CHUNK_CELLS;
     s8 samples[T_SAMPLES_TOTAL];
-    TerrainDensity_SampleChunk(cx, cy, cz, 0u, samples);
+    TerrainDensity_SampleChunk(cx, cy, cz, samples);
 
-    const f32 invScale = -(TERRAIN_SDF_CLAMP / 127.0f);
     for (s32 x = 0; x < densitySize; x++)
     for (s32 y = 0; y < densitySize; y++)
     for (s32 z = 0; z < densitySize; z++)
     {
         size_t dst = (size_t)x * (size_t)densitySize * (size_t)densitySize + (size_t)y * (size_t)densitySize + (size_t)z;
         size_t src = ((size_t)z * (size_t)densitySize + (size_t)y) * (size_t)densitySize + (size_t)x;
-        out[dst] = (f32)samples[src] * invScale;
+        out[dst] = samples[src];
     }
 }
 
@@ -350,22 +349,25 @@ static void BeginBuildJob(tBuildJob* job)
     ArenaScratchBegin(&job->scratchArena);
 }
 
-static bool PrepareBuildScratch(tBuildJob* job, f32** density)
+static bool PrepareBuildScratch(tBuildJob* job)
 {
-    s32 densitySize = T_CHUNK_CELLS + 3;
-    size_t densityCount = (size_t)densitySize * (size_t)densitySize * (size_t)densitySize;
-    *density = (f32*)ArenaPushGlobal(sizeof(f32) * densityCount);
     job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * T_MARCHING_VERTEX_CAP);
     job->buildIndices = (u32*)ArenaPushGlobal(sizeof(u32) * T_CHUNK_INDEX_CAP);
-    if (!*density || !job->buildVertices || !job->buildIndices) {
+    if (!job->buildVertices || !job->buildIndices) {
         AX_WARN("marching terrain build scratch allocation failed");
         return false;
     }
     return true;
 }
 
-static bool GenerateChunkMesh(tBuildJob* job, f32* density)
+static bool GenerateChunkMesh(tBuildJob* job)
 {
+    // keyed by build-job slot, not job->chunkIndex: the chunk-cache evictor can remap a
+    // busy job's chunkIndex from its own thread mid-build (tFreeChunkSlot's swap-compact),
+    // so that field isn't stable for the worker to index into. the job slot itself never
+    // moves for the life of RunBuildJob, so it's the only race-free key here.
+    u32 jobSlot = (u32)(job - gMarchingTerrain.buildJobs);
+    s8* density = gMarchingTerrain.chunkDensity + (size_t)jobSlot * T_SAMPLES_TOTAL;
     tBuildDensity(job->min, density);
     if (!tMesherMesh(&gMarchingTerrain.generator, density, job)) {
         AX_WARN("marching cubes chunk mesh build failed");
@@ -448,10 +450,9 @@ static void FailBuildJob(tBuildJob* job) {
 static void RunBuildJob(void* userData)
 {
     tBuildJob* job = (tBuildJob*)userData;
-    f32* density = NULL;
     BeginBuildJob(job);
-    bool failed = !PrepareBuildScratch(job, &density) ||
-			      !GenerateChunkMesh(job, density) ||
+    bool failed = !PrepareBuildScratch(job) ||
+			      !GenerateChunkMesh(job) ||
 			      !UploadChunkMesh(job);
 	if (failed) FailBuildJob(job);
    
@@ -788,9 +789,6 @@ static tChunk* GetOrCreateChunk(int3 min)
     return chunk;
 }
 
-// returns false only when the draw list is full; empty chunks are a successful no-op so
-// one air/solid chunk does not abort the rest of the ring. every chunk submits a heap
-// draw range (no vertex copy); the brush highlight is a terrain shader uniform now
 static bool tDrawChunk(const tChunk* chunk)
 {
     if (!chunk || chunk->mesh.indices.count == 0 || !chunk->mesh.vertices.heapPtr || !chunk->mesh.indices.heapPtr)
@@ -820,10 +818,6 @@ static bool tDrawChunk(const tChunk* chunk)
     return true;
 }
 
-// a chunk counts as presentable when it either has a live mesh
-// or is genuinely empty. a fresh build whose mesh still sits in the pending slot is NOT
-// presentable: it has no drawable geometry until tPromotePendingMeshes swaps it
-// in, and treating it as ready made fresh chunks disappear for the promote frames.
 static bool tChunkPresentable(const tChunk* chunk)
 {
     if (!chunk) return false;
@@ -931,8 +925,9 @@ bool tMarchingInit(void)
 
     gMarchingTerrain.chunkDraws = (TerrainChunkDraw*)AllocateTLSFGlobal(sizeof(TerrainChunkDraw) * MAX_TERRAIN_CHUNK_DRAWS);
     gMarchingTerrain.occupiedChunksBitset = (u64*)AllocateTLSFGlobal(T_CHUNK_BITSET_WORDS * sizeof(u64));
+    gMarchingTerrain.chunkDensity = (s8*)AllocateTLSFGlobal(sizeof(s8) * (size_t)T_SAMPLES_TOTAL * T_MAX_BUILD_JOBS);
     gMarchingTerrain.chunkLookup = HMCreate(T_MAX_CHUNKS, sizeof(u32));
-    if (!gMarchingTerrain.chunkDraws || !gMarchingTerrain.occupiedChunksBitset)
+    if (!gMarchingTerrain.chunkDraws || !gMarchingTerrain.occupiedChunksBitset || !gMarchingTerrain.chunkDensity)
     {
         AX_WARN("marching terrain allocation failed");
         tDestroy();
@@ -1026,6 +1021,7 @@ void tMarchingDestroy()
     HMDestroy(&gMarchingTerrain.chunkLookup);
     DeAllocateTLSFGlobal(gMarchingTerrain.chunkDraws);
     DeAllocateTLSFGlobal(gMarchingTerrain.occupiedChunksBitset);
+    DeAllocateTLSFGlobal(gMarchingTerrain.chunkDensity);
     for (u32 i = 0; i < T_MAX_BUILD_JOBS; i++) {
         tMeshDataDestroy(&gMarchingTerrain.buildJobs[i].scratchMesh);
         ArenaScratchDestroy(&gMarchingTerrain.buildJobs[i].scratchArena);

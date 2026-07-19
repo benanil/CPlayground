@@ -255,9 +255,9 @@ def compile_shader(
     require_file(hlsl)
 
     script = Path(__file__)
-
-    # if header.exists() and header.stat().st_mtime > max(hlsl.stat().st_mtime, script.stat().st_mtime):
-    #     return False
+    # [here]
+    if header.exists() and header.stat().st_mtime > max(hlsl.stat().st_mtime, script.stat().st_mtime):
+        return False
 
     print("Compiling {}.hlsl entry {} -> {}.{}...".format(src_name, entry, out_name, fmt))
 

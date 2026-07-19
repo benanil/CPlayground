@@ -419,9 +419,9 @@ static s8 TerrainDensity_Quantize(f32 sdf)
     return (s8)v;
 }
 
-void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
+void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, s8* out)
 {
-    const f32 voxel = T_VOXEL_SIZE * (f32)(1 << lod);
+    const f32 voxel = T_VOXEL_SIZE;
     const f32 ox = (f32)cx * (T_CHUNK_CELLS * voxel);
     const f32 oy = (f32)cy * (T_CHUNK_CELLS * voxel);
     const f32 oz = (f32)cz * (T_CHUNK_CELLS * voxel);
@@ -465,9 +465,7 @@ void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out)
         for (u32 i = 0; i < n; i++) *dst++ = TerrainDensity_Quantize(s[i]);
     }
 
-    // sparse sculpt edits overlay on top, world fixed like the base field so every
-    // lod sees identical values at shared sample positions
-    TerrainEdit_OverlayChunk(cx, cy, cz, lod, out);
+    TerrainEdit_OverlayChunk(cx, cy, cz, out);
 
     // bedrock floor, applied last so sculpt can never dig through it. each y-plane clamps
     // its samples toward solid by the quantized (worldY - floor): above the floor that

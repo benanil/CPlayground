@@ -8,14 +8,16 @@ typedef struct tMarchingMesher_
 {
     const tDensityGenerator* generator;
     int3                     chunkMin;
-    const f32*               densityData;
+    const s8*                densityData;
     tMeshData*      meshData;
+    s32*            edgeCache;
 } tMarchingMesher;
 
 static f32 tMesherDensityAt(const tMarchingMesher* mesher, s32 x, s32 y, s32 z)
 {
     s32 densitySize = T_CHUNK_CELLS + 3;
-    return mesher->densityData[x * densitySize * densitySize + y * densitySize + z];
+    s8 raw = mesher->densityData[x * densitySize * densitySize + y * densitySize + z];
+    return (f32)raw * T_DENSITY_DECODE_SCALE;
 }
 
 static f32 tMesherGeneratorAt(const tMarchingMesher* mesher, float3 pos)
@@ -91,9 +93,8 @@ static u32 tMarchingEdgeCacheOffset(u32 edge, int3 cellPos)
 static bool tMarchingEmitVertex(tMeshData* meshData, float3 vertex, float3 normal)
 {
     tVertexData data = {0};
-    f32 chunkSize = T_CHUNK_CELLS;
     v128f localPos = VecSetR(vertex.x, vertex.y, vertex.z, 0.0f);
-    data.position = Pack16x4Fixed(localPos, chunkSize);
+    data.position = Pack16x4Fixed(localPos, (f32)T_CHUNK_CELLS);
     v128f normVec = VecSetR(normal.x, normal.y, normal.z, 0.0f);
     data.normal = PackNormalOCT(normVec);
     return tMeshDataPushVertex(meshData, data);
@@ -125,7 +126,7 @@ static bool tMarchingCachedVertexMatchesEdge(const tMarchingMesher* mesher, cons
 
 static bool tMarchingVertexForEdge(tMarchingMesher* mesher, tMeshData* meshData,
                                    int3 cellPos, const f32 cellValues[8], u32 edge,
-                                   s32* edgeCache, bool forceUncached, u32* outVertexIndex)
+                                   s32* edgeCache, u32* outVertexIndex)
 {
     u32 cacheOffset = tMarchingEdgeCacheOffset(edge, cellPos);
     u32 cornerIdx0 = tMCEdgeCorners[edge][0];
@@ -134,8 +135,7 @@ static bool tMarchingVertexForEdge(tMarchingMesher* mesher, tMeshData* meshData,
     f32 density1 = cellValues[cornerIdx1];
     int3 p0i = I3Add(cellPos, tMCCornerOffset[cornerIdx0]);
     int3 p1i = I3Add(cellPos, tMCCornerOffset[cornerIdx1]);
-    if (!forceUncached &&
-        tMarchingCachedVertexMatchesEdge(mesher, meshData, edgeCache[cacheOffset], p0i, p1i))
+    if (tMarchingCachedVertexMatchesEdge(mesher, meshData, edgeCache[cacheOffset], p0i, p1i))
     {
         *outVertexIndex = (u32)edgeCache[cacheOffset];
         return true;
@@ -147,13 +147,11 @@ static bool tMarchingVertexForEdge(tMarchingMesher* mesher, tMeshData* meshData,
     float3 midLocal = F3MulF(F3Add(p0, p1), 0.5f);
     float3 midWorld = tMesherWorldFromLocal(mesher, midLocal);
     f32 midDensity = tMesherGeneratorAt(mesher, midWorld);
-    if (tMarchingMesherSign(midDensity) == tMarchingMesherSign(density0))
-    {
+    if (tMarchingMesherSign(midDensity) == tMarchingMesherSign(density0)) {
         p0 = midLocal;
         density0 = midDensity;
     }
-    else
-    {
+    else {
         p1 = midLocal;
         density1 = midDensity;
     }
@@ -169,8 +167,7 @@ static bool tMarchingVertexForEdge(tMarchingMesher* mesher, tMeshData* meshData,
     if (!tMarchingEmitVertex(meshData, vertex, normal))
         return false;
 
-    if (!forceUncached)
-        edgeCache[cacheOffset] = vertexIndex;
+    edgeCache[cacheOffset] = vertexIndex;
     *outVertexIndex = (u32)vertexIndex;
     return true;
 }
@@ -204,7 +201,7 @@ static bool tMesherMarchingCubes(tMarchingMesher* mesher)
             for (u32 k = 0; k < 3u; k++)
             {
                 if (!tMarchingVertexForEdge(mesher, meshData, cellPos, cellValues,
-                                            (u32)triangles[i + k], NULL, true, &vertexIndex[k]))
+                                            (u32)triangles[i + k], mesher->edgeCache, &vertexIndex[k]))
                 {
                     result = false;
                     break;
@@ -226,7 +223,7 @@ static bool tMesherMarchingCubes(tMarchingMesher* mesher)
     return result;
 }
 
-bool tMesherMesh(const tDensityGenerator* generator, const f32* density, tBuildJob* job)
+bool tMesherMesh(const tDensityGenerator* generator, const s8* density, tBuildJob* job)
 {
     tMeshData* meshData = &job->scratchMesh;
     if (!generator || !density || !meshData)
@@ -240,6 +237,14 @@ bool tMesherMesh(const tDensityGenerator* generator, const f32* density, tBuildJ
     mesher.chunkMin = job->min;
     mesher.densityData = density;
     mesher.meshData = meshData;
+    const u32 pointCount = (u32)((T_CHUNK_CELLS + 1) * (T_CHUNK_CELLS + 1) * (T_CHUNK_CELLS + 1));
+    mesher.edgeCache = (s32*)ArenaPushGlobal(sizeof(s32) * pointCount * 3u);
+    if (!mesher.edgeCache)
+    {
+        AX_WARN("marching cubes edge cache allocation failed");
+        return false;
+    }
+    tMesherFillS32(mesher.edgeCache, pointCount * 3u, -1);
     tMeshDataClear(meshData);
     return tMesherMarchingCubes(&mesher);
 }

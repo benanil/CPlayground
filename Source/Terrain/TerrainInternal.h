@@ -47,12 +47,12 @@
 // the transvoxel-unity port parks non-indexed triangle soup in the vertex heap
 // (~3x an indexed mesh), so it is sized above the old runtime's needs. these back
 // both the CPU mirrors (Graphics.c) and the GPU mirror (Rendering.c) - keep sane.
-#define T_MAX_VERTICES        (2u << 22) // 128MB if vertex is 16B
+#define T_MAX_VERTICES        (1u << 24) // 256MB at 16B/vertex
 #define T_MAX_INDICES         (2u << 22) // 32MB of u32
-#define T_VERTEX_CACHE_BUDGET (T_MAX_VERTICES / 2u)
-#define T_VERTEX_CACHE_TARGET (T_MAX_VERTICES / 3u)
-#define T_INDEX_CACHE_BUDGET  (T_MAX_INDICES / 2u)
-#define T_INDEX_CACHE_TARGET  (T_MAX_INDICES / 3u)
+#define T_VERTEX_CACHE_BUDGET (T_MAX_VERTICES * 7u / 8u)
+#define T_VERTEX_CACHE_TARGET (T_MAX_VERTICES * 3u / 4u)
+#define T_INDEX_CACHE_BUDGET  (T_MAX_INDICES * 7u / 8u)
+#define T_INDEX_CACHE_TARGET  (T_MAX_INDICES * 3u / 4u)
 #define T_HEAP_PRESSURE_EVICT_CHUNKS 32u
 #define T_CACHE_KEEP_FRAMES 2u
 
@@ -62,17 +62,11 @@
 // sample at the same world position, which per lod scaling would break
 #define TERRAIN_SDF_CLAMP      4.0f
 
-#define T_LAYER_COUNT 4u
+// chunk density array storage: source samples already are s8 (+-127), so the mesher
+// array stores them unchanged (1 byte/sample) and decodes to meters on read
+#define T_DENSITY_DECODE_SCALE (-(TERRAIN_SDF_CLAMP) / 127.0f)
 
-// compact vertex, 16 bytes: 3 x 21 bit fixed point position in chunk bounds, the chunk
-// origin and size come from a per draw uniform. normal is 16+16 bit octahedral
-typedef struct TerrainVertex_
-{
-    u32 posA;      // x:21 | y low 11
-    u32 posB;      // y high 10 | z:21 | 1 spare
-    u32 octNormal; // octahedral x:16 | y:16 unorm
-    u32 spare;     // future material weights / ao
-} TerrainVertex;
+#define T_LAYER_COUNT 4u
 
 // one camera-facing grass blade, 8 bytes, fed to the grass draw as an instance-rate
 // vertex attribute. positions are chunk-relative meters so a 16 m lod0 chunk keeps full
@@ -221,7 +215,7 @@ void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32* blend
 
 // procedural density field, pure and thread safe (TerrainDensity.c)
 f32  TerrainDensity_SDF(f32 x, f32 y, f32 z);
-void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* out /*19^3*/);
+void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, s8* out /*19^3*/);
 // world vertical band that can contain surface, chunks outside it are never created
 void TerrainDensity_GetYRange(f32* outMin, f32* outMax);
 
@@ -248,15 +242,15 @@ void tMeshDataClear(tMeshData* data);
 bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex);
 bool tMeshDataPushIndex(tMeshData* data, u32 index);
 u32* tMeshDataBuildValidIndices(const tMeshData* data);
-bool tMesherMesh(const tDensityGenerator* generator, const f32* density, tBuildJob* job);
+bool tMesherMesh(const tDensityGenerator* generator, const s8* density, tBuildJob* job);
 
 // ---------------------------------------------------------------------------------
 // sparse sculpt/paint edits (TerrainEdit.c): 16^3 grids of s8 density deltas and u8
-// material indices on the world fixed lod0 voxel lattice, keyed by lod0 chunk coords.
+// material indices on the world fixed voxel lattice, keyed by chunk coords.
 // thread safe: workers overlay while the main thread sculpts, a mutex guards the map
 // ---------------------------------------------------------------------------------
 
-#define TERRAIN_EDIT_CELLS 16  // grid axis, == T_CHUNK_CELLS at lod 0
+#define TERRAIN_EDIT_CELLS 16  // grid axis, == T_CHUNK_CELLS
 
 void TerrainEdit_Init(void);
 void TerrainEdit_Destroy(void);
@@ -265,13 +259,13 @@ u32  TerrainEdit_NumChunks(void);
 
 // adds the quantized density deltas of every edited region intersecting the chunk's
 // 19^3 sample grid, and clamps. called from worker jobs inside SampleChunk
-void TerrainEdit_OverlayChunk(s32 cx, s32 cy, s32 cz, u32 lod, s8* samples);
+void TerrainEdit_OverlayChunk(s32 cx, s32 cy, s32 cz, s8* samples);
 
-// packed paint value of a lod0 voxel: layerA | layerB<<4 | blendWeight<<8.
+// packed paint value of a voxel: layerA | layerB<<4 | blendWeight<<8.
 // 0 = untouched procedural default
 u16 TerrainEdit_MaterialAt(s32 wx, s32 wy, s32 wz);
 
-// sculpted sdf offset in meters at a lod0 voxel, 0 when untouched
+// sculpted sdf offset in meters a voxel, 0 when untouched
 f32 TerrainEdit_DeltaAt(s32 wx, s32 wy, s32 wz);
 
 // splits the containing voxel's paint into the two TerrainVertex.spare slots:

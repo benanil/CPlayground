@@ -6,7 +6,7 @@
 static bool tMeshDataInitCapacity(tMeshData* data, s32 vertexCapacity, s32 indexCapacity)
 {
     *data = (tMeshData){0};
-	u32 r0 = GeometryHeapAlloc(GeometryBuffer_TerrainVert , (u32)vertexCapacity, (void**)&data->vertices);
+	u32 r0 = GeometryHeapAlloc(GeometryBuffer_TerrainVert, (u32)vertexCapacity, (void**)&data->vertices);
     u32 r1 = GeometryHeapAlloc(GeometryBuffer_TerrainIndex, (u32)indexCapacity , (void**)&data->indices);
 
     if (r0 == GEOMETRY_ALLOC_FAIL || r1 == GEOMETRY_ALLOC_FAIL)
