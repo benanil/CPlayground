@@ -269,7 +269,7 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
                                 &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
     }
 
-    RenderTerrain(cmd, pass, ctx->viewProj);
+    RenderTerrain(cmd, pass, ctx->viewProj, width, height, tilesX, localLightsEnabled);
     tRenderGrass(cmd, pass);
 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->transparentSet, &scene->transparentBuffers,
@@ -309,7 +309,7 @@ void RenderGizmo(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget,
 
 // every visible chunk in one indirect multidraw straight from the geometry heap's GPU
 // mirror; the caller has already bound the terrain pipeline and pushed its uniforms
-static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
+static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass, SDL_GPUBuffer* shadowCascadeBuffer)
 {
     if (g_NumTerrainChunkDraws == 0 || !g_RenderState.terrainVertexBuffer ||
         !g_RenderState.terrainIndexBuffer || !g_RenderState.terrainDrawArgsBuffer ||
@@ -317,14 +317,15 @@ static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass)
 
     SDL_GPUBufferBinding heapBinding = { g_RenderState.terrainVertexBuffer, 0 };
     SDL_BindGPUVertexBuffers(pass, 0, &heapBinding, 1);
-    SDL_GPUBuffer* storageBuffers[1] = { g_RenderState.terrainChunkLocationBuffer };
-    SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, 1);
+    SDL_GPUBuffer* storageBuffers[2] = { g_RenderState.terrainChunkLocationBuffer, shadowCascadeBuffer };
+    SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, shadowCascadeBuffer ? 2u : 1u);
     SDL_GPUBufferBinding indexBinding = { g_RenderState.terrainIndexBuffer, 0 };
     SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
     SDL_DrawGPUIndexedPrimitivesIndirect(pass, g_RenderState.terrainDrawArgsBuffer, 0, g_NumTerrainChunkDraws);
 }
 
-void RenderTerrain(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
+void RenderTerrain(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj,
+                   u32 width, u32 height, u32 tilesX, bool localLightsEnabled)
 {
     if (g_NumTerrainChunkDraws == 0 || !g_TerrainTrianglePipeline) return;
     SDL_GPUTexture* albedo = NULL;
@@ -333,17 +334,51 @@ void RenderTerrain(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 vi
     if (!tGetMaterialTextures(&albedo, &normal, &arm)) return;
 
     SDL_BindGPUGraphicsPipeline(pass, g_TerrainTrianglePipeline);
-    SDL_GPUTextureSamplerBinding samplers[3] = {
+    SDL_GPUTextureSamplerBinding samplers[8] = {
         { .texture = albedo, .sampler = g_RenderState.sampler },
         { .texture = normal, .sampler = g_RenderState.sampler },
-        { .texture = arm,    .sampler = g_RenderState.sampler }
+        { .texture = arm,    .sampler = g_RenderState.sampler },
+        { .texture = g_WindowState.tex_shadow_color, .sampler = g_RenderState.shadowSampler },
+        { .texture = g_WindowState.tex_point_shadow_color, .sampler = g_RenderState.shadowSampler },
+        { .texture = g_WindowState.tex_spot_shadow_color, .sampler = g_RenderState.shadowSampler },
+        { .texture = g_WindowState.tex_hbao_blur, .sampler = g_RenderState.sampler },
+        { .texture = g_WindowState.tex_contact_shadow, .sampler = g_RenderState.sampler }
     };
     SDL_BindGPUFragmentSamplers(pass, 0, samplers, SDL_arraysize(samplers));
-    SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
+
+    SDL_GPUBuffer* fragmentStorage[5] = {
+        g_RenderState.lightBuffer,
+        g_RenderState.lightGridBuffer,
+        g_RenderState.lightIndexBuffer,
+        g_RenderState.pointShadowMatrixBuffer,
+        g_RenderState.spotShadowMatrixBuffer
+    };
+    SDL_BindGPUFragmentStorageBuffers(pass, 0, fragmentStorage, SDL_arraysize(fragmentStorage));
+
+    struct {
+        mat4x4 viewProj;
+        f32 cameraPosition[4];
+        f32 cameraForward[4];
+    } vertexParams = {0};
+    vertexParams.viewProj = viewProj;
+    vertexParams.cameraPosition[0] = g_Camera.position.x;
+    vertexParams.cameraPosition[1] = g_Camera.position.y;
+    vertexParams.cameraPosition[2] = g_Camera.position.z;
+    vertexParams.cameraForward[0] = g_Camera.Front.x;
+    vertexParams.cameraForward[1] = g_Camera.Front.y;
+    vertexParams.cameraForward[2] = g_Camera.Front.z;
+    SDL_PushGPUVertexUniformData(cmd, 0, &vertexParams, sizeof(vertexParams));
+
     float3 sunDirection = GetRenderSunDirection();
     struct {
         f32 brushPosRadius[4];
         f32 sunDirection[4];
+        f32 cameraPosition[4];
+        u32 outputSize[2];
+        u32 tilesX;
+        u32 tileSize;
+        u32 localLightsEnabled;
+        u32 pad0[3];
     } fragmentParams = {0};
     fragmentParams.brushPosRadius[0] = g_TerrainBrushPosRadius[0];
     fragmentParams.brushPosRadius[1] = g_TerrainBrushPosRadius[1];
@@ -352,8 +387,16 @@ void RenderTerrain(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 vi
     fragmentParams.sunDirection[0] = sunDirection.x;
     fragmentParams.sunDirection[1] = sunDirection.y;
     fragmentParams.sunDirection[2] = sunDirection.z;
+    fragmentParams.cameraPosition[0] = g_Camera.position.x;
+    fragmentParams.cameraPosition[1] = g_Camera.position.y;
+    fragmentParams.cameraPosition[2] = g_Camera.position.z;
+    fragmentParams.outputSize[0] = width;
+    fragmentParams.outputSize[1] = height;
+    fragmentParams.tilesX = tilesX;
+    fragmentParams.tileSize = FORWARD_TILE_SIZE;
+    fragmentParams.localLightsEnabled = localLightsEnabled ? 1u : 0u;
     SDL_PushGPUFragmentUniformData(cmd, 0, &fragmentParams, sizeof(fragmentParams));
-    RenderTerrainChunkRanges(pass);
+    RenderTerrainChunkRanges(pass, g_RenderState.shadowCascadeBuffer);
 }
 
 void RenderTerrainTrianglesDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 viewProj)
@@ -362,7 +405,7 @@ void RenderTerrainTrianglesDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* p
 
     SDL_BindGPUGraphicsPipeline(pass, g_TerrainTriangleDepthPipeline);
     SDL_PushGPUVertexUniformData(cmd, 0, &viewProj, sizeof(viewProj));
-    RenderTerrainChunkRanges(pass);
+    RenderTerrainChunkRanges(pass, NULL);
 }
 
 // re-draws every selected primitive as a grown inverted hull on top of the lit scene

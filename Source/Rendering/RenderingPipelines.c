@@ -457,8 +457,8 @@ SDL_GPUGraphicsPipeline* g_TerrainTriangleDepthPipeline;
 static void InitTerrainTrianglePipeline(void)
 {
     SDL_GPUShaderFormat shaderformat = AX_GPU_SHADER_FORMAT;
-    SDL_GPUShader* vertex_shader   = PIPELINE_VERT_DEF(Shaders_TerrainChunkVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 1 }); CHECK_CREATE(vertex_shader, "Terrain Triangle Vertex Shader")
-    SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_TerrainChunkFrag_spv), .num_uniform_buffers = 1, .num_samplers = 3 }); CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
+    SDL_GPUShader* vertex_shader   = PIPELINE_VERT_DEF(Shaders_TerrainChunkVert_spv), .num_uniform_buffers = 1, .num_storage_buffers = 2 }); CHECK_CREATE(vertex_shader, "Terrain Triangle Vertex Shader")
+    SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_TerrainChunkFrag_spv), .num_uniform_buffers = 1, .num_samplers = 8, .num_storage_buffers = 5 }); CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
 
     const SDL_GPUVertexAttribute vertex_attributes[3] = {
         { .location = 0, .buffer_slot = 0, .format = VFORMAT_UINT2,  .offset = offsetof(tVertexData, position) },
