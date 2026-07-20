@@ -12,53 +12,6 @@
 
 #define T_MARCHING_DRAW_DISTANCE 250.0f
 
-typedef enum ChunkBuildState_
-{
-    // Valid lifecycle transitions:
-    // UNBUILT  -> QUEUED -> BUILDING -> PENDING -> READY
-    // UNBUILT  -> BUILDING
-    // BUILDING -> QUEUED    (job submit/drain failed; retry later)
-    // BUILDING -> READY     (build produced an empty, presentable chunk)
-    // BUILDING -> FAILED    (first build failed and no live/pending mesh exists)
-    // READY    -> PENDING   (background rebuild finished; old mesh stays visible until promote)
-    // FAILED   -> QUEUED/BUILDING
-    // READY can also have a rebuild in flight without changing state; ChunkBuildInFlight
-    // tracks that so the existing mesh/empty chunk remains presentable.
-    CHUNK_UNBUILT,
-    CHUNK_QUEUED,
-    CHUNK_BUILDING,
-    CHUNK_PENDING,
-    CHUNK_READY,
-    CHUNK_FAILED,
-    CHUNK_MAX_STATE
-} ChunkBuildState;
-
-typedef enum PendingMeshState_
-{
-    PENDING_NONE,
-    PENDING_MESH,
-    PENDING_EMPTY
-} PendingMeshState;
-
-typedef struct tChunk_
-{
-    int3   min;
-    float3 aabbMin;
-    float3 aabbMax;
-    // chunk mesh lives in the tVertexData geometry heap; the GPU mirror draws it
-    // without any per-frame copy
-    tMeshHandle mesh;
-    tMeshHandle pendingMesh;
-    u32   lastTouchedFrame;
-    u8    pendingFrames;
-    s32   physicsSlot;    // scene terrain collider slot, -1 = none. chunk indices can
-	// exceed MAX_TERRAIN_PHYSICS_CHUNKS, so slots are pooled
-    ChunkBuildState  buildState;
-    PendingMeshState pendingState;
-    bool  dirty;
-    bool  physicsDirty;
-} tChunk;
-
 typedef struct tMarchingTerrainState_
 {
     tDensityGenerator generator;
@@ -599,6 +552,7 @@ static void tFreeChunkSlot(u32 index)
     tDestroyChunkPhysics(chunk);
     tFreeMeshHandle(&chunk->mesh);
     tFreePendingMesh(chunk);
+    tFoliage_DestroyChunkFoliage(chunk);
 
     u32 lastIndex = gMarchingTerrain.chunkCount - 1u;
     if (index != lastIndex)
@@ -640,6 +594,24 @@ static bool tFreeOldestChunkSlot(bool requireMesh, bool respectKeepFrames)
     return true;
 }
 
+u32 tGetChunkCount(void) { return gMarchingTerrain.chunkCount; }
+
+tChunk* tGetChunkByIndex(u32 index)
+{
+    return index < gMarchingTerrain.chunkCount ? &gMarchingTerrain.chunks[index] : NULL;
+}
+
+tChunk* tFindChunkByMin(int3 min)
+{
+    u32* found = (u32*)HMFind(&gMarchingTerrain.chunkLookup, tChunkKey(min));
+    return found ? &gMarchingTerrain.chunks[*found] : NULL;
+}
+
+JobSystem* tGetTerrainJobSystem(void)
+{
+    return tMarchingInit() ? gMarchingTerrain.jobSystem : NULL;
+}
+
 static u32 tAllocChunkSlot(void)
 {
     if (gMarchingTerrain.chunkCount >= T_MAX_CHUNKS) 
@@ -664,6 +636,7 @@ static void tClearChunkCache(void)
         tDestroyChunkPhysics(&gMarchingTerrain.chunks[i]);
         tFreeMeshHandle(&gMarchingTerrain.chunks[i].mesh);
         tFreePendingMesh(&gMarchingTerrain.chunks[i]);
+        tFoliage_DestroyChunkFoliage(&gMarchingTerrain.chunks[i]);
     }
     gMarchingTerrain.chunkCount = 0;
     gMarchingTerrain.cacheVertices = 0u;
@@ -954,6 +927,7 @@ void tUpdate(void)
     }
 
     IntegrateFinishedBuilds();
+    tFoliage_Update();
     tResolveHeapPressure();
     tPromotePendingMeshes();
     gMarchingTerrain.frameIndex++;
@@ -1018,6 +992,7 @@ void tMarchingDestroy()
 
     RendererSetTerrainChunkDraws(NULL, 0);
     tClearChunkCache(); // drains in-flight builds first
+    tFoliage_DrainJobs();
     HMDestroy(&gMarchingTerrain.chunkLookup);
     DeAllocateTLSFGlobal(gMarchingTerrain.chunkDraws);
     DeAllocateTLSFGlobal(gMarchingTerrain.occupiedChunksBitset);

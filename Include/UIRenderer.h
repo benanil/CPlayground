@@ -21,10 +21,14 @@ typedef enum UICustomType_
 
 typedef enum UITextAreaFlagBits_
 {
-    UITextAreaFlags_CenterX = 1u << 0,
-    UITextAreaFlags_CenterY = 1u << 1,
-    UITextAreaFlags_NoWrap  = 1u << 2,
-    UITextAreaFlags_Clip    = 1u << 3
+    UITextAreaFlags_CenterX     = 1u << 0,
+    UITextAreaFlags_CenterY     = 1u << 1,
+    UITextAreaFlags_NoWrap      = 1u << 2,
+    UITextAreaFlags_Clip        = 1u << 3,
+    // shift+drag scrubs the value instead of placing a caret / selecting text.
+    // consumer (UIEditFloat/UIEditInt) reads back the accumulated pixel delta
+    // from UITextAreaCustomData.dragDeltaX next frame
+    UITextAreaFlags_NumericDrag = 1u << 4
 } UITextAreaFlagBits;
 
 typedef enum UITreeNodeFlags_
@@ -104,6 +108,7 @@ typedef struct UITextAreaCustomData_
     u32 capacity;
     u32 flags;
     u32 edited;
+    f32 dragDeltaX; // UITextAreaFlags_NumericDrag: pixel delta accumulated this frame
 } UITextAreaCustomData;
 
 void UIInit(void);
@@ -143,7 +148,9 @@ void UIButtonPopColors();
 Clay_Color UIPanelColor(void);
 
 bool   UITextArea(const char* label, float2 pos, char* buffer, u32 capacity, float2 size);
-bool   UITextAreaFlags(const char* label, float2 pos, char* buffer, u32 capacity, float2 size, u32 flags);
+// outDragDelta, when non-null, receives this frame's shift+drag pixel delta while
+// UITextAreaFlags_NumericDrag is set (0 otherwise); callers not scrubbing pass NULL
+bool   UITextAreaFlags(const char* label, float2 pos, char* buffer, u32 capacity, float2 size, u32 flags, f32* outDragDelta);
 void   UIRender(SDL_GPUCommandBuffer* cmd, SDL_GPUColorTargetInfo* colorTarget);
 UIImageData UIImageFromTexture(Texture* texture);
 

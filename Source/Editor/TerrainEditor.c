@@ -363,9 +363,43 @@ static void TerrainLayersUI(void)
     TerrainLabeledText(CLAY_ID("TerrainLayerNormal"), "Normal texture path", layer->normal, sizeof(layer->normal));
 }
 
-static void TerrainGrassUI(void)
-{
+static bool foliageTypeOpen[64];
 
+static void TerrainFoliageUI(void)
+{
+    UISectionHeader("Foliage");
+    u32 numTypes = tFoliage_NumTypes();
+    if (numTypes == 0u)
+    {
+        CLAY_TEXT(CLAY_STRING("No foliage meshes found under Assets/Foliage"), CLAY_TEXT_CONFIG({
+            .fontSize = 13,
+            .textColor = UIGetClayColor(UIColor_SubText)
+        }));
+        return;
+    }
+
+    for (u32 i = 0u; i < numTypes && i < (u32)(sizeof(foliageTypeOpen) / sizeof(foliageTypeOpen[0])); i++)
+    {
+        tFoliageParams params;
+        if (!tFoliage_GetParams(i, &params)) continue;
+
+        Clay_ElementId headerId = Clay_GetElementIdWithIndex(CLAY_STRING("FoliageTypeHeader"), i);
+        foliageTypeOpen[i] ^= UICollapsingHeader(headerId, UIStr(tFoliage_TypeName(i)), foliageTypeOpen[i]);
+        if (!foliageTypeOpen[i]) continue;
+
+        bool edited = false;
+        edited |= UICheckbox(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageEnabled"), i), CLAY_STRING("Enabled"), &params.enabled);
+        edited |= UICheckbox(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageCollider"), i), CLAY_STRING("Collider"), &params.collider);
+        edited |= UICheckbox(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageSizeVariance"), i), CLAY_STRING("Size variance (+-30%)"), &params.sizeVariance);
+        edited |= UIEditFloat(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageDensity"), i), CLAY_STRING("Density"), &params.density, 0.5f, 32.0f, 0.5f, 2);
+        edited |= UIEditFloat(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageRarity"), i), CLAY_STRING("Rarity"), &params.rarity, 0.0f, 1.0f, 0.05f, 2);
+        edited |= UIEditFloat(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageSize"), i), CLAY_STRING("Size"), &params.size, 0.05f, 5.0f, 0.05f, 2);
+
+        // params changed: bump this type's build generation so resident chunks rebuild
+        // just their foliage instances, the terrain mesh itself is left alone
+        if (edited)
+            tFoliage_SetParams(i, &params);
+    }
 }
 
 static void TerrainStatsUI(void)
@@ -428,8 +462,8 @@ void DrawTerrainWindow(bool* open)
             UIDivider(CLAY_ID("TerrainEditDivider"));
             TerrainLayersUI();
             UIDivider(CLAY_ID("TerrainLayerDivider"));
-            TerrainGrassUI();
-            UIDivider(CLAY_ID("TerrainGrassDivider"));
+            TerrainFoliageUI();
+            UIDivider(CLAY_ID("TerrainFoliageDivider"));
             TerrainStatsUI();
             CLAY_TEXT(terrainUI.lastSaveOk ? CLAY_STRING("Last save: ok") : CLAY_STRING("Last save: pending"), CLAY_TEXT_CONFIG({
                 .fontSize = 13,

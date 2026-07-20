@@ -735,6 +735,18 @@ void Render(void)
         if (enableHiZ) cullFlags |= CullDrawFlag_EnableHiZ;
         CullScene(cmd, cameraFrustum, hiZViewProj, cullFlags, ~0u);
 
+        // foliage lives in its own scene (separate render sets/textures), not merged into
+        // g_ActiveScene, so it needs the same per-frame upload+cull step done by hand here.
+        // RenderDepth/RenderSceneForward draw it as an extra pass alongside the main scene.
+        Scene* foliageScene = tFoliage_GetScene();
+        if (foliageScene && foliageScene->surfaceSet.numGroups > 0)
+        {
+            UploadRenderSetStatics(&foliageScene->surfaceSet, &foliageScene->surfaceBuffers);
+            UploadRenderSetEntities(&foliageScene->surfaceSet, &foliageScene->surfaceBuffers);
+            DispatchCullDrawArgsCompute(cmd, &foliageScene->surfaceSet, &foliageScene->surfaceBuffers,
+                                        cameraFrustum, hiZViewProj, cullFlags, ~0u, 1u, NULL);
+        }
+
         RenderDepth(cmd, &(DepthPassContext){
             .colorTarget       = &hiz_depth_target,
             .depthTarget       = &depth_target,

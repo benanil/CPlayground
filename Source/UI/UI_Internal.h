@@ -85,6 +85,7 @@ typedef struct UIContext_
     u64 active;
     u64 keyboardFocus;
     u64 textDragFocus;
+    u64 numericDragId; // shift+drag scrub owner for UITextAreaFlags_NumericDrag boxes
     u32 caret;
     u32 selectionAnchor;
     u32 nextAutoID;

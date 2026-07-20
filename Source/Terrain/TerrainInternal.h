@@ -155,6 +155,89 @@ typedef struct tMeshHandle_
     PhysicsMesh   physics;
 } tMeshHandle;
 
+typedef enum ChunkBuildState_
+{
+    // Valid lifecycle transitions:
+    // UNBUILT  -> QUEUED -> BUILDING -> PENDING -> READY
+    // UNBUILT  -> BUILDING
+    // BUILDING -> QUEUED    (job submit/drain failed; retry later)
+    // BUILDING -> READY     (build produced an empty, presentable chunk)
+    // BUILDING -> FAILED    (first build failed and no live/pending mesh exists)
+    // READY    -> PENDING   (background rebuild finished; old mesh stays visible until promote)
+    // FAILED   -> QUEUED/BUILDING
+    // READY can also have a rebuild in flight without changing state; ChunkBuildInFlight
+    // tracks that so the existing mesh/empty chunk remains presentable.
+    CHUNK_UNBUILT,
+    CHUNK_QUEUED,
+    CHUNK_BUILDING,
+    CHUNK_PENDING,
+    CHUNK_READY,
+    CHUNK_FAILED,
+    CHUNK_MAX_STATE
+} ChunkBuildState;
+
+typedef enum PendingMeshState_
+{
+    PENDING_NONE,
+    PENDING_MESH,
+    PENDING_EMPTY
+} PendingMeshState;
+
+// one procedural foliage placement living in a render set entity. sparseIdx/packed
+// address gFoliage.scene's render sets (packed = (groupIdx << 3) | renderSetIndex,
+// renderSetIndex reserved for surface/skinned/transparent, only surface used today).
+// physicsBody is a b3StoreBodyId() value in the active gameplay scene's physics world,
+// 0 when the owning foliage type has no collider
+typedef struct tFoliageEntity_
+{
+    u32 sparseIdx;
+    u32 packed;
+    u64 physicsBody;
+} tFoliageEntity;
+
+typedef struct tChunk_
+{
+    int3   min;
+    float3 aabbMin;
+    float3 aabbMax;
+    // chunk mesh lives in the tVertexData geometry heap; the GPU mirror draws it
+    // without any per-frame copy
+    tMeshHandle mesh;
+    tMeshHandle pendingMesh;
+    // procedural foliage instances for this chunk, TLSF-owned, rebuilt when
+    // foliageBuiltGen falls behind tFoliage's current generation
+    tFoliageEntity* foliageEntities;
+    u32   foliageBuiltGen;
+    u32   lastTouchedFrame;
+    u16   foliageCount;
+    bool  foliagePending; // a foliage job is queued/in-flight for this chunk
+    u8    pendingFrames;
+    s32   physicsSlot;    // scene terrain collider slot, -1 = none. chunk indices can
+	// exceed MAX_TERRAIN_PHYSICS_CHUNKS, so slots are pooled
+    ChunkBuildState  buildState;
+    PendingMeshState pendingState;
+    bool  dirty;
+    bool  physicsDirty;
+} tChunk;
+
+// resident chunk accessors for TerrainFoliage.c (MarchingTerrain.c owns the array;
+// indices are NOT stable across evictions, callers must re-resolve by position after
+// yielding a frame - tFindChunkByMin is the stable lookup)
+u32     tGetChunkCount(void);
+tChunk* tGetChunkByIndex(u32 index);
+tChunk* tFindChunkByMin(int3 min);
+JobSystem* tGetTerrainJobSystem(void);
+
+// called by MarchingTerrain.c before a chunk slot is wiped/reused (eviction, cache
+// clear, shutdown): frees the chunk's render entities, colliders and instance array
+void tFoliage_DestroyChunkFoliage(tChunk* chunk);
+// per-frame: schedules foliage (re)builds for stale resident chunks and integrates
+// finished worker jobs. called once from tUpdate
+void tFoliage_Update(void);
+// marks every in-flight foliage job slot free without integrating results, used
+// during teardown after the shared job system has already been drained
+void tFoliage_DrainJobs(void);
+
 // one in-flight chunk build on a JobSystem worker. the main thread fills the inputs,
 // launches the job and reads the outputs after JobSystem_IsJobDone; exactly one job
 // ever touches a chunk, so no locks on chunk state are needed

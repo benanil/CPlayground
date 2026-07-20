@@ -222,7 +222,8 @@ static void UIRenderLayoutCustom(const Clay_RenderCommand* command)
                             custom->buffer,
                             custom->capacity,
                             (float2){ command->boundingBox.width, command->boundingBox.height },
-                            custom->flags))
+                            custom->flags,
+                            &custom->dragDeltaX))
             custom->edited = 1u;
         return;
     }
@@ -1176,6 +1177,7 @@ typedef struct UIEditSlot_
     u64 id;
     char buffer[32];
     f32 lastValue;
+    f32 dragAccum; // UIEditInt: leftover shift+drag pixels below the per-step threshold
     UITextAreaCustomData textData;
 } UIEditSlot;
 
@@ -1200,6 +1202,7 @@ static UIEditSlot* UIGetEditSlot(Clay_ElementId id)
     empty->id = editId;
     empty->buffer[0] = '\0';
     empty->lastValue = FLT_MAX;
+    empty->dragAccum = 0.0f;
     return empty;
 }
 
@@ -1314,7 +1317,18 @@ bool UIEditInt(Clay_ElementId id, Clay_String label, f32* value, s32 minValue, s
     bool changed = false;
     bool textEdited = slot->textData.edited != 0u;
     slot->textData.edited = 0u;
+    f32 dragDelta = slot->textData.dragDeltaX;
+    slot->textData.dragDeltaX = 0.0f;
     s32 current = Clamps32((s32)(*value), minValue, maxValue);
+    if (dragDelta != 0.0f)
+    {
+        const f32 pixelsPerStep = 4.0f;
+        slot->dragAccum += dragDelta;
+        while (slot->dragAccum >= pixelsPerStep) { current = Clamps32(current + 1, minValue, maxValue); slot->dragAccum -= pixelsPerStep; }
+        while (slot->dragAccum <= -pixelsPerStep) { current = Clamps32(current - 1, minValue, maxValue); slot->dragAccum += pixelsPerStep; }
+        *value = (f32)current;
+        changed = true;
+    }
     if ((f32)current != *value)
     {
         *value = (f32)current;
@@ -1359,7 +1373,7 @@ bool UIEditInt(Clay_ElementId id, Clay_String label, f32* value, s32 minValue, s
         slot->textData.type = UICustomType_TextArea;
         slot->textData.buffer = slot->buffer;
         slot->textData.capacity = sizeof(slot->buffer);
-        slot->textData.flags = UITextAreaFlags_CenterX | UITextAreaFlags_CenterY | UITextAreaFlags_NoWrap | UITextAreaFlags_Clip;
+        slot->textData.flags = UITextAreaFlags_CenterX | UITextAreaFlags_CenterY | UITextAreaFlags_NoWrap | UITextAreaFlags_Clip | UITextAreaFlags_NumericDrag;
         CLAY(CLAY_ID_LOCAL("Text"), {
             .layout = { .sizing = { CLAY_SIZING_FIXED(72.0f), CLAY_SIZING_FIXED(28.0f) } },
             .custom = { .customData = &slot->textData }
@@ -1400,6 +1414,13 @@ bool UIEditFloat(Clay_ElementId id, Clay_String label, f32* value, f32 minValue,
     bool changed = false;
     bool textEdited = slot->textData.edited != 0u;
     slot->textData.edited = 0u;
+    f32 dragDelta = slot->textData.dragDeltaX;
+    slot->textData.dragDeltaX = 0.0f;
+    if (dragDelta != 0.0f && IsFiniteF32(*value))
+    {
+        *value = Clampf32(*value + dragDelta * step, minValue, maxValue);
+        changed = true;
+    }
     f32 current = Clampf32(IsFiniteF32(*value) ? *value : minValue, minValue, maxValue);
     if (current != *value)
     {
@@ -1444,7 +1465,7 @@ bool UIEditFloat(Clay_ElementId id, Clay_String label, f32* value, f32 minValue,
         slot->textData.type = UICustomType_TextArea;
         slot->textData.buffer = slot->buffer;
         slot->textData.capacity = sizeof(slot->buffer);
-        slot->textData.flags = UITextAreaFlags_CenterX | UITextAreaFlags_CenterY | UITextAreaFlags_NoWrap | UITextAreaFlags_Clip;
+        slot->textData.flags = UITextAreaFlags_CenterX | UITextAreaFlags_CenterY | UITextAreaFlags_NoWrap | UITextAreaFlags_Clip | UITextAreaFlags_NumericDrag;
         CLAY(CLAY_ID_LOCAL("Text"), {
             .layout = { .sizing = { CLAY_SIZING_FIXED(82.0f), CLAY_SIZING_FIXED(28.0f) } },
             .custom = { .customData = &slot->textData }

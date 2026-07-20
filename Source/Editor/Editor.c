@@ -612,7 +612,7 @@ static void DrawSettingsWindow()
 
         if (physChanged)
         {
-            Scene_PhysicsApplyWorldSettings(Scene_GetActive());
+            Scene_PhysicsApplyWorldSettings();
             PhysicsSettings_Save();
         }
 

@@ -107,17 +107,24 @@ float3 ApplyPBR(float3 albedo, float3 normal, float3 viewDir, float metallic, fl
     lightDir = normalize(lightDir);
     float3 radiance = float3(3.0f, 2.9f, 2.7f) * 2.0f;
 
-    float3 direct = ApplyPBRLight(albedo, normal, viewDir, metallic, perceptualRoughness, radiance, lightDir) * shadow;
+    // Shadow sampling keeps a 0.2 floor for non-direct ambient light. Remove that floor
+    // before applying visibility to direct BRDF terms, otherwise blocked specular leaks.
+    float directShadow = saturate((shadow - 0.2f) * 1.25f);
+    float3 direct = ApplyPBRLight(albedo, normal, viewDir, metallic, perceptualRoughness, radiance, lightDir) * directShadow;
     float3 ambient = albedo * 0.1f * saturate(ao);
     return ambient + direct;
 }
 
 float3 ApplyPBRLight(float3 albedo, float3 normal, float3 viewDir, float metallic, float perceptualRoughness, float3 radiance, float3 lightDir)
 {
-    metallic = 0.0f;
+    // metallic = 0.0f;
     normal    = normalize(normal);
     viewDir   = normalize(viewDir);
     lightDir  = normalize(lightDir);
+    // Double-sided foliage can render its back face with the original sun-facing normal.
+    // Orient both sides toward the viewer so backfaces do not receive lighting from behind.
+    if (dot(normal, viewDir) < 0.0f)
+        normal = -normal;
     perceptualRoughness = clamp(perceptualRoughness, 0.045f, 1.0f);
     float roughness = PerceptualRoughnessToRoughness(perceptualRoughness);
     metallic  = saturate(metallic);
@@ -133,7 +140,7 @@ float3 ApplyPBRLight(float3 albedo, float3 normal, float3 viewDir, float metalli
     float3 F = Fresnel(f0, HdotV);
     float D = Distribution(roughness, NdotH, normal, halfVec);
     float V = Visibility(roughness, NdotV, NdotL);
-    float diffuse = Diffuse(roughness, NdotV, NdotL, HdotV);
+    float diffuse = Diffuse(roughness, NdotV, NdotL, HdotV)*2.0;
 
     float3 specular = D * V * F;
     float3 diffuseColor = (1.0f - F) * (1.0f - metallic) * albedo * diffuse;

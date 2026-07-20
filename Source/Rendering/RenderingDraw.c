@@ -74,6 +74,22 @@ void RenderDepth(SDL_GPUCommandBuffer* cmd, const DepthPassContext* ctx)
     const SDL_GPUBufferBinding surfaceVertex = { g_RenderState.surface.vertexBuffer, 0 };
     DrawRenderBufferDepth(cmd, pass, false, scene, surfaceVertex, albedoSampler, ctx, fragmentBuffers);
 
+    // foliage: separate scene (own texture system/material buffers), same shared
+    // vertex/index geometry heap, drawn as an extra pass in the same render pass
+    Scene* foliageScene = tFoliage_GetScene();
+    if (foliageScene && foliageScene->surfaceSet.numGroups > 0)
+    {
+        SDL_GPUTextureSamplerBinding foliageAlbedoSampler = {
+            .texture = foliageScene->textureSystem.classes[TextureClass_Albedo].pages.handle,
+            .sampler = g_RenderState.sampler
+        };
+        SDL_GPUBuffer* foliageFragmentBuffers[2] = {
+            foliageScene->textureSystem.materialBuffer,
+            foliageScene->textureSystem.descriptorBuffer
+        };
+        DrawRenderBufferDepth(cmd, pass, false, foliageScene, surfaceVertex, foliageAlbedoSampler, ctx, foliageFragmentBuffers);
+    }
+
     // terrain draws into the main depth prepass only, it does not cast shadows yet
     if ((ctx->flags & DepthPassFlag_AnyShadow) == 0)
     {
@@ -231,6 +247,27 @@ void RenderSceneForward(SDL_GPUCommandBuffer* cmd, const ScenePassContext* ctx, 
     DrawRenderBufferForward(cmd, pass, false, scene, &scene->surfaceSet, &scene->surfaceBuffers,
                             g_RenderState.surface.forwardPipeline, surfaceVertex, fragmentSamplers, fragmentBuffers,
                             &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
+
+    // foliage: separate scene (own texture system/material buffers, shares everything
+    // else - shadows/AO/lights are global), same shared geometry heap
+    Scene* foliageScene = tFoliage_GetScene();
+    if (foliageScene && foliageScene->surfaceSet.numGroups > 0)
+    {
+        SDL_GPUTextureSamplerBinding foliageFragmentSamplers[8];
+        MemCopy(foliageFragmentSamplers, fragmentSamplers, sizeof(fragmentSamplers));
+        foliageFragmentSamplers[0].texture = foliageScene->textureSystem.classes[TextureClass_Albedo].pages.handle;
+        foliageFragmentSamplers[1].texture = foliageScene->textureSystem.classes[TextureClass_Normal].pages.handle;
+        foliageFragmentSamplers[2].texture = foliageScene->textureSystem.classes[TextureClass_MetallicRoughness].pages.handle;
+
+        SDL_GPUBuffer* foliageFragmentBuffers[7];
+        MemCopy(foliageFragmentBuffers, fragmentBuffers, sizeof(fragmentBuffers));
+        foliageFragmentBuffers[0] = foliageScene->textureSystem.materialBuffer;
+        foliageFragmentBuffers[1] = foliageScene->textureSystem.descriptorBuffer;
+
+        DrawRenderBufferForward(cmd, pass, false, foliageScene, &foliageScene->surfaceSet, &foliageScene->surfaceBuffers,
+                                g_RenderState.surface.forwardPipeline, surfaceVertex, foliageFragmentSamplers, foliageFragmentBuffers,
+                                &vertexParams, sizeof(vertexParams), &fragmentParams, sizeof(fragmentParams));
+    }
 
     RenderTerrain(cmd, pass, ctx->viewProj);
     tRenderGrass(cmd, pass);

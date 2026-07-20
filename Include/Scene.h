@@ -99,7 +99,6 @@ typedef struct Scene_
     u32 renderDataDirty; // static render set buffers need re-upload, consumed by Render
     u32 texturesBaked;   // pages came from a baked atlas, packer state is unusable until a repack
 
-	b3WorldId physicsWorldID;
 	bool physicsReady;
 	// static collision mesh handles, one per primitive group of each static render set. shapes
 	// reference these (box3d does not copy mesh data), so they must outlive the world.
@@ -170,14 +169,22 @@ s32 Scene_Activate(Scene* scene);
 
 void Scene_Deactivate(Scene* scene);
 
+// the box3d world is a single global, scene independent instance (Physics_Init creates
+// it lazily on first use) so bodies from different scenes - including gFoliage's private
+// scene - can physically interact. Scene_InitPhysics/Scene_PhysicsDestroy only manage the
+// scene's own body/mesh bookkeeping inside that shared world.
+void Physics_Init(void);
+void Physics_Destroy(void);
+b3WorldId Physics_GetWorld(void);
+
 void Scene_InitPhysics(Scene* scene);
 void Scene_PhysicsDestroy(Scene* scene);
 void Scene_PhysicsUpdate(Scene* scene, float deltaTime);
 // loads/saves g_PhysicsSettings from PhysicsSettings.txt (load is one-shot, cached).
 void PhysicsSettings_Load(void);
 void PhysicsSettings_Save(void);
-// pushes g_PhysicsSettings (gravity/sleep/continuous) onto the scene's live world.
-void Scene_PhysicsApplyWorldSettings(Scene* scene);
+// pushes g_PhysicsSettings (gravity/sleep/continuous) onto the shared physics world.
+void Scene_PhysicsApplyWorldSettings(void);
 
 // builds a static rigid body with a triangle-mesh collider for every static mesh instance in the
 // scene's surface render sets. call once after a scene finishes loading.

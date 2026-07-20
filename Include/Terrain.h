@@ -98,7 +98,33 @@ typedef struct TerrainStats_
     u32 numIndices;
 } TerrainStats;
 
+// discrete procedural foliage (trees/rocks/props): one entity per placement, built by
+// worker jobs and attached to the resident terrain chunks. TerrainFoliage.c owns this.
+typedef struct tFoliageParams_
+{
+    f32  density;      // meters between placement grid samples, smaller = denser
+    f32  rarity;       // 0..1, higher = sparser (noise gate threshold)
+    f32  size;         // uniform scale multiplier, 1.0 = native mesh size
+    bool enabled;
+    bool collider;      // spawn a static physics collider per instance
+    bool sizeVariance;  // +-30% random scale spread on top of size, when enabled
+} tFoliageParams;
+
 void tFoliage_Init();
+void tFoliage_Destroy();
+// the scene foliage entities render into (separate from g_ActiveScene, drawn by an
+// explicit extra pass in RenderDepth/RenderSceneForward). NULL only before tFoliage_Init
+struct Scene_* tFoliage_GetScene(void);
+
+// one folliage type per mesh discovered under Assets/Foliage. index is stable for the
+// process lifetime (load order), used by the editor to bind per-type UI and params
+u32         tFoliage_NumTypes(void);
+// display label for the editor: file name without directory/extension
+const char* tFoliage_TypeName(u32 index);
+bool        tFoliage_GetParams(u32 index, tFoliageParams* out);
+// bumps the type's generation: every resident chunk rebuilds its foliage set (not its
+// terrain mesh) over the next few frames, throttled the same way chunk streaming is
+void        tFoliage_SetParams(u32 index, const tFoliageParams* params);
 
 void tUpdate(void);
 void tInvalidateAll(void);

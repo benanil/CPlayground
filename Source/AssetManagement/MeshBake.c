@@ -120,24 +120,65 @@ static void IndicesForPrimitive(APrimitive* primitive, u32* currIndices, const u
     }
 }
 
-static void VerticesForPrimitive(APrimitive* primitive, ASkinedVertex* currVertex)
+static float3* GeneratePrimitiveNormals(const APrimitive* primitive, u32 vertexBase)
+{
+    const float3* positions = (const float3*)primitive->vertexAttribs[AAttribIdx_POSITION];
+    const u32* indices = (const u32*)primitive->indices;
+    float3* normals = (float3*)ArenaPushGlobal((u64)(primitive->numVertices + 1) * sizeof(float3));
+    MemsetZero(normals, (u64)(primitive->numVertices + 1) * sizeof(float3));
+
+    for (s32 i = 0; i + 2 < primitive->numIndices; i += 3)
+    {
+        u32 global0 = indices[i + 0];
+        u32 global1 = indices[i + 1];
+        u32 global2 = indices[i + 2];
+        if (global0 < vertexBase || global1 < vertexBase || global2 < vertexBase)
+            continue;
+
+        u32 i0 = global0 - vertexBase;
+        u32 i1 = global1 - vertexBase;
+        u32 i2 = global2 - vertexBase;
+        if (i0 >= (u32)primitive->numVertices || i1 >= (u32)primitive->numVertices || i2 >= (u32)primitive->numVertices)
+            continue;
+
+        float3 edge0 = F3Sub(positions[i1], positions[i0]);
+        float3 edge1 = F3Sub(positions[i2], positions[i0]);
+        float3 faceNormal = F3Cross(&edge0, &edge1);
+        normals[i0] = F3Add(normals[i0], faceNormal);
+        normals[i1] = F3Add(normals[i1], faceNormal);
+        normals[i2] = F3Add(normals[i2], faceNormal);
+    }
+
+    for (s32 i = 0; i < primitive->numVertices; i++)
+    {
+        float3 normal = normals[i];
+        float lengthSquared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
+        normals[i] = lengthSquared > 0.000001f ? F3NormSafe(normal) : (float3){0.0f, 0.0f, 1.0f};
+    }
+    return normals;
+}
+
+static void VerticesForPrimitive(APrimitive* primitive, ASkinedVertex* currVertex, u32 vertexBase)
 {
     primitive->vertices = currVertex;
     const float3* positions  = (const float3*)primitive->vertexAttribs[AAttribIdx_POSITION];
     const float2* texCoords  = (const float2*)primitive->vertexAttribs[AAttribIdx_TEXCOORD_0];
     const float3* normals    = (const float3*)primitive->vertexAttribs[AAttribIdx_NORMAL];
     const v128f* tangents    = (const v128f*)primitive->vertexAttribs[AAttribIdx_TANGENT];
+    float3* generatedNormals = normals ? NULL : GeneratePrimitiveNormals(primitive, vertexBase);
+    if (generatedNormals) normals = generatedNormals;
 
     for (s32 v = 0; v < primitive->numVertices; v++)
     {
         v128f tangent = tangents  ? tangents[v]  : VecZero();
         float2 texCoord  = texCoords ? texCoords[v] : (float2){0.0f, 0.0f};
-        float3 normal    = normals   ? normals[v]   : (float3){0.5f, 0.5f, 0.0};
+        float3 normal    = normals[v];
 
         Float4ToHalf4((f16*)&currVertex[v].positionXY, &positions[v].x);
         currVertex[v].texCoord = Float2ToHalf2(&texCoord.x);
         currVertex[v].octTbn = PackNormalTangent(Vec3Load(&normal.x), tangent);
     }
+    if (generatedNormals) ArenaPopGlobal((u64)(primitive->numVertices + 1) * sizeof(float3));
 }
 
 static f32 ReadColorChannel(const u8* src, s32 type)
@@ -177,13 +218,15 @@ static u16 PackVertexColorRGBA4444(const APrimitive* primitive, s32 vertexIndex)
 // Requires primitive->min/max to be set first (BoundsForPrimitive). Positions are quantized
 // to xyz unorm16 relative to the primitive AABB; the vertex/depth/shadow shaders and the BVH
 // de-quantize with the same AABB (PrimitiveGroup.aabbMin/aabbMax == primitive->min/max).
-static void SurfaceVerticesForPrimitive(APrimitive* primitive, AVertex* currVertex)
+static void SurfaceVerticesForPrimitive(APrimitive* primitive, AVertex* currVertex, u32 vertexBase)
 {
     primitive->vertices = currVertex;
     const float3* positions = (const float3*)primitive->vertexAttribs[AAttribIdx_POSITION];
     const float2* texCoords = (const float2*)primitive->vertexAttribs[AAttribIdx_TEXCOORD_0];
     const float3* normals   = (const float3*)primitive->vertexAttribs[AAttribIdx_NORMAL];
     const v128f*  tangents  = (const v128f*)primitive->vertexAttribs[AAttribIdx_TANGENT];
+    float3* generatedNormals = normals ? NULL : GeneratePrimitiveNormals(primitive, vertexBase);
+    if (generatedNormals) normals = generatedNormals;
 
     v128f aabbMin    = VecLoad(primitive->min);
     // guard against a zero-extent axis (planar mesh) so the divide can't produce NaN
@@ -194,7 +237,7 @@ static void SurfaceVerticesForPrimitive(APrimitive* primitive, AVertex* currVert
     {
         v128f tangent   = tangents ? tangents[v] : VecZero();
         float2 texCoord = texCoords ? texCoords[v] : (float2){0.0f, 0.0f};
-        float3 normal   = normals ? normals[v] : (float3){0.5f, 0.5f, 0.0f};
+        float3 normal   = normals[v];
 
         v128f unorm = VecMul(VecSub(VecLoad(&positions[v].x), aabbMin), invExtent);
         u64 packedPosition = PackUnorm16x4(unorm); // PackUnorm16x4 clamps to [0,1]
@@ -204,13 +247,15 @@ static void SurfaceVerticesForPrimitive(APrimitive* primitive, AVertex* currVert
     }
 	
 	const u8* colors = (const u8*)primitive->vertexAttribs[AAttribIdx_COLOR_0];
-    if (!colors || primitive->colorCount < 3) return;
-
-	for (s32 v = 0; v < primitive->numVertices; v++)
+	if (colors && primitive->colorCount >= 3)
 	{
-        currVertex[v].position &= 0x0000FFFFFFFFFFFFull; // clear vertex color
-		currVertex[v].position |= (u64)PackVertexColorRGBA4444(primitive, v) << 48u;
+	    for (s32 v = 0; v < primitive->numVertices; v++)
+	    {
+            currVertex[v].position &= 0x0000FFFFFFFFFFFFull; // clear vertex color
+		    currVertex[v].position |= (u64)PackVertexColorRGBA4444(primitive, v) << 48u;
+	    }
 	}
+	if (generatedNormals) ArenaPopGlobal((u64)(primitive->numVertices + 1) * sizeof(float3));
 }
 
 static void BoundsForPrimitive(APrimitive* primitive)
@@ -606,7 +651,7 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
             BoundsForPrimitive(primitive);
             if (isSkinned)
             {
-                VerticesForPrimitive(primitive, currSkinnedVertex);
+                VerticesForPrimitive(primitive, currSkinnedVertex, primitiveVertexCursor);
                 JointsForPrimitive(primitive, currSkinnedVertex);
                 WeightsForPrimitive(primitive, currSkinnedVertex);
                 currSkinnedVertex += primitive->numVertices;
@@ -614,7 +659,7 @@ s32 BakeSceneMeshesAndAnimations(SceneBundle* gltf, void** outVertexHeapPtr, voi
             }
             else
             {
-                SurfaceVerticesForPrimitive(primitive, currSurfaceVertex);
+                SurfaceVerticesForPrimitive(primitive, currSurfaceVertex, primitiveVertexCursor);
                 currSurfaceVertex += primitive->numVertices;
                 // Optimize LOD0 index order before LODs are generated from it.
                 OptimizePrimitiveVertexCache(currIndices, primitive->numIndices, primitive->numVertices, primitiveVertexCursor);

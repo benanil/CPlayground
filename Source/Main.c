@@ -140,7 +140,9 @@ static void SDLCALL MainAppQuit(void* appstate, SDL_AppResult result)
 {
     (void)appstate;
     (void)result;
+    tFoliage_Destroy();
     tDestroy();
+    Physics_Destroy();
 }
 
 s32 main(s32 argc, char* argv[])

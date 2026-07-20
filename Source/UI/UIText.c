@@ -605,7 +605,7 @@ static void UISetKeyboardFocus(u64 id)
     else SDL_StopTextInput(g_SDLWindow);
 }
 
-bool UITextAreaFlags(const char* label, float2 pos, char* buffer, u32 capacity, float2 size, u32 flags)
+bool UITextAreaFlags(const char* label, float2 pos, char* buffer, u32 capacity, float2 size, u32 flags, f32* outDragDelta)
 {
     f32 labelFontSize = 32.0f * UIGetFloat(UIFloat_TextScale) * g_UI.uiScale;
     if (label) SlugAppendText2D(NULL, label, pos, labelFontSize, UIGetColor(UIColor_Text));
@@ -635,20 +635,37 @@ bool UITextAreaFlags(const char* label, float2 pos, char* buffer, u32 capacity, 
     u32 len = UIStringLength(buffer, capacity);
     static UITextLayout layout;
     UITextBuildLayout(buffer ? buffer : "?", len, textPos, UIGetFloat(UIFloat_TextScale), multiline, &layout);
+    bool numericDrag = (flags & UITextAreaFlags_NumericDrag) != 0u;
+    bool shiftHeld = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
     if (GetMousePressed(MouseButton_Left))
     {
         if (hovered)
         {
-            UISetKeyboardFocus(id);
-            bool shift = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
-            UISetCaret(UITextLayoutHitTest(&layout, g_UI.mouse), shift);
-            g_UI.textDragFocus = id;
+            if (numericDrag && shiftHeld)
+            {
+                UISetKeyboardFocus(0u);
+                g_UI.numericDragId = id;
+            }
+            else
+            {
+                UISetKeyboardFocus(id);
+                UISetCaret(UITextLayoutHitTest(&layout, g_UI.mouse), shiftHeld);
+                g_UI.textDragFocus = id;
+            }
         }
         else if (g_UI.keyboardFocus == id) UISetKeyboardFocus(0u);
     }
     if (g_UI.textDragFocus == id && GetMouseDown(MouseButton_Left))
     {
         UISetCaret(UITextLayoutHitTest(&layout, g_UI.mouse), true);
+    }
+    if (numericDrag && g_UI.numericDragId == id)
+    {
+        if (GetMouseDown(MouseButton_Left))
+        {
+            if (outDragDelta) *outDragDelta = g_UI.mouse.x - g_UI.mouseOld.x;
+        }
+        else g_UI.numericDragId = 0u;
     }
     focused = g_UI.keyboardFocus == id;
 
@@ -679,5 +696,5 @@ bool UITextAreaFlags(const char* label, float2 pos, char* buffer, u32 capacity, 
 
 bool UITextArea(const char* label, float2 pos, char* buffer, u32 capacity, float2 size)
 {
-    return UITextAreaFlags(label, pos, buffer, capacity, size, 0);
+    return UITextAreaFlags(label, pos, buffer, capacity, size, 0, NULL);
 }

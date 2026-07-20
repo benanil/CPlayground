@@ -71,13 +71,20 @@ void PhysicsSettings_Load(void)
 	FreeAllText(text);
 }
 
-void Scene_PhysicsApplyWorldSettings(Scene* scene)
+// single global box3d world, independent of any Scene's lifetime. bodies from every
+// scene (including gFoliage's private one) live here so they can physically interact.
+static b3WorldId gPhysicsWorld = { 0 };
+static JobSystem* gPhysicsJobSystem = NULL;
+
+b3WorldId Physics_GetWorld(void) { return gPhysicsWorld; }
+
+void Scene_PhysicsApplyWorldSettings(void)
 {
-	if (!scene || B3_IS_NULL(scene->physicsWorldID)) return;
+	if (B3_IS_NULL(gPhysicsWorld)) return;
 	const PhysicsSettings* s = &g_PhysicsSettings;
-	b3World_SetGravity(scene->physicsWorldID, (b3Vec3){ s->gravity[0], s->gravity[1], s->gravity[2] });
-	b3World_EnableSleeping(scene->physicsWorldID, s->enableSleep);
-	b3World_EnableContinuous(scene->physicsWorldID, s->enableContinuous);
+	b3World_SetGravity(gPhysicsWorld, (b3Vec3){ s->gravity[0], s->gravity[1], s->gravity[2] });
+	b3World_EnableSleeping(gPhysicsWorld, s->enableSleep);
+	b3World_EnableContinuous(gPhysicsWorld, s->enableContinuous);
 }
 
 // b3EnqueueTaskCallback: box3d's b3TaskCallback (void(void*)) matches JobSystemFn directly, so the
@@ -105,21 +112,38 @@ static void PhysicsFinishTask(void* userTask, void* userContext)
     JobSystem_WaitJob(jobSystem, handle);
 }
 
-void Scene_InitPhysics(Scene* scene)
+void Physics_Init(void)
 {
+	if (B3_IS_NON_NULL(gPhysicsWorld)) return;
+
 	b3Version version = b3GetVersion();
 	AX_LOG("Box3D version %d.%d.%d\n", version.major, version.minor, version.revision);
 	PhysicsSettings_Load();
 
-	JobSystem* physicsJobSystem = JobSystem_Create(0, 0);
+	gPhysicsJobSystem = JobSystem_Create(0, 0);
 	b3WorldDef worldDef      = b3DefaultWorldDef();
-	worldDef.workerCount     = JobSystem_GetThreadCount(physicsJobSystem);
+	worldDef.workerCount     = JobSystem_GetThreadCount(gPhysicsJobSystem);
 	worldDef.enqueueTask     = PhysicsEnqueueTask;
 	worldDef.finishTask      = PhysicsFinishTask;
-	worldDef.userTaskContext = physicsJobSystem;
+	worldDef.userTaskContext = gPhysicsJobSystem;
 
-	scene->physicsWorldID = b3CreateWorld(&worldDef);
-	Scene_PhysicsApplyWorldSettings(scene);
+	gPhysicsWorld = b3CreateWorld(&worldDef);
+	Scene_PhysicsApplyWorldSettings();
+}
+
+void Physics_Destroy(void)
+{
+	if (B3_IS_NON_NULL(gPhysicsWorld))
+		b3DestroyWorld(gPhysicsWorld);
+	gPhysicsWorld = b3_nullWorldId;
+	if (gPhysicsJobSystem)
+		JobSystem_Destroy(gPhysicsJobSystem);
+	gPhysicsJobSystem = NULL;
+}
+
+void Scene_InitPhysics(Scene* scene)
+{
+	Physics_Init();
 	scene->surfacePhysicsBodies = (b3BodyId*)AllocZeroTLSFGlobal(scene->surfaceSet.maxEntities, sizeof(b3BodyId));
 	scene->transparentPhysicsBodies = (b3BodyId*)AllocZeroTLSFGlobal(scene->transparentSet.maxEntities, sizeof(b3BodyId));
 	if (!scene->surfacePhysicsBodies || !scene->transparentPhysicsBodies)
@@ -128,12 +152,13 @@ void Scene_InitPhysics(Scene* scene)
 
 static void PhysicsDestroyMeshStorage(Scene* scene, bool transparent);
 static void PhysicsDestroyTerrainMeshStorage(Scene* scene);
+static void PhysicsDestroyLiveStaticColliders(Scene* scene);
 
 void Scene_PhysicsDestroy(Scene* scene)
 {
-	// destroy the world first, it releases the shapes that reference the mesh data, then the meshes
-	if (B3_IS_NON_NULL(scene->physicsWorldID))
-		b3DestroyWorld(scene->physicsWorldID);
+	// the world is shared with every other scene now, so this scene's bodies must be
+	// destroyed individually instead of tearing down the whole world
+	PhysicsDestroyLiveStaticColliders(scene);
 
 	PhysicsDestroyMeshStorage(scene, false);
 	PhysicsDestroyMeshStorage(scene, true);
@@ -149,7 +174,6 @@ void Scene_PhysicsDestroy(Scene* scene)
 	SDL_SetAtomicInt(&scene->physicsColliderBuildDone, 0);
 	scene->physicsColliderBuildCallback = NULL;
 	scene->physicsColliderBuildResult = 0;
-	scene->physicsWorldID = b3_nullWorldId;
 	MemSet(scene->terrainPhysicsBodies, 0, sizeof(b3BodyId) * MAX_TERRAIN_PHYSICS_CHUNKS);
 	MemSet(scene->terrainPhysicsMeshes, 0, sizeof(b3MeshData*) * MAX_TERRAIN_PHYSICS_CHUNKS);
 }
@@ -248,13 +272,13 @@ void Scene_PhysicsUpdate(Scene* scene, float deltaTime)
 		if (callback) callback(scene, scene->physicsColliderBuildResult);
 	}
 
-	b3World_Step(scene->physicsWorldID, deltaTime, (int)g_PhysicsSettings.substepCount);
+	b3World_Step(gPhysicsWorld, deltaTime, (int)g_PhysicsSettings.substepCount);
 
 	// Write moved bodies back onto their entities. Move events only report bodies
 	// that actually changed this step (dynamic/kinematic), so we skip the static
 	// majority instead of scanning every entity. userData encodes the sparse id
 	// and which set (surface/transparent) the body belongs to.
-	b3BodyEvents events = b3World_GetBodyEvents(scene->physicsWorldID);
+	b3BodyEvents events = b3World_GetBodyEvents(gPhysicsWorld);
 	for (int i = 0; i < events.moveCount; i++)
 	{
 		const b3BodyMoveEvent* move = &events.moveEvents[i];
@@ -401,7 +425,7 @@ static void Scene_PhysicsCreateEntityBody(Scene* scene, bool transparent, u32 gr
 	bd.position   = ToB3Vec3(entity->position);
 	bd.rotation   = ToB3Quat(UnpackQuaternionS16Norm1(entity->rotation));
 	bd.userData   = (void*)PhysicsBodyUserData(entity->sparseIdx, transparent);
-	b3BodyId body = b3CreateBody(scene->physicsWorldID, &bd);
+	b3BodyId body = b3CreateBody(gPhysicsWorld, &bd);
 	b3ShapeDef sd = b3DefaultShapeDef();
 	sd.filter.categoryBits = transparent ? PHYS_CAT_TRANSPARENT : PHYS_CAT_SURFACE;
 	b3ShapeId shape = b3CreateMeshShape(body, &sd, mesh, ToB3Vec3(EntityUnpackWorldScale(entity->scale)));
@@ -475,7 +499,7 @@ bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
                                        b3Vec3* vertices, u32 vertexCount,
                                        s32* indices, u32 indexCount)
 {
-	if (!scene || B3_IS_NULL(scene->physicsWorldID)) return false;
+	if (!scene || B3_IS_NULL(gPhysicsWorld)) return false;
 	if (chunkSlot >= MAX_TERRAIN_PHYSICS_CHUNKS) return false;
 	if (!vertices || !indices || vertexCount == 0u || indexCount < 3u) return false;
 
@@ -499,7 +523,7 @@ bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
 		b3BodyDef bd = b3DefaultBodyDef();
 		bd.type     = b3_staticBody;
 		bd.userData = (void*)PhysicsTerrainUserData(chunkSlot);
-		body = b3CreateBody(scene->physicsWorldID, &bd);
+		body = b3CreateBody(gPhysicsWorld, &bd);
 
 		b3ShapeDef sd = b3DefaultShapeDef();
 		sd.filter.categoryBits = PHYS_CAT_SURFACE;
@@ -888,7 +912,7 @@ s32 Scene_PhysicsRaycastPick(const Scene* scene, v128f origin, v128f dir, BVHHit
 	b3QueryFilter filter = b3DefaultQueryFilter();
 	filter.maskBits = PHYS_CAT_SURFACE; // exclude transparent (and any future non-pickable) colliders
 
-	b3RayResult r = b3World_CastRayClosest(scene->physicsWorldID, ToB3Vec3(origin),
+	b3RayResult r = b3World_CastRayClosest(gPhysicsWorld, ToB3Vec3(origin),
 	                                       ToB3Vec3(VecMulf(dir, PHYS_PICK_MAX_DIST)), filter);
 	if (!r.hit) return 0;
 
