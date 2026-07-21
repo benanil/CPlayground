@@ -92,7 +92,7 @@ float3 DecodeNormalRG(float2 normalRG)
 
 float3 ApplyPBRLight(float3 albedo, float3 normal, float3 viewDir, float metallic, float perceptualRoughness, float3 radiance, float3 lightDir);
 
-float3 ApplyPBR(float3 albedo, float3 normal, float3 viewDir, float metallic, float perceptualRoughness, float shadow, float ao, float3 lightDir)
+float3 ApplyPBR(float3 albedo, float3 normal, float3 viewDir, float metallic, float perceptualRoughness, float shadow, float ao, float3 lightDir, float ambientBoost = 1.0f)
 {
     normal    = normalize(normal);
 
@@ -105,13 +105,13 @@ float3 ApplyPBR(float3 albedo, float3 normal, float3 viewDir, float metallic, fl
     #endif
 
     lightDir = normalize(lightDir);
-    float3 radiance = float3(3.0f, 2.9f, 2.7f) * 2.0f;
+    float3 radiance = float3(3.0f, 2.9f, 2.7f) * 4.0f;
 
     // Shadow sampling keeps a 0.2 floor for non-direct ambient light. Remove that floor
     // before applying visibility to direct BRDF terms, otherwise blocked specular leaks.
     float directShadow = saturate((shadow - 0.2f) * 1.25f);
     float3 direct = ApplyPBRLight(albedo, normal, viewDir, metallic, perceptualRoughness, radiance, lightDir) * directShadow;
-    float3 ambient = albedo * 0.1f * saturate(ao);
+	float3 ambient = albedo * 0.10f * saturate(ao) * ambientBoost;
     return ambient + direct;
 }
 
@@ -140,7 +140,7 @@ float3 ApplyPBRLight(float3 albedo, float3 normal, float3 viewDir, float metalli
     float3 F = Fresnel(f0, HdotV);
     float D = Distribution(roughness, NdotH, normal, halfVec);
     float V = Visibility(roughness, NdotV, NdotL);
-    float diffuse = Diffuse(roughness, NdotV, NdotL, HdotV)*2.0;
+    float diffuse = Diffuse(roughness, NdotV, NdotL, HdotV);
 
     float3 specular = D * V * F;
     float3 diffuseColor = (1.0f - F) * (1.0f - metallic) * albedo * diffuse;

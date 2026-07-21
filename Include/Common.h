@@ -29,6 +29,12 @@ extern "C" {
     #define ALIGNAS(n) __attribute__((aligned(n)))
 #endif
 
+#if defined(_MSC_VER)
+	#define ALIGNSIMD __declspec(align(SIMD_NUM_BYTES))
+#elif defined(__GNUC__) || defined(__clang__)
+	#define ALIGNSIMD __attribute__((aligned(SIMD_NUM_BYTES)))
+#endif
+
 #if AX_COMPILER_HAS_BUILTIN(__builtin_assume)
     #define AX_ASSUME(x) __builtin_assume(x)
 #elif defined(_MSC_VER)
@@ -608,11 +614,6 @@ static inline int StringLengthSafe(const char* s, size_t maxLen)
     return 0; // unterminated
 }
 
-#define forii(n) for (int ii=0; ii<n; ++ii)
-#define forjj(n) for (int jj=0; jj<n; ++jj)
-#define forkk(n) for (int kk=0; kk<n; ++kk)
-#define forll(n) for (int ll=0; ll<n; ++ll)
-
 purefn const char* GetFileName(const char* path)
 {
     int length = StringLength(path);
@@ -628,6 +629,15 @@ static inline bool IsMobilePlatform()
     #else
     return false;
     #endif
+}
+
+static inline bool IsDebugMode()
+{
+	#if defined(_DEBUG) || defined(DEBUG) || defined(Debug)
+	return true; 
+	#else 
+	return false;
+	#endif
 }
 
 #ifndef PLATFORM_MACOSX

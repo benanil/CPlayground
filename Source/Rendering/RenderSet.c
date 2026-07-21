@@ -350,8 +350,7 @@ static u32 LeaveSpaceForEntities(RenderSet* set, u32 primitiveIdx, u32 numAdded)
 u32 RenderSet_AddEntities(RenderSet* set, u32 primitiveIdx, u32 numAdded, const Entity* data)
 {
     u32 startIdx = LeaveSpaceForEntities(set, primitiveIdx, numAdded);
-    if (startIdx == INVALID_ENTITY)
-    {
+    if (startIdx == INVALID_ENTITY) {
         FreeSparseIDRange(set, data[0].sparseIdx, numAdded);
         return INVALID_ENTITY;
     }

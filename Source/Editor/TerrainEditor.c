@@ -78,17 +78,17 @@ static void TerrainEditorInit(void)
     TerrainSyncScenePath();
     terrainUI.seed           = 1.0f;
     terrainUI.seaLevel       = 0.0f;
-    terrainUI.baseHeight     = -8.0f;
-    terrainUI.hillAmplitude  = 0.6f;
-    terrainUI.hillFrequency  = 0.7f;
+    terrainUI.baseHeight     = -5.0f;
+    terrainUI.hillAmplitude  = 0.4f;
+    terrainUI.hillFrequency  = 0.5f;
     terrainUI.ridgeAmplitude = 0.5f;
-    terrainUI.ridgeFrequency = 0.35f;
-    terrainUI.caveAmplitude  = 0.8f;
+    terrainUI.ridgeFrequency = 0.2f;
+    terrainUI.caveAmplitude  = 0.3f;
     terrainUI.caveFrequency  = 0.045f;
     terrainUI.fixedWorldSize = (f32)TERRAIN_FIXED_WORLD_DEFAULT_SIZE;
-    terrainUI.islandRadius   = 250.0f;
-    terrainUI.islandFalloff  = 120.0f;
-    terrainUI.brushRadius    = 10.0f;
+    terrainUI.islandRadius   = 160.0f;
+    terrainUI.islandFalloff  = 100.0f;
+    terrainUI.brushRadius    = 6.0f;
     terrainUI.brushStrength  = 1.0f;
     terrainUI.brushSoftness  = 0.5f;
     // paint-layer and grass defaults are owned by Terrain.c (Terrain_GetAuthoring),
@@ -390,10 +390,10 @@ static void TerrainFoliageUI(void)
         bool edited = false;
         edited |= UICheckbox(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageEnabled"), i), CLAY_STRING("Enabled"), &params.enabled);
         edited |= UICheckbox(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageCollider"), i), CLAY_STRING("Collider"), &params.collider);
-        edited |= UICheckbox(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageSizeVariance"), i), CLAY_STRING("Size variance (+-30%)"), &params.sizeVariance);
+        edited |= UICheckbox(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageSizeVariance"), i), CLAY_STRING("Size variance (+-20%)"), &params.sizeVariance);
         edited |= UIEditFloat(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageDensity"), i), CLAY_STRING("Density"), &params.density, 0.5f, 32.0f, 0.5f, 2);
         edited |= UIEditFloat(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageRarity"), i), CLAY_STRING("Rarity"), &params.rarity, 0.0f, 1.0f, 0.05f, 2);
-        edited |= UIEditFloat(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageSize"), i), CLAY_STRING("Size"), &params.size, 0.05f, 5.0f, 0.05f, 2);
+        edited |= UIEditFloat(Clay_GetElementIdWithIndex(CLAY_STRING("FoliageSize"), i), CLAY_STRING("Size"), &params.size, 0.05f, 10.0f, 0.05f, 2);
 
         // params changed: bump this type's build generation so resident chunks rebuild
         // just their foliage instances, the terrain mesh itself is left alone

@@ -34,10 +34,6 @@ typedef struct tMarchingTerrainState_
     u32     physicsSyncCursor;
     SDL_AtomicInt physicsInvalidated;
     SDL_AtomicInt heapPressure;
-	// todo use occupiedChunkBitset
-    // free-list of scene terrain collider slots
-    u16    physicsSlotPool[MAX_TERRAIN_PHYSICS_CHUNKS];
-    u32    physicsSlotCount;
     u64    lastStatsTicks;
     float3 brushPos;
     f32    brushRadius;
@@ -52,12 +48,6 @@ static tMarchingTerrain gMarchingTerrain;
 
 static void tPruneChunkCache(u32 targetVertices, u32 targetIndices, bool respectKeepFrames);
 static void tClearChunkCache(void);
-
-static void CalculateProceduralMaterial(float3 worldPos, float3 normal, f32 weights[4], f32* seaLevel);
-
-static MaterialBlend SelectDominantLayers(const f32 weights[4]);
-static void ApplyMaterialOverrides(float3 worldPos, f32 seaLevel, MaterialBlend* blend);
-void tTerrainMaterial(float3 worldPos, float3 normal, u32* materials, u32* blend);
 
 static bool tAABBVisible(float3 aabbMin, float3 aabbMax, const FrustumPlanes* frustum)
 {
@@ -76,16 +66,16 @@ static f32 tDensityNoise(f32 x, f32 y, f32 z, void* userData) {
 // thread safe: TerrainDensity_SampleChunk is pure + edit overlay is mutex guarded
 static void tBuildDensity(int3 chunkMin, s8* out)
 {
-    const s32 densitySize = T_CHUNK_CELLS + 3;
+    const s32 densitySize = T_SAMPLES_AXIS;
     s32 cx = chunkMin.x / T_CHUNK_CELLS;
     s32 cy = chunkMin.y / T_CHUNK_CELLS;
     s32 cz = chunkMin.z / T_CHUNK_CELLS;
     s8 samples[T_SAMPLES_TOTAL];
     TerrainDensity_SampleChunk(cx, cy, cz, samples);
 
-    for (s32 x = 0; x < densitySize; x++)
-    for (s32 y = 0; y < densitySize; y++)
-    for (s32 z = 0; z < densitySize; z++)
+    for (s32 x = 0; x < T_SAMPLES_AXIS; x++)
+    for (s32 y = 0; y < T_SAMPLES_AXIS; y++)
+    for (s32 z = 0; z < T_SAMPLES_AXIS; z++)
     {
         size_t dst = (size_t)x * (size_t)densitySize * (size_t)densitySize + (size_t)y * (size_t)densitySize + (size_t)z;
         size_t src = ((size_t)z * (size_t)densitySize + (size_t)y) * (size_t)densitySize + (size_t)x;
@@ -199,13 +189,8 @@ static void tFreePendingMesh(tChunk* chunk) {
 
 static void tDestroyChunkPhysics(tChunk* chunk)
 {
-    if (!chunk || chunk->physicsSlot < 0) 
-		return;
-    Scene* scene = Scene_GetActive();
-    if (scene)
-        Scene_PhysicsDestroyTerrainChunk(scene, (u32)chunk->physicsSlot);
-    gMarchingTerrain.physicsSlotPool[gMarchingTerrain.physicsSlotCount++] = (u16)chunk->physicsSlot;
-    chunk->physicsSlot = -1;
+    if (!chunk) return;
+    Scene_PhysicsDestroyTerrainChunk(&chunk->physicsBody, &chunk->physicsMesh);
 }
 
 static const char* tChunkStateName(ChunkBuildState state)
@@ -263,24 +248,15 @@ static void tSetChunkPending(tChunk* chunk, PendingMeshState pendingState)
 
 static void tSyncChunkPhysics(tChunk* chunk)
 {
-    Scene* scene = Scene_GetActive();
-    if (!scene) return;
     if (!chunk || !chunk->mesh.vertices.heapPtr || chunk->mesh.vertices.count < 3u ||
         !chunk->mesh.physics.vertices || !chunk->mesh.physics.indices || chunk->mesh.physics.indexCount < 3u) {
         tDestroyChunkPhysics(chunk);
         return;
     }
 
-    if (chunk->physicsSlot < 0)
-    {
-        if (gMarchingTerrain.physicsSlotCount == 0u) {
-            AX_WARN("marching terrain physics slots exhausted");
-            return;
-        }
-        chunk->physicsSlot = (s32)gMarchingTerrain.physicsSlotPool[--gMarchingTerrain.physicsSlotCount];
-    }
-
-    if (!Scene_PhysicsSyncTerrainChunkMesh(scene, (u32)chunk->physicsSlot,
+    // owns its collider directly now (no shared slot pool/cap), so there's nothing to
+    // acquire here - just create-or-update in place.
+    if (!Scene_PhysicsSyncTerrainChunkMesh(&chunk->physicsBody, &chunk->physicsMesh,
                                            chunk->mesh.physics.vertices, chunk->mesh.physics.vertexCount,
                                            chunk->mesh.physics.indices, chunk->mesh.physics.indexCount))
         tDestroyChunkPhysics(chunk);
@@ -486,6 +462,16 @@ static void IntegrateFinishedBuilds(void)
         tChunk* chunk = &gMarchingTerrain.chunks[job->chunkIndex];
         job->busy = false;
 
+        // cache this build's density grid on the chunk itself (job slot i's scratch region,
+        // still valid: the slot isn't reused until job->busy is cleared here). Foliage
+        // placement reads this instead of resampling the field (noise + edit overlay),
+        // which is expensive - recomputing it per consumer was the whole point of caching it.
+        {
+            const s8* builtDensity = gMarchingTerrain.chunkDensity + (size_t)i * T_SAMPLES_TOTAL;
+            if (!chunk->density) chunk->density = (s8*)AllocateTLSFGlobal(T_SAMPLES_TOTAL);
+            if (chunk->density) MemCopy(chunk->density, builtDensity, T_SAMPLES_TOTAL);
+        }
+
         if (job->failed) {
             // dropped (mesher failure / heap full); a later invalidation re-dirties it
             tFreeMeshHandle(&job->mesh);
@@ -553,6 +539,8 @@ static void tFreeChunkSlot(u32 index)
     tFreeMeshHandle(&chunk->mesh);
     tFreePendingMesh(chunk);
     tFoliage_DestroyChunkFoliage(chunk);
+    DeAllocateTLSFGlobal(chunk->density);
+    chunk->density = NULL;
 
     u32 lastIndex = gMarchingTerrain.chunkCount - 1u;
     if (index != lastIndex)
@@ -612,6 +600,11 @@ JobSystem* tGetTerrainJobSystem(void)
     return tMarchingInit() ? gMarchingTerrain.jobSystem : NULL;
 }
 
+const u64* tGetOccupiedChunksBitset(void)
+{
+    return gMarchingTerrain.occupiedChunksBitset;
+}
+
 static u32 tAllocChunkSlot(void)
 {
     if (gMarchingTerrain.chunkCount >= T_MAX_CHUNKS) 
@@ -637,6 +630,8 @@ static void tClearChunkCache(void)
         tFreeMeshHandle(&gMarchingTerrain.chunks[i].mesh);
         tFreePendingMesh(&gMarchingTerrain.chunks[i]);
         tFoliage_DestroyChunkFoliage(&gMarchingTerrain.chunks[i]);
+        DeAllocateTLSFGlobal(gMarchingTerrain.chunks[i].density);
+        gMarchingTerrain.chunks[i].density = NULL;
     }
     gMarchingTerrain.chunkCount = 0;
     gMarchingTerrain.cacheVertices = 0u;
@@ -703,7 +698,7 @@ static void tSyncDirtyPhysics(void)
         for (u32 i = 0; i < gMarchingTerrain.chunkCount; i++)
         {
             tChunk* chunk = &gMarchingTerrain.chunks[i];
-            if (chunk->physicsSlot >= 0 || (chunk->mesh.vertices.heapPtr && chunk->mesh.vertices.count >= 3u))
+            if (chunk->physicsBody != 0u || (chunk->mesh.vertices.heapPtr && chunk->mesh.vertices.count >= 3u))
                 chunk->physicsDirty = true;
         }
     }
@@ -748,7 +743,6 @@ static tChunk* GetOrCreateChunk(int3 min)
     chunk = &gMarchingTerrain.chunks[index];
     *chunk = (tChunk){
         .min = min,
-        .physicsSlot = -1,
         .buildState = CHUNK_UNBUILT,
         .pendingState = PENDING_NONE,
     };
@@ -891,10 +885,6 @@ bool tMarchingInit(void)
 
     gMarchingTerrain.generator.noise3D = tDensityNoise;
     gMarchingTerrain.generator.noise3DStrength = 1.0f;
-
-    for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
-        gMarchingTerrain.physicsSlotPool[i] = (u16)i;
-    gMarchingTerrain.physicsSlotCount = MAX_TERRAIN_PHYSICS_CHUNKS;
 
     gMarchingTerrain.chunkDraws = (TerrainChunkDraw*)AllocateTLSFGlobal(sizeof(TerrainChunkDraw) * MAX_TERRAIN_CHUNK_DRAWS);
     gMarchingTerrain.occupiedChunksBitset = (u64*)AllocateTLSFGlobal(T_CHUNK_BITSET_WORDS * sizeof(u64));

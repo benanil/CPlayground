@@ -95,7 +95,6 @@ extern "C" {
     #define SIMD_NUM_BYTES sizeof(long)
 #endif
 
-
 #ifdef _MSC_VER
     #define VCALL __vectorcall
 #else

@@ -13,7 +13,6 @@
 #define MAX_SCENE_BUNDLES 1024u
 #define MAX_SCENE_LIGHTS  256u
 #define MAX_THROWN_SPHERES 512u
-#define MAX_TERRAIN_PHYSICS_CHUNKS 2048u
 
 // one bundle registered in a scene
 typedef struct SceneBundleRef_
@@ -106,8 +105,6 @@ typedef struct Scene_
 	struct b3MeshData*   transparentPhysicsMeshes[MAX_GROUP];
 	b3BodyId*            surfacePhysicsBodies;
 	b3BodyId*            transparentPhysicsBodies;
-	struct b3MeshData*   terrainPhysicsMeshes[MAX_TERRAIN_PHYSICS_CHUNKS];
-	b3BodyId             terrainPhysicsBodies[MAX_TERRAIN_PHYSICS_CHUNKS];
 	SDL_AtomicInt        physicsColliderBuildRunning;
 	SDL_AtomicInt        physicsColliderBuildDone;
 	AsyncCallback        physicsColliderBuildCallback;
@@ -191,11 +188,13 @@ void Scene_PhysicsApplyWorldSettings(void);
 void Scene_BuildStaticCollidersAsync(Scene* scene, AsyncCallback callback);
 void Scene_BuildStaticColliders(Scene* scene);
 void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, const Entity* entity);
-bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
+// terrain colliders are owned per-chunk (u64 stored body id + mesh pointer live on tChunk),
+// not by the scene - no shared slot pool/cap, just the global physics world. inOutBody/
+// inOutMesh are read (0/NULL means "none yet") and written back by these calls.
+bool Scene_PhysicsSyncTerrainChunkMesh(u64* inOutBody, struct b3MeshData** inOutMesh,
                                        b3Vec3* vertices, u32 vertexCount,
                                        s32* indices, u32 indexCount);
-const b3MeshData* Scene_GetTerrainMeshData(Scene* scene, s32 slot);
-void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot);
+void Scene_PhysicsDestroyTerrainChunk(u64* inOutBody, struct b3MeshData** inOutMesh);
 // Swaps the collider shape of the entity's body in place. b3_meshShape restores the
 // original triangle collider; sphere/capsule/hull are derived from the primitive
 // bounds. Compound/height are unsupported and return false. Runtime-only.

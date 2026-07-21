@@ -308,12 +308,10 @@ JobSystem* JobSystem_Create(u32 threadCount, u32 queueCapacity)
         jobs->workers[i].jobs = jobs;
         jobs->workers[i].threadID = i;
         SDL_Thread* thread = SDL_CreateThread(JobSystemThreadMain, "JobSystem", &jobs->workers[i]);
-        if (thread)
-        {
+        if (thread) {
             jobs->threads[jobs->workerThreadCount++] = thread;
         }
-        else
-        {
+        else {
             AX_WARN("job worker thread creation failed: %s", SDL_GetError());
         }
     }
@@ -328,8 +326,7 @@ void JobSystem_Destroy(JobSystem* jobs)
     SDL_SetAtomicInt(&jobs->alive, 0);
     JobSystem_WakeAll(jobs);
 
-    for (u32 i = 0u; i < jobs->workerThreadCount; i++)
-    {
+    for (u32 i = 0u; i < jobs->workerThreadCount; i++) {
         SDL_WaitThread(jobs->threads[i], NULL);
     }
 
@@ -338,8 +335,7 @@ void JobSystem_Destroy(JobSystem* jobs)
 
 JobHandle JobSystem_Execute(JobSystem* jobs, JobSystemFn fn, void* userData)
 {
-    if (!jobs || !fn)
-    {
+    if (!jobs || !fn) {
         AX_WARN("job execute invalid arguments");
         return 0;
     }
@@ -349,8 +345,7 @@ JobHandle JobSystem_Execute(JobSystem* jobs, JobSystemFn fn, void* userData)
     task.fn = fn;
     task.userData = userData;
     task.handle = JobSystem_AllocHandle(jobs);
-    if (task.handle == 0)
-    {
+    if (task.handle == 0) {
         AX_WARN("job handle table is full");
         return 0;
     }
@@ -358,8 +353,7 @@ JobHandle JobSystem_Execute(JobSystem* jobs, JobSystemFn fn, void* userData)
     u32 queueIndex = SDL_AddAtomicU32(&jobs->nextQueue, 1) % jobs->queueCount;
     for (u32 i = 0u; i < jobs->queueCount; i++)
     {
-        if (JobSystemQueue_PushBack(jobs, &jobs->queues[queueIndex], task))
-        {
+        if (JobSystemQueue_PushBack(jobs, &jobs->queues[queueIndex], task)) {
             JobSystem_WakeOne(jobs);
             return task.handle;
         }

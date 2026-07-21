@@ -22,9 +22,6 @@
 #define T_FOLIAGE_MAX_PATH      512
 #define T_FOLIAGE_NAME_LEN      64
 #define T_FOLIAGE_MAX_PER_CHUNK 192u
-#define T_FOLIAGE_MAX_JOBS      4u
-#define T_FOLIAGE_SCAN_PER_FRAME     64u
-#define T_FOLIAGE_SCHEDULE_PER_FRAME 2u
 
 typedef struct tFoliageType_
 {
@@ -32,11 +29,14 @@ typedef struct tFoliageType_
     char  name[T_FOLIAGE_NAME_LEN]; // display label: file name, no directory/extension
     u32   groupIdx;      // first primitive group in gFoliage.scene.surfaceSet, INVALID_GROUP if unresolved
     u32   groupCount;    // number of primitive groups in the bundle (e.g. trunk+needles as separate
-                          // meshes) - every group must get an entity or parts of the model won't render
+                         // meshes) - every group must get an entity or parts of the model won't render
     f32   localBaseY;    // local-space AABB min.y; shifts placement so the mesh's own base
-                          // (not its authored pivot) lands on the ground, whatever the pivot is
+                         // (not its authored pivot) lands on the ground, whatever the pivot is
     b3HullData* hull;    // native-scale convex hull, built lazily on first collider request
     tFoliageParams params;
+    bool  paramsDirty;   // set by tFoliage_SetParams; only this type's chunks get torn down
+                         // and rebuilt on the next tFoliage_Update, every other type's
+                         // instances stay untouched in the RenderSet
 } tFoliageType;
 
 extern Graphics gGFX; // cpu mega buffers, declared per translation unit as elsewhere (BVH.c, Physics.c)
@@ -44,30 +44,42 @@ extern Graphics gGFX; // cpu mega buffers, declared per translation unit as else
 typedef struct tFoliagePlacement_
 {
     float3 localPos; // chunk-relative meters
-    f32    scale;     // final uniform scale (size * variance), pre-multiplied on the worker
+    f32    scale;    // final uniform scale (size * variance), pre-multiplied on the worker
+    f32    yaw;      // deterministic per-instance rotation, generated on the worker
     u32    typeIndex;
 } tFoliagePlacement;
 
 typedef struct tFoliageJob_
 {
-    int3  chunkMin;
-    u32   generationSnapshot;
-    s8    density[T_SAMPLES_TOTAL]; // chunk's own 19^3 grid, sampled once per job so every
-                                     // candidate resolves Y via a cheap lookup, not analytic SDF calls
+    int3        chunkMin;
+    const s8*   density;
+    // true for a chunk that has never had foliage decided (see tChunk.foliageBuilt): place
+    // every currently-enabled type for it, not just the ones flagged paramsDirty this round.
+    bool        placeAllEnabled;
+    u32         count;
     tFoliagePlacement placements[T_FOLIAGE_MAX_PER_CHUNK];
-    u32   count;
-    JobHandle handle;
-    bool  busy;
 } tFoliageJob;
+
+// one resolved placement waiting to be batched into its foliage type's bulk
+// RenderSet_AddEntities call. position/rotation/scale are computed once per placement
+// and reused for every render group of the type; physicsBody is only attached to the
+// entity created for render group 0 (see IntegrateFinishedFoliage).
+typedef struct tFoliageBatchItem_
+{
+    tChunk* chunk;
+    v128f   position;
+    u64     rotation;
+    u64     scale;
+    u64     physicsBody;
+} tFoliageBatchItem;
 
 typedef struct tFoliageState_
 {
     Scene scene;
     u32   numTypes;
     tFoliageType types[T_MAX_FOLIAGE_SCENE];
-    tFoliageJob  jobs[T_FOLIAGE_MAX_JOBS];
-    u32   worldGeneration; // bumped by tFoliage_SetParams, chunks rebuild when they fall behind
-    u32   scanCursor;      // round-robin index into the resident chunk array
+    tFoliageJob  jobs[T_MAX_CHUNKS]; // one slot per resident chunk, all dispatched and
+                                     // awaited within a single tFoliage_Update call
 } tFoliageState;
 
 static tFoliageState gFoliage;
@@ -84,19 +96,20 @@ static void VisitFile(const char* path, void* data)
         AX_WARN("foliage path invalid");
         return;
     }
-
+	static PCG pcg = { 0x853c49e6748fea9bULL, 0xda3e39cb94b95bdbULL };
+	
     tFoliageType* type = &gFoliage.types[gFoliage.numTypes++];
     MemSet(type, 0, sizeof(*type));
     NormalizePath(path, type->path, T_FOLIAGE_MAX_PATH);
     GetFileNameNoExt(type->path, type->name);
     type->groupIdx = INVALID_GROUP;
     type->params = (tFoliageParams){
-        .density = 4.0f,
-        .rarity  = 0.5f,
+        .density = RepeatMinMaxF32(PCGNext(&pcg), 7.5f, 10.0),
+        .rarity  = RepeatMinMaxF32(PCGNext(&pcg), 0.88f, 0.95),
         .size    = 1.0f,
-        .enabled = false, // off by default until placement/visuals are verified per type
-        .collider = true,
-        .sizeVariance = false
+        .enabled = true, // off by default until placement/visuals are verified per type
+        .collider = false,
+        .sizeVariance = true
     };
 }
 
@@ -131,12 +144,11 @@ void tFoliage_Init()
             if (groupMinY < minY) minY = groupMinY;
         }
         type->localBaseY = minY;
+        type->paramsDirty = true; // build this type's foliage on the first update
     }
-
-    gFoliage.worldGeneration = 1u;
 }
 
-void tFoliage_Destroy()
+void tFoliage_Destroy()	
 {
     for (u32 i = 0; i < gFoliage.numTypes; i++)
         if (gFoliage.types[i].hull) b3DestroyHull(gFoliage.types[i].hull);
@@ -150,7 +162,7 @@ u32 tFoliage_NumTypes(void) { return gFoliage.numTypes; }
 
 const char* tFoliage_TypeName(u32 index)
 {
-    return index < gFoliage.numTypes ? gFoliage.types[index].name : "";
+    return index < gFoliage.numTypes ? gFoliage.types[index].name : "noname-prop";
 }
 
 bool tFoliage_GetParams(u32 index, tFoliageParams* out)
@@ -164,7 +176,7 @@ void tFoliage_SetParams(u32 index, const tFoliageParams* params)
 {
     if (!params || index >= gFoliage.numTypes) return;
     gFoliage.types[index].params = *params;
-    gFoliage.worldGeneration++; // stales every chunk's foliage; tFoliage_Update rebuilds them, terrain mesh untouched
+    gFoliage.types[index].paramsDirty = true; // only this type rebuilds next tFoliage_Update
 }
 
 // inverse of TerrainDensity_Quantize (>0 air, <0 solid). NOT T_DENSITY_DECODE_SCALE -
@@ -187,8 +199,9 @@ static f32 tFoliageSampleDensity(const s8* density, float3 localPos)
     f32 xd = px - fx, yd = py - fy, zd = pz - fz;
 
     const s32 axis = T_SAMPLES_AXIS;
-    // TerrainDensity_SampleChunk writes [z][y][x]; mesher transposes its copy before use.
-    #define TFOL_AT(ix, iy, iz) ((f32)density[(iz) * axis * axis + (iy) * axis + (ix)] * T_FOLIAGE_DENSITY_DECODE_SCALE)
+    // reads tChunk.density directly (see MarchingTerrain.c's tBuildDensity / IntegrateFinishedBuilds),
+    // which is already transposed to [x][y][z] for the mesher - no separate raw copy exists anymore.
+    #define TFOL_AT(ix, iy, iz) ((f32)density[(ix) * axis * axis + (iy) * axis + (iz)] * T_FOLIAGE_DENSITY_DECODE_SCALE)
     f32 c000 = TFOL_AT(x0, y0, z0), c100 = TFOL_AT(x1, y0, z0);
     f32 c010 = TFOL_AT(x0, y1, z0), c110 = TFOL_AT(x1, y1, z0);
     f32 c001 = TFOL_AT(x0, y0, z1), c101 = TFOL_AT(x1, y0, z1);
@@ -204,16 +217,10 @@ static f32 tFoliageSampleDensity(const s8* density, float3 localPos)
     return c0 * (1.0f - zd) + c1 * zd;
 }
 
-// GetNearestSurfaceY, chunk-local: march down from the chunk's own ceiling to the first
-// air/solid crossing, top-down only. terrain streams a full vertical stack of chunks per
-// column (surface/underground/bedrock); starting mid-chunk and searching either direction
-// (the original two-way GetNearestSurfaceY) can latch onto a cave ceiling or overhang
-// underside in a chunk that has nothing to do with the walkable surface - that's what made
-// foliage float. requiring "start in air, first solid going down" only ever accepts the
-// topmost surface exposed to open sky in this chunk; an already-solid ceiling means this
-// chunk is buried under more terrain above, rejected outright. also rejects thin/floating
-// shells and steep slopes (cliff edges), the same safety margin TerrainGrass already uses.
-// out: false when nothing placeable was found
+// GetNearestSurfaceY: March top-down for the first air-to-solid crossing.
+// Prevents latching onto cave ceilings/overhangs (fixing floating foliage).
+// Rejects buried chunks, thin shells, and steep slopes.
+// Out: false if no valid surface found.
 static bool tFoliageFindSurfaceY(const s8* density, f32 x, f32 z, f32* outY)
 {
     const f32 step = 0.5f, fineStep = 0.1f, maxY = (f32)T_CHUNK_CELLS;
@@ -229,7 +236,12 @@ static bool tFoliageFindSurfaceY(const s8* density, f32 x, f32 z, f32* outY)
         p.y = y;
         d = tFoliageSampleDensity(density, p);
     }
-    while (d < 0.0f && y < maxY) { y += fineStep; p.y = y; d = tFoliageSampleDensity(density, p); }
+    while (d < 0.0f && y < maxY) 
+	{
+		y += fineStep;
+		p.y = y;
+		d = tFoliageSampleDensity(density, p);
+	}
     y = Clampf32(y - fineStep * 0.5f, 0.0f, maxY);
 
     if (tFoliageSampleDensity(density, (float3){ x, y - 0.75f, z }) >= 0.0f) return false; // thin/floating shell
@@ -246,81 +258,131 @@ static bool tFoliageFindSurfaceY(const s8* density, f32 x, f32 z, f32* outY)
     return true;
 }
 
+// fills rnd[0..count) with a chained WangHashx4 stream, 4 lanes/store. count must be a
+// multiple of 4 (noiseAxis is forced to one, and noiseAxis*noiseAxis*4 stays one too).
+static void GetRandom(v128u seed, s32 count, s32* rnd)
+{
+	for (s32 i = 0; i < count; i += 4) {
+		seed = WangHashx4(seed);
+		VecStoreI(rnd + i, seed);
+	}
+}
+// fills a noiseAxis*noiseAxis grid of offset NoiseCellular2D results,
+// one call per row: cell (i,j) is the same chunk-local point the placement loop visits at
+// its j-th/i-th step (x = density*(i+0.5), z = density*(j+0.5)), so cx[i*axis+j]/cz[...]
+// line up with the ix/iz indices tFoliagePlacement reads. worldX is constant across a row
+// (broadcast), worldZ varies per lane over 4 consecutive j's - that's what SIMD's for here,
+// not 4 arbitrary points.
+static void GetCellular(s32 chunkX, s32 chunkZ, f32 density, s32 axis, f32 frequency,
+                        f32 offsetX, f32 offsetZ, f32* cx, f32* cz)
+{
+	const v128f laneOffset = VecSetR(0.5f, 1.5f, 2.5f, 3.5f); // j+0.5 .. j+3.5
+
+	for (s32 i = 0; i < axis; i++)
+	{
+		v128f worldX = VecAddf(VecSet1(((f32)chunkX + density * ((f32)i + 0.5f)) * frequency), offsetX);
+
+		for (s32 j = 0; j < axis; j += 4)
+		{
+			v128f jIdx = VecAddf(laneOffset, (f32)j);                    // j+0.5 .. j+3.5
+			v128f worldZ = VecAddf(VecMulf(VecAddf(VecMulf(jIdx, density), (f32)chunkZ), frequency), offsetZ);
+
+			v128f rx, ry;
+			NoiseCellular2Dx4(worldX, worldZ, &rx, &ry);
+			VecStore(cx + i * axis + j, rx);
+			VecStore(cz + i * axis + j, ry);
+		}
+	}
+}
+#define T_MIN_DENSITY 0.25f
+#define T_NOISE_AXIS_MAX (int)(T_CHUNK_CELLS * (1.0f / T_MIN_DENSITY)) 
 // worker thread: pure placement, touches only this job slot's output and the read-only
 // foliage type table. no RenderSet/physics access happens here (main-thread only)
 static void RunFoliageJob(void* userData)
 {
     tFoliageJob* job = (tFoliageJob*)userData;
     job->count = 0u;
-    f32 chunkSize = (f32)T_CHUNK_CELLS;
+    if (!job->density) return; // chunk had no cached density grid yet, nothing to sample
 
-    s32 cx = FloorDiv(job->chunkMin.x, T_CHUNK_CELLS);
-    s32 cy = FloorDiv(job->chunkMin.y, T_CHUNK_CELLS);
-    s32 cz = FloorDiv(job->chunkMin.z, T_CHUNK_CELLS);
-    TerrainDensity_SampleChunk(cx, cy, cz, job->density);
+	ALIGNSIMD s32 rnd[T_NOISE_AXIS_MAX * T_NOISE_AXIS_MAX * 4];
+	ALIGNSIMD f32 cx[T_NOISE_AXIS_MAX * T_NOISE_AXIS_MAX];
+	ALIGNSIMD f32 cz[T_NOISE_AXIS_MAX * T_NOISE_AXIS_MAX];
 
     for (u32 t = 0; t < gFoliage.numTypes && job->count < T_FOLIAGE_MAX_PER_CHUNK; t++)
     {
         const tFoliageType* type = &gFoliage.types[t];
+        // normally only types whose params just changed get (re)placed - every other
+        // type's chunks are left completely alone, both here and in IntegrateFinishedFoliage.
+        // a chunk that has never had foliage decided (placeAllEnabled) is the exception:
+        // every enabled type gets placed for it once, dirty or not.
         if (!type->params.enabled || type->groupIdx == INVALID_GROUP) continue;
+        if (!job->placeAllEnabled && !type->paramsDirty) continue;
 
-        f32 density = Maxf32(type->params.density, 0.5f);
+        f32 density = Maxf32(type->params.density, T_MIN_DENSITY);
         f32 rarityGate = Clampf32(1.0f - type->params.rarity, 0.05f, 1.0f) * 1.5f;
         u32 seed = WangHash((u32)job->chunkMin.x * 73856093u ^ (u32)job->chunkMin.z * 19349663u ^ (t * 83492791u + 1u));
+		v128u s4 = VeciSet(seed, seed + 234097, seed + 12345, seed + 314159265);
+		u32 typeNoiseSeed = WangHash((t + 1u) * 0x9e3779b9u);
+		f32 noiseFrequency = RepeatMinMaxF32(typeNoiseSeed, 0.065f, 0.095f);
+		f32 noiseOffsetX = RepeatMinMaxF32(WangHash(typeNoiseSeed ^ 0xa511e9b3u), 0.0f, 289.0f);
+		f32 noiseOffsetZ = RepeatMinMaxF32(WangHash(typeNoiseSeed ^ 0x63d83595u), 0.0f, 289.0f);
 
-        for (f32 x = density * 0.5f; x < chunkSize; x += density)
+        s32 noiseAxis = (s32)((f32)T_CHUNK_CELLS / density);
+        noiseAxis = (noiseAxis + 3) & ~3;
+		noiseAxis = Clamps32(noiseAxis, 4, T_NOISE_AXIS_MAX);
+
+		GetRandom(s4, noiseAxis * noiseAxis * 4, rnd);
+		GetCellular(job->chunkMin.x, job->chunkMin.z, density, noiseAxis, noiseFrequency,
+		             noiseOffsetX, noiseOffsetZ, cx, cz);
+		s32 rId = 0, ix = 0;
+        for (f32 x = density * 0.5f; x < T_CHUNK_CELLS; x += density, ix++)
         {
-            for (f32 z = density * 0.5f; z < chunkSize; z += density)
+			s32 iz = 0;
+            for (f32 z = density * 0.5f; z < T_CHUNK_CELLS; z += density, iz++)
             {
                 if (job->count >= T_FOLIAGE_MAX_PER_CHUNK) return;
 
                 f32 worldX = (f32)job->chunkMin.x + x;
                 f32 worldZ = (f32)job->chunkMin.z + z;
 
-                float2 cell = NoiseCellular2D((float2){ worldX * 0.08f, worldZ * 0.08f });
+				float2 cell = { cx[ix * noiseAxis + iz], cz[ix * noiseAxis + iz] }; // NoiseCellular2D((float2) { worldX * 0.08f, worldZ * 0.08f });
                 if (cell.x > rarityGate) continue;
                 if (TerrainDensity_IslandMask(worldX, worldZ) > 0.02f) continue;
 
-                f32 jitterX = (NextFloat01(PCG2Next(&seed)) * 2.0f - 1.0f) * density * 0.3333333f;
-                f32 jitterZ = (NextFloat01(PCG2Next(&seed)) * 2.0f - 1.0f) * density * 0.3333333f;
-                f32 localX = Clampf32(x + jitterX, 0.0f, chunkSize);
-                f32 localZ = Clampf32(z + jitterZ, 0.0f, chunkSize);
+				f32 jitterX = (NextFloat01(rnd[rId++]) * 2.0f - 1.0f) * density * 0.46f;
+				f32 jitterZ = (NextFloat01(rnd[rId++]) * 2.0f - 1.0f) * density * 0.46f;
+                f32 localX = Clampf32(x + jitterX, 0.0f, T_CHUNK_CELLS);
+                f32 localZ = Clampf32(z + jitterZ, 0.0f, T_CHUNK_CELLS);
 
                 f32 localY;
                 if (!tFoliageFindSurfaceY(job->density, localX, localZ, &localY)) continue;
 
-                f32 scale = type->params.sizeVariance ? RepeatMinMaxF32(PCG2Next(&seed), 0.7f, 1.3f) : 1.0f;
+				f32 scale = type->params.sizeVariance ? RepeatMinMaxF32(rnd[rId++], 0.8f, 1.2f) : 1.0f;
 
                 tFoliagePlacement* placement = &job->placements[job->count++];
                 placement->localPos = (float3){ localX, localY, localZ };
                 placement->scale = scale;
+                placement->yaw = NextFloat01(rnd[rId++]) * 2.0f * MATH_PI;
                 placement->typeIndex = t;
             }
         }
     }
 }
 
-static void ScheduleFoliageJob(tChunk* chunk, int3 chunkMin)
+// dispatches one job into a caller-owned slot from gFoliage.jobs. slots are a flat pool
+// indexed by schedule order (not a busy-scanned ring), since every job spawned this way
+// is awaited with JobSystem_Wait before the frame is done with it. density is borrowed
+// from the chunk's own cache (read here on the main thread, where it's safe) and handed
+// to the worker as a plain pointer - resolving it from inside the worker would mean
+// touching the tChunk array from a worker thread, which the build-job system explicitly
+// avoids (chunk indices/pointers are only stable from the main thread).
+static void ScheduleFoliageJob(JobSystem* js, tFoliageJob* job, const tChunk* chunk, bool placeAllEnabled)
 {
-    JobSystem* js = tGetTerrainJobSystem();
-    if (!js) return;
-
-    tFoliageJob* job = NULL;
-    for (u32 i = 0; i < T_FOLIAGE_MAX_JOBS; i++)
-        if (!gFoliage.jobs[i].busy) { job = &gFoliage.jobs[i]; break; }
-    if (!job) return;
-
-    job->chunkMin = chunkMin;
-    job->generationSnapshot = gFoliage.worldGeneration;
+    job->chunkMin = chunk->min;
+    job->density = chunk->density;
+    job->placeAllEnabled = placeAllEnabled;
     job->count = 0u;
-    job->busy = true;
-    job->handle = JobSystem_Execute(js, RunFoliageJob, job);
-    if (job->handle == 0)
-    {
-        job->busy = false;
-        return;
-    }
-    chunk->foliagePending = true;
+    JobSystem_Execute(js, RunFoliageJob, job);
 }
 
 #define T_FOLIAGE_HULL_MAX_VERTS 64
@@ -346,7 +408,7 @@ static b3HullData* EnsureFoliageTypeHull(tFoliageType* type)
     v128f decodeMin = VecLoad(prim->min);
     v128f decodeExtent = VecMax(VecSub(VecLoad(prim->max), decodeMin), VecSet1(1.0e-6f));
 
-    b3Vec3* points = (b3Vec3*)SDL_malloc(sizeof(b3Vec3) * numVertices);
+    b3Vec3* points = (b3Vec3*)AllocateTLSFGlobal(sizeof(b3Vec3) * numVertices);
     if (!points) return NULL;
 
     const AVertex* vb = gGFX.SurfaceVertexBuffer + vertexOffset;
@@ -354,7 +416,7 @@ static b3HullData* EnsureFoliageTypeHull(tFoliageType* type)
         points[v] = ToB3Vec3(VecAdd(decodeMin, VecMul(UnpackUnorm16x4(vb[v].position), decodeExtent)));
 
     type->hull = b3CreateHull(points, (int)numVertices, T_FOLIAGE_HULL_MAX_VERTS);
-    SDL_free(points);
+    DeAllocateTLSFGlobal(points);
     return type->hull;
 }
 
@@ -389,129 +451,228 @@ static void DestroyFoliageCollider(u64 stored)
     if (B3_IS_NON_NULL(body)) b3DestroyBody(body);
 }
 
+// destroys chunk->foliageEntities[start, start+count) - colliders individually, RenderSet
+// entities as one RenderSet_RemoveEntities call per contiguous same-group run. A group
+// belongs to exactly one foliage type and every insert (IntegrateFinishedFoliage's bulk
+// RenderSet_AddEntities) appends one chunk's placements of a (type, group) as one
+// contiguous block, and removal only ever shifts entities left without reordering them -
+// so entries sharing a groupIdx are always contiguous here, making the batched call safe.
+static void DestroyFoliageEntityRange(tChunk* chunk, u32 start, u32 count)
+{
+    RenderSet* set = &gFoliage.scene.surfaceSet;
+    u32 end = start + count;
+    u32 i = start;
+    while (i < end)
+    {
+        u32 groupIdx = chunk->foliageEntities[i].packed >> 3;
+        u32 runStart = i;
+        while (i < end && (chunk->foliageEntities[i].packed >> 3) == groupIdx) i++;
+        u32 runCount = i - runStart;
+
+        for (u32 k = runStart; k < i; k++)
+            DestroyFoliageCollider(chunk->foliageEntities[k].physicsBody);
+
+        tFoliageEntity* first = &chunk->foliageEntities[runStart];
+        if (first->sparseIdx >= set->maxEntities || groupIdx >= set->numGroups) continue;
+        u32 denseIdx = set->sparseID[first->sparseIdx];
+        if (denseIdx == INVALID_ENTITY) continue;
+        u32 localStartIdx = denseIdx - set->primitiveGroups[groupIdx].entityOffset;
+        RenderSet_RemoveEntities(set, groupIdx, localStartIdx, runCount);
+    }
+}
+
 void tFoliage_DestroyChunkFoliage(tChunk* chunk)
 {
     if (!chunk) return;
     if (!chunk->foliageEntities) { chunk->foliageCount = 0u; return; }
 
-    RenderSet* set = &gFoliage.scene.surfaceSet;
-    for (u32 i = 0; i < chunk->foliageCount; i++)
-    {
-        tFoliageEntity* fe = &chunk->foliageEntities[i];
-        DestroyFoliageCollider(fe->physicsBody);
-
-        if (fe->sparseIdx >= set->maxEntities) continue;
-        u32 denseIdx = set->sparseID[fe->sparseIdx];
-        if (denseIdx == INVALID_ENTITY) continue;
-        u32 groupIdx = fe->packed >> 3;
-        if (groupIdx >= set->numGroups) continue;
-        u32 localIdx = denseIdx - set->primitiveGroups[groupIdx].entityOffset;
-        RenderSet_RemoveEntity(set, groupIdx, localIdx);
-    }
+    DestroyFoliageEntityRange(chunk, 0u, chunk->foliageCount);
 
     DeAllocateTLSFGlobal(chunk->foliageEntities);
     chunk->foliageEntities = NULL;
     chunk->foliageCount = 0u;
 }
 
-static void IntegrateFinishedFoliage(JobSystem* js)
+// which foliage type owns a render set group, INVALID_GROUP if none (every type owns a
+// contiguous [groupIdx, groupIdx+groupCount) range, ranges never overlap between types)
+static u32 FindFoliageTypeIndexForGroup(u32 groupIdx)
 {
-    for (u32 i = 0; i < T_FOLIAGE_MAX_JOBS; i++)
+    for (u32 t = 0; t < gFoliage.numTypes; t++)
     {
-        tFoliageJob* job = &gFoliage.jobs[i];
-        if (!job->busy || !JobSystem_IsJobDone(js, job->handle)) continue;
-        job->busy = false;
+        const tFoliageType* type = &gFoliage.types[t];
+        if (groupIdx >= type->groupIdx && groupIdx < type->groupIdx + type->groupCount) return t;
+    }
+    return ~0u;
+}
 
-        // the chunk may have been evicted (or reused for a different location) while
-        // this job was in flight; re-resolve by position and drop stale results
-        tChunk* chunk = tFindChunkByMin(job->chunkMin);
-        if (!chunk) continue;
-        chunk->foliagePending = false;
+// tears down only the entities whose foliage type is currently dirty, compacting the
+// untouched survivors to the front of the chunk's own array in place (no realloc here -
+// IntegrateFinishedFoliage grows the buffer afterward if dirty types produced new placements).
+// entities of types that didn't change are left completely alone in the RenderSet. Since a
+// group belongs to exactly one type, a same-groupIdx run (see DestroyFoliageEntityRange) is
+// always uniformly dirty or clean - so runs are classified once, not entity by entity.
+static void RemoveDirtyChunkFoliage(tChunk* chunk)
+{
+    if (!chunk->foliageEntities) { chunk->foliageCount = 0u; return; }
 
-        tFoliage_DestroyChunkFoliage(chunk);
+    u32 total = chunk->foliageCount;
+    u32 kept = 0u;
+    u32 i = 0;
+    while (i < total)
+    {
+        u32 groupIdx = chunk->foliageEntities[i].packed >> 3;
+        u32 runStart = i;
+        while (i < total && (chunk->foliageEntities[i].packed >> 3) == groupIdx) i++;
+        u32 runCount = i - runStart;
 
-        if (job->count == 0u) {
-            chunk->foliageBuiltGen = job->generationSnapshot;
+        u32 typeIdx = FindFoliageTypeIndexForGroup(groupIdx);
+        if (typeIdx != ~0u && !gFoliage.types[typeIdx].paramsDirty)
+        {
+            if (kept != runStart)
+                MemCopy(&chunk->foliageEntities[kept], &chunk->foliageEntities[runStart], sizeof(tFoliageEntity) * runCount);
+            kept += runCount;
             continue;
         }
 
-        // a placement's bundle can have several primitive groups (e.g. trunk + needles as
-        // separate meshes) - every group needs its own entity or those parts never render,
-        // so the entity array must fit one slot per (placement, group) pair, not per placement.
-        u32 maxEntities = 0u;
+        DestroyFoliageEntityRange(chunk, runStart, runCount);
+    }
+    chunk->foliageCount = (u16)kept;
+}
+
+// runs once per tFoliage_Update burst, after every scheduled job has finished (caller
+// already called JobSystem_Wait). Bulk-adds every dirty type's placements across every
+// chunk with one RenderSet_AddEntities call per (type, render group) instead of the old
+// per-entity RenderSet_AddEntity loop - the actual point of batching by foliage type.
+static void IntegrateFinishedFoliage(u32 scheduledCount)
+{
+    if (scheduledCount == 0u) return;
+
+    tChunk** resolvedChunks = (tChunk**)AllocateTLSFGlobal(sizeof(tChunk*) * scheduledCount);
+    if (!resolvedChunks) return;
+
+    u32 typeCounts[T_MAX_FOLIAGE_SCENE] = {0};
+
+    // pass 1: re-resolve each job's chunk (it may have been evicted/reused while the job
+    // was in flight), strip only the dirty-type entities out of it, and tally how many new
+    // placements landed per type so the batch arrays below can be sized exactly.
+    for (u32 i = 0; i < scheduledCount; i++)
+    {
+        tFoliageJob* job = &gFoliage.jobs[i];
+        tChunk* chunk = tFindChunkByMin(job->chunkMin);
+        resolvedChunks[i] = chunk;
+        if (!chunk) continue;
+
+        RemoveDirtyChunkFoliage(chunk);
+
+        u32 addCount = 0u;
         for (u32 p = 0; p < job->count; p++)
         {
             tFoliageType* type = &gFoliage.types[job->placements[p].typeIndex];
             if (type->groupIdx == INVALID_GROUP) continue;
-            maxEntities += type->groupCount;
+            addCount += type->groupCount;
+            typeCounts[job->placements[p].typeIndex]++;
         }
+        if (addCount == 0u) continue; // nothing new; kept entities are already compacted
 
-        tFoliageEntity* entities = (tFoliageEntity*)AllocateTLSFGlobal(sizeof(tFoliageEntity) * maxEntities);
-        if (!entities) {
-            chunk->foliageBuiltGen = job->generationSnapshot;
-            continue;
-        }
+        u32 keptCount = chunk->foliageCount;
+        tFoliageEntity* grown = (tFoliageEntity*)AllocateTLSFGlobal(sizeof(tFoliageEntity) * (keptCount + addCount));
+        if (!grown) continue;
+        if (keptCount > 0u) MemCopy(grown, chunk->foliageEntities, sizeof(tFoliageEntity) * keptCount);
+        if (chunk->foliageEntities) DeAllocateTLSFGlobal(chunk->foliageEntities);
+        chunk->foliageEntities = grown; // foliageCount (== keptCount) is now pass 3's write cursor
+    }
 
-        RenderSet* set = &gFoliage.scene.surfaceSet;
-        u32 written = 0u;
+    // pass 2: bucket every dirty-type placement into that type's batch array. worldPos/
+    // rotation/scale/collider are resolved once here and reused for every render group.
+    tFoliageBatchItem* typeItems[T_MAX_FOLIAGE_SCENE] = {0};
+    u32 typeWriteCursor[T_MAX_FOLIAGE_SCENE] = {0};
+    for (u32 t = 0; t < gFoliage.numTypes; t++)
+        if (typeCounts[t] > 0u)
+            typeItems[t] = (tFoliageBatchItem*)AllocateTLSFGlobal(sizeof(tFoliageBatchItem) * typeCounts[t]);
+
+    for (u32 i = 0; i < scheduledCount; i++)
+    {
+        tChunk* chunk = resolvedChunks[i];
+        if (!chunk || !chunk->foliageEntities) continue;
+        tFoliageJob* job = &gFoliage.jobs[i];
+
         for (u32 p = 0; p < job->count; p++)
         {
             const tFoliagePlacement* placement = &job->placements[p];
             tFoliageType* type = &gFoliage.types[placement->typeIndex];
-            if (type->groupIdx == INVALID_GROUP) continue;
+            if (type->groupIdx == INVALID_GROUP || !typeItems[placement->typeIndex]) continue;
 
             float3 worldPos = F3Add(ToFloat3(job->chunkMin), placement->localPos);
             f32 finalScale = type->params.size * placement->scale;
             worldPos.y -= type->localBaseY * finalScale; // mesh's own base -> ground, not its authored pivot
-            f32 yaw = NextFloat01(WangHash(placement->typeIndex * 2654435761u + p)) * 2.0f * MATH_PI;
             u64 physicsBody = type->params.collider ? CreateFoliageCollider(type, worldPos, finalScale) : 0u;
 
-            bool placementFailed = false;
-            bool bodyStored = false;
-            for (u32 g = 0; g < type->groupCount; g++)
-            {
-                u32 sparseIdx = RenderSet_AllocateSparseID(set);
-                if (sparseIdx == INVALID_ENTITY) { placementFailed = true; break; }
-
-                Entity e = {0};
-                e.position = VecSetR(worldPos.x, worldPos.y, worldPos.z, 0.0f);
-                e.rotation = PackQuaternionS16NormRet(QFromAxisAngle(F3Up(), yaw));
-                e.scale = EntityPackUniformWorldScale(finalScale);
-                e.sparseIdx = sparseIdx;
-
-                u32 groupIdx = type->groupIdx + g;
-                if (RenderSet_AddEntity(set, groupIdx, &e) == INVALID_ENTITY)
-                {
-                    RenderSet_FreeSparseID(set, sparseIdx);
-                    placementFailed = true;
-                    break;
-                }
-
-                // collider follows only the first group's entity so it's destroyed exactly once
-                u64 bodyForThisEntity = !bodyStored ? physicsBody : 0u;
-                bodyStored = true;
-                entities[written++] = (tFoliageEntity){ sparseIdx, (groupIdx << 3), bodyForThisEntity };
-            }
-            // only free the collider here if no entity ended up owning it - once an entity
-            // holds it, tFoliage_DestroyChunkFoliage is the sole owner and will free it
-            if (placementFailed && !bodyStored) {
-                DestroyFoliageCollider(physicsBody);
-                break;
-            }
-            if (placementFailed) break;
+            tFoliageBatchItem* item = &typeItems[placement->typeIndex][typeWriteCursor[placement->typeIndex]++];
+            item->chunk = chunk;
+            item->position = VecSetR(worldPos.x, worldPos.y, worldPos.z, 0.0f);
+            item->rotation = PackQuaternionS16NormRet(QFromAxisAngle(F3Up(), placement->yaw));
+            item->scale = EntityPackUniformWorldScale(finalScale);
+            item->physicsBody = physicsBody;
         }
-
-        if (written == 0u) {
-            DeAllocateTLSFGlobal(entities);
-            chunk->foliageEntities = NULL;
-            chunk->foliageCount = 0u;
-        }
-        else {
-            chunk->foliageEntities = entities;
-            chunk->foliageCount = (u16)written;
-        }
-        chunk->foliageBuiltGen = job->generationSnapshot;
     }
+
+    // pass 3: one bulk RenderSet_AddEntities call per (dirty type, render group).
+    RenderSet* set = &gFoliage.scene.surfaceSet;
+    for (u32 t = 0; t < gFoliage.numTypes; t++)
+    {
+        u32 count = typeCounts[t];
+        if (count == 0u || !typeItems[t]) continue;
+        tFoliageType* type = &gFoliage.types[t];
+
+        Entity* entityBuf = (Entity*)AllocateTLSFGlobal(sizeof(Entity) * count);
+        if (!entityBuf) {
+            for (u32 k = 0; k < count; k++) DestroyFoliageCollider(typeItems[t][k].physicsBody);
+            DeAllocateTLSFGlobal(typeItems[t]);
+            continue;
+        }
+
+        for (u32 g = 0; g < type->groupCount; g++)
+        {
+            u32 groupIdx = type->groupIdx + g;
+            u32 sparseBase = RenderSet_AllocateSparseIDRange(set, (int)count);
+            if (sparseBase == INVALID_ENTITY)
+            {
+                if (g == 0u) for (u32 k = 0; k < count; k++) DestroyFoliageCollider(typeItems[t][k].physicsBody);
+                continue;
+            }
+
+            for (u32 k = 0; k < count; k++)
+            {
+                Entity e = {0};
+                e.position = typeItems[t][k].position;
+                e.rotation = typeItems[t][k].rotation;
+                e.scale    = typeItems[t][k].scale;
+                e.sparseIdx = sparseBase + k;
+                e.hiddenBitAndAmbient = 64 << 1;
+                entityBuf[k] = e;
+            }
+
+            if (RenderSet_AddEntities(set, groupIdx, count, entityBuf) == INVALID_ENTITY)
+            {
+                for (u32 k = 0; k < count; k++) RenderSet_FreeSparseID(set, sparseBase + k);
+                if (g == 0u) for (u32 k = 0; k < count; k++) DestroyFoliageCollider(typeItems[t][k].physicsBody);
+                continue;
+            }
+
+            for (u32 k = 0; k < count; k++)
+            {
+                tChunk* itemChunk = typeItems[t][k].chunk;
+                u64 bodyForThisEntity = (g == 0u) ? typeItems[t][k].physicsBody : 0u;
+                itemChunk->foliageEntities[itemChunk->foliageCount++] =
+                    (tFoliageEntity){ sparseBase + k, groupIdx << 3, bodyForThisEntity };
+            }
+        }
+
+        DeAllocateTLSFGlobal(entityBuf);
+        DeAllocateTLSFGlobal(typeItems[t]);
+    }
+
+    DeAllocateTLSFGlobal(resolvedChunks);
 }
 
 void tFoliage_Update(void)
@@ -519,34 +680,49 @@ void tFoliage_Update(void)
     JobSystem* js = tGetTerrainJobSystem();
     if (!js) return;
 
-    IntegrateFinishedFoliage(js);
+    bool anyDirty = false;
+    for (u32 t = 0; t < gFoliage.numTypes; t++)
+        if (gFoliage.types[t].paramsDirty) { anyDirty = true; break; }
 
-    u32 chunkCount = tGetChunkCount();
-    if (chunkCount == 0u) return;
-
-    u32 scheduled = 0u;
-    u32 scanned = 0u;
-    while (scanned < chunkCount && scanned < T_FOLIAGE_SCAN_PER_FRAME && scheduled < T_FOLIAGE_SCHEDULE_PER_FRAME)
+	// Always walk residents (ignoring anyDirty) so streamed-in chunks get an initial foliage pass.
+	// Uses the occupied-chunks bitset instead of trusting chunkCount density.
+    const u64* occupied = tGetOccupiedChunksBitset();
+    u32 scheduledCount = 0u;
+    for (u32 w = 0; occupied && w < T_CHUNK_BITSET_WORDS && scheduledCount < T_MAX_CHUNKS; w++)
     {
-        if (gFoliage.scanCursor >= chunkCount) gFoliage.scanCursor = 0u;
-        tChunk* chunk = tGetChunkByIndex(gFoliage.scanCursor++);
-        scanned++;
-        if (!chunk || chunk->buildState != CHUNK_READY) continue;
-        if (!chunk->mesh.vertices.heapPtr)
+        u64 word = occupied[w];
+        while (word)
         {
-            // no surface in this chunk, nothing to place; skip until params change again
-            chunk->foliageBuiltGen = gFoliage.worldGeneration;
-            continue;
-        }
-        if (chunk->foliagePending || chunk->foliageBuiltGen == gFoliage.worldGeneration) continue;
+            s32 bit = FindFirstSet(word);
+            word &= word - 1; // clear the lowest set bit, move to the next resident
+            u32 chunkIndex = (w << 6) + (u32)bit;
 
-        ScheduleFoliageJob(chunk, chunk->min);
-        scheduled++;
+            tChunk* chunk = tGetChunkByIndex(chunkIndex);
+            if (!chunk || chunk->buildState != CHUNK_READY || !chunk->mesh.vertices.heapPtr) continue;
+            if (!chunk->density) continue; // no cached density grid yet, nothing to sample
+
+            bool needsInitialBuild = !chunk->foliageBuilt;
+            if (!anyDirty && !needsInitialBuild) continue; // nothing to do for this chunk right now
+
+            ScheduleFoliageJob(js, &gFoliage.jobs[scheduledCount], chunk, needsInitialBuild);
+            chunk->foliageBuilt = true; // decided (even a zero-placement result counts)
+            scheduledCount++;
+        }
     }
+
+    if (scheduledCount > 0u)
+    {
+        JobSystem_Wait(js);
+        IntegrateFinishedFoliage(scheduledCount);
+    }
+
+    // every type considered dirty at the start of this burst has now been fully
+    // re-evaluated across every resident chunk - clear them, leave the rest untouched
+    for (u32 t = 0; t < gFoliage.numTypes; t++)
+        gFoliage.types[t].paramsDirty = false;
 }
 
 void tFoliage_DrainJobs(void)
 {
-    for (u32 i = 0; i < T_FOLIAGE_MAX_JOBS; i++)
-        gFoliage.jobs[i].busy = false;
+
 }

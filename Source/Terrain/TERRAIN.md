@@ -169,8 +169,9 @@ Self-contained slice in `Terrain.c`, revived for the port:
 
 ## Physics
 
-- Only lod 0–1 chunks get colliders (`MAX_TERRAIN_PHYSICS_CHUNKS` slots, keyed by
-  chunk index). ≤2 syncs/frame round-robin over `physicsDirty` chunks.
+- Only lod 0–1 chunks get colliders. Each chunk owns its collider directly
+  (`tChunk.physicsBody`/`physicsMesh`, no shared slot pool/cap). ≤2 syncs/frame
+  round-robin over `physicsDirty` chunks.
 - Vertices read back from the heap CPU mirror; zero-area triangles filtered before
   `Scene_PhysicsSyncTerrainChunkMesh` (box3d static triangle mesh).
 

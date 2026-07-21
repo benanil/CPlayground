@@ -19,7 +19,7 @@
 #define T_CHUNK_CELLS    16
 #define T_SAMPLES_AXIS   19
 #define T_VOXEL_SIZE     1.0f   // meters per cell at lod 0
-#define T_SAMPLES_TOTAL  (19 * 19 * 19)
+#define T_SAMPLES_TOTAL  (T_SAMPLES_AXIS * T_SAMPLES_AXIS * T_SAMPLES_AXIS)
 
 // world y of the solid bedrock floor. The visible floor surface is half a voxel above
 // this so integer lattice samples at the protected bottom stay solid instead of zero.
@@ -39,7 +39,9 @@
 #define T_MARCHING_VERTEX_CAP (T_CHUNK_INDEX_CAP * 2u / 3u)
 #define T_CHUNK_SECONDARY_VERTEX_CAP (2048u)
 #define T_MAX_BUILDS_PER_FRAME        16u
-#define T_BUILD_SCRATCH_SIZE         (3ull * 1024ull * 1024ull)
+// bump buffer for buildVertices + buildIndices + mesher edgeCache; scales ~cubically
+// with T_CHUNK_CELLS. undersizing spills to the slow TLSF fallback (AX_WARN "arena spilled")
+#define T_BUILD_SCRATCH_SIZE         (4ull * 1024ull * 1024ull)
 #define T_MAX_PHYSICS_SYNCS_PER_FRAME 2u
 #define T_MAX_BUILD_JOBS 8u
 #define T_ENABLE_STATS 0
@@ -47,8 +49,11 @@
 // the transvoxel-unity port parks non-indexed triangle soup in the vertex heap
 // (~3x an indexed mesh), so it is sized above the old runtime's needs. these back
 // both the CPU mirrors (Graphics.c) and the GPU mirror (Rendering.c) - keep sane.
+// bigger T_CHUNK_CELLS means fewer resident chunks short-circuit as fully empty
+// (each spans more height), so real occupancy per view volume goes up - rescale
+// this budget when T_CHUNK_CELLS changes, don't just watch the eviction warning.
 #define T_MAX_VERTICES        (1u << 24) // 256MB at 16B/vertex
-#define T_MAX_INDICES         (2u << 22) // 32MB of u32
+#define T_MAX_INDICES         (4u << 22) // 32MB of u32
 #define T_VERTEX_CACHE_BUDGET (T_MAX_VERTICES * 7u / 8u)
 #define T_VERTEX_CACHE_TARGET (T_MAX_VERTICES * 3u / 4u)
 #define T_INDEX_CACHE_BUDGET  (T_MAX_INDICES * 7u / 8u)
@@ -204,16 +209,26 @@ typedef struct tChunk_
     // without any per-frame copy
     tMeshHandle mesh;
     tMeshHandle pendingMesh;
-    // procedural foliage instances for this chunk, TLSF-owned, rebuilt when
-    // foliageBuiltGen falls behind tFoliage's current generation
+    // cached 19^3 density grid backing the last successful build, TLSF-owned, T_SAMPLES_TOTAL
+    // bytes, same [x][y][z] transposed layout tBuildDensity feeds the mesher (see
+    // MarchingTerrain.c IntegrateFinishedBuilds). Foliage placement reads this directly
+    // instead of resampling the field (noise + edit overlay), which is expensive.
+    s8*   density;
+    // procedural foliage instances for this chunk, TLSF-owned; rebuilt whenever a
+    // foliage type's params change (see tFoliageType.paramsDirty in TerrainFoliage.c)
     tFoliageEntity* foliageEntities;
-    u32   foliageBuiltGen;
     u32   lastTouchedFrame;
     u16   foliageCount;
-    bool  foliagePending; // a foliage job is queued/in-flight for this chunk
+    // false until tFoliage_Update has scheduled at least one job for this chunk (zero
+    // placements is a valid outcome and still sets this - it means "decided", not "has
+    // foliage"). Lets newly streamed-in chunks get an initial placement pass even on a
+    // frame where no foliage type's params changed; MemsetZero on chunk reuse resets it.
+    bool  foliageBuilt;
     u8    pendingFrames;
-    s32   physicsSlot;    // scene terrain collider slot, -1 = none. chunk indices can
-	// exceed MAX_TERRAIN_PHYSICS_CHUNKS, so slots are pooled
+    // terrain collider owned directly by this chunk (no shared slot pool/cap anymore).
+    // physicsBody is a stored b3BodyId (b3StoreBodyId/b3LoadBodyId), 0 = none.
+    u64   physicsBody;
+    struct b3MeshData* physicsMesh;
     ChunkBuildState  buildState;
     PendingMeshState pendingState;
     bool  dirty;
@@ -227,6 +242,11 @@ u32     tGetChunkCount(void);
 tChunk* tGetChunkByIndex(u32 index);
 tChunk* tFindChunkByMin(int3 min);
 JobSystem* tGetTerrainJobSystem(void);
+// bit i set means chunks[i] is resident. T_CHUNK_BITSET_WORDS words, index space matches
+// tGetChunkByIndex exactly (tAllocChunkSlot hands out the chunk's storage slot from this
+// same bitset). Lets callers walk residents by scanning set bits instead of trusting
+// chunkCount to stay a dense [0, count) prefix.
+const u64* tGetOccupiedChunksBitset(void);
 
 // called by MarchingTerrain.c before a chunk slot is wiped/reused (eviction, cache
 // clear, shutdown): frees the chunk's render entities, colliders and instance array
@@ -333,7 +353,7 @@ bool tMesherMesh(const tDensityGenerator* generator, const s8* density, tBuildJo
 // thread safe: workers overlay while the main thread sculpts, a mutex guards the map
 // ---------------------------------------------------------------------------------
 
-#define TERRAIN_EDIT_CELLS 16  // grid axis, == T_CHUNK_CELLS
+#define TERRAIN_EDIT_CELLS T_CHUNK_CELLS  // grid axis, == T_CHUNK_CELLS
 
 void TerrainEdit_Init(void);
 void TerrainEdit_Destroy(void);

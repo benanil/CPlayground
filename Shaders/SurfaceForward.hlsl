@@ -72,15 +72,16 @@ struct VSOutput
     f16_3_io normal      : NORMAL;
     f16_3_io tangent     : TANGENT0;
     f16_3_io bitangent   : TEXCOORD1;
-    f16_4_io vertexColor : COLOR0;
     float4   shadowPos0  : TEXCOORD3;
     float4   shadowPos1  : TEXCOORD4;
     float4   shadowPos2  : TEXCOORD5;
     float    viewDepth   : TEXCOORD6;
     float3   worldPos    : TEXCOORD11;
+    nointerpolation f16_4_io vertexColor : COLOR0;
     nointerpolation float3 cascadeSplits : TEXCOORD7;
     nointerpolation uint   materialIndex : TEXCOORD8;
-    nointerpolation float  handedness    : TEXCOORD9;
+    nointerpolation f16_io  handedness    : TEXCOORD9;
+    nointerpolation f16_io  ambientBoost  : TEXCOORD12;
 	#if LOD_VISUALIZE == 1
 	nointerpolation uint lod : TEXCOORD10;
     #endif
@@ -110,7 +111,8 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID, [[vk::builtin("Dra
     float3 localPos = aabbMin + UnpackUnorm16x4(input.aPos).xyz * (aabbMax - aabbMin);
     f16_3 worldPos = QMulVec3(insRot, f16_3(localPos) * insScale);
     float3 finalWorldPos = float3(worldPos) + entity.position.xyz;
-
+	// entity.hiddenBitAndAmbient packs C's u16 material (low 16) then u16 hiddenBitAndAmbient (high 16).
+	f16 ambientBoost = (f16)(entity.hiddenBitAndAmbient >> 17) * 0.2f + 1.0f;
     VSOutput o;
     o.position  = mul(uViewProj, float4(finalWorldPos, 1.0));
     o.texCoords = input.aTexCoords;
@@ -118,6 +120,7 @@ VSOutput vert(VSInput input, uint instanceID : SV_InstanceID, [[vk::builtin("Dra
     o.tangent   = tbn[1];
     o.bitangent = tbn[0];
     o.vertexColor = f16_4_io(UnpackAVertexColor(input.aPos));
+    o.ambientBoost = ambientBoost;
     o.worldPos  = finalWorldPos;
 	#if LOD_VISUALIZE == 1
 	o.lod = lod;
@@ -176,7 +179,7 @@ float4 frag(VSOutput input) : SV_Target0
     shadow *= ContactShadow.SampleLevel(Sampler, uv, 0.0f);
 
     float3 color = ApplyPBR(float3(baseColor), N, viewDir, saturate(metallic), saturate(roughness),
-                            saturate(shadow), ao, uSunDirection.xyz);
+                            saturate(shadow), ao, uSunDirection.xyz, input.ambientBoost);
     if (uLocalLightsEnabled != 0u)
         color += AccumulateTileLights(float3(baseColor), N, viewDir, saturate(metallic), saturate(roughness),
                                       worldPos, ao, uint2(input.position.xy), uTilesX, uTileSize);

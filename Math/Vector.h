@@ -145,37 +145,31 @@ typedef v128f f16_4;
 #define F2Set1(val) (float2) { val, val }
 #define F3Set1(val) (float3) { val, val, val }
 
-static inline u32 PackHalf2(float2 v)
-{
+static inline u32 PackHalf2(float2 v) {
     return Float2ToHalf2(&v.x);
 }
 
-static inline f16_2 UnpackHalf2(u32 h)
-{
+static inline f16_2 UnpackHalf2(u32 h) {
     f16_2 res;
     Half2ToFloat2(&res.x, h);
     return res;
 }
 
-static inline f16_2 VecXY(v128f v)
-{
+static inline f16_2 VecXY(v128f v) {
     f16_2 res;
     VecStoreLo64(&res.x, VecBitcastU32(v));
     return res;
 }
 
-static inline f16_2 VecZW(v128f v)
-{
+static inline f16_2 VecZW(v128f v) {
     f16_2 res;
     VecStoreHi64(&res.x, VecBitcastU32(v));
     return res;
 }
 
-static inline f16_4 VecCombine(float2 a, float2 b)
-{
+static inline f16_4 VecCombine(float2 a, float2 b) {
     return VecSetR(a.x, a.y, b.x, b.y);
 }
 
 // procedural noise (cellular / value / gradient) lives in Math/Noise.h
-
 #endif //Vector.h

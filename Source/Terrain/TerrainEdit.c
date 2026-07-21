@@ -13,6 +13,9 @@
 #include <SDL3/SDL.h>
 
 #define TERRAIN_EDIT_VALUES (TERRAIN_EDIT_CELLS * TERRAIN_EDIT_CELLS * TERRAIN_EDIT_CELLS)
+#define TERRAIN_EDIT_SHIFT 4   // world coord -> chunk coord, 1 << TERRAIN_EDIT_SHIFT == TERRAIN_EDIT_CELLS
+#define TERRAIN_EDIT_MASK  (TERRAIN_EDIT_CELLS - 1)  // world coord -> local voxel index
+STATIC_ASSERT((1 << TERRAIN_EDIT_SHIFT) == TERRAIN_EDIT_CELLS, "TERRAIN_EDIT_SHIFT out of sync with TERRAIN_EDIT_CELLS");
 #define TERRAIN_EDIT_CHUNKS_MAGIC 0x4B4E4843u // "CHNK"
 #define TERRAIN_EDIT_CHUNKS_VERSION 2u
 
@@ -155,14 +158,14 @@ void TerrainEdit_OverlayChunk(s32 cx, s32 cy, s32 cz, s8* samples)
     for (s32 x = 0; x < T_SAMPLES_AXIS; x++, dst++)
     {
         s32 wx = wmin.x + x, wy = wmin.y + y, wz = wmin.z + z;
-        s32 ex = wx >> 4, ey = wy >> 4, ez = wz >> 4;
+        s32 ex = wx >> TERRAIN_EDIT_SHIFT, ey = wy >> TERRAIN_EDIT_SHIFT, ez = wz >> TERRAIN_EDIT_SHIFT;
         if (ex != lastEx || ey != lastEy || ez != lastEz)
         {
             last = TerrainEditFind(ex, ey, ez);
             lastEx = ex; lastEy = ey; lastEz = ez;
         }
         if (!last) continue;
-        s16 d = last->delta[((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15)];
+        s16 d = last->delta[((wz & TERRAIN_EDIT_MASK) * TERRAIN_EDIT_CELLS + (wy & TERRAIN_EDIT_MASK)) * TERRAIN_EDIT_CELLS + (wx & TERRAIN_EDIT_MASK)];
         if (d == 0) continue;
         *dst = TerrainEdit_ApplyDelta(*dst, d);
     }
@@ -198,8 +201,8 @@ f32 TerrainEdit_DeltaAt(s32 wx, s32 wy, s32 wz)
     if (Int3Outside(g_TerrainEdit.boundsMin, g_TerrainEdit.boundsMax, wx, wy, wz)) return 0.0f;
 
     SDL_LockMutex(g_TerrainEdit.lock);
-    TerrainEditChunk* chunk = TerrainEditFind(wx >> 4, wy >> 4, wz >> 4);
-    s16 delta = chunk ? chunk->delta[((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15)] : 0;
+    TerrainEditChunk* chunk = TerrainEditFind(wx >> TERRAIN_EDIT_SHIFT, wy >> TERRAIN_EDIT_SHIFT, wz >> TERRAIN_EDIT_SHIFT);
+    s16 delta = chunk ? chunk->delta[((wz & TERRAIN_EDIT_MASK) * TERRAIN_EDIT_CELLS + (wy & TERRAIN_EDIT_MASK)) * TERRAIN_EDIT_CELLS + (wx & TERRAIN_EDIT_MASK)] : 0;
     SDL_UnlockMutex(g_TerrainEdit.lock);
     return (f32)delta * (TERRAIN_SDF_CLAMP / 127.0f);
 }
@@ -210,8 +213,8 @@ u16 TerrainEdit_MaterialAt(s32 wx, s32 wy, s32 wz)
     if (Int3Outside(g_TerrainEdit.boundsMin, g_TerrainEdit.boundsMax, wx, wy, wz)) return 0;
 
     SDL_LockMutex(g_TerrainEdit.lock);
-    TerrainEditChunk* chunk = TerrainEditFind(wx >> 4, wy >> 4, wz >> 4);
-    u16 material = chunk ? chunk->material[((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15)] : 0;
+    TerrainEditChunk* chunk = TerrainEditFind(wx >> TERRAIN_EDIT_SHIFT, wy >> TERRAIN_EDIT_SHIFT, wz >> TERRAIN_EDIT_SHIFT);
+    u16 material = chunk ? chunk->material[((wz & TERRAIN_EDIT_MASK) * TERRAIN_EDIT_CELLS + (wy & TERRAIN_EDIT_MASK)) * TERRAIN_EDIT_CELLS + (wx & TERRAIN_EDIT_MASK)] : 0;
     SDL_UnlockMutex(g_TerrainEdit.lock);
     return material;
 }
@@ -251,14 +254,14 @@ static void TerrainBrushWalk(float3 center, f32 radius, f32 softness, f32 param,
                 f32 t = (dist - core) / (radius - core);
                 weight = 1.0f - (t * t * (3.0f - 2.0f * t));
             }
-            s32 ex = wx >> 4;
+            s32 ex = wx >> TERRAIN_EDIT_SHIFT;
             if (ex != lastEx || !chunk)
             {
-                chunk = TerrainEditGetOrCreate(ex, wy >> 4, wz >> 4);
+                chunk = TerrainEditGetOrCreate(ex, wy >> TERRAIN_EDIT_SHIFT, wz >> TERRAIN_EDIT_SHIFT);
                 lastEx = ex;
             }
             if (!chunk) continue;
-            u32 idx = (u32)(((wz & 15) * TERRAIN_EDIT_CELLS + (wy & 15)) * TERRAIN_EDIT_CELLS + (wx & 15));
+            u32 idx = (u32)(((wz & TERRAIN_EDIT_MASK) * TERRAIN_EDIT_CELLS + (wy & TERRAIN_EDIT_MASK)) * TERRAIN_EDIT_CELLS + (wx & TERRAIN_EDIT_MASK));
             apply(chunk, idx, weight, param, param2);
         }
     }
@@ -448,8 +451,8 @@ bool TerrainEdit_LoadChunks(const char* path)
         if (!ok) break;
         MemCopy(chunk->delta, record->delta, sizeof(record->delta));
         MemCopy(chunk->material, record->material, sizeof(record->material));
-        int3 mn = (int3){ x * 16, y * 16, z * 16 };
-		int3 mx = (int3){ x * 16 + 15, y * 16 + 15, z * 16 + 15 };
+        int3 mn = (int3){ x * TERRAIN_EDIT_CELLS, y * TERRAIN_EDIT_CELLS, z * TERRAIN_EDIT_CELLS };
+		int3 mx = (int3){ x * TERRAIN_EDIT_CELLS + TERRAIN_EDIT_MASK, y * TERRAIN_EDIT_CELLS + TERRAIN_EDIT_MASK, z * TERRAIN_EDIT_CELLS + TERRAIN_EDIT_MASK };
         TerrainEditGrowBounds(mn, mx);
     }
     SDL_UnlockMutex(g_TerrainEdit.lock);

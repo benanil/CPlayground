@@ -19,12 +19,12 @@ typedef struct Entity_
     v128f position;     // last 32bit unused
     u64   rotation;     
     u64   scale;        // xyz16-last16 bit unused
-    u32   primitiveIdx; // 
+    u32   primitiveIdx; // todo make it 16 bit
     u32   sparseIdx;
     // 24 bit parent sparseIdx, last byte ENTITY_FLAG
     u32   parentIdx;
     u16   material;
-    u16   padding;
+    u16   hiddenBitAndAmbient;
 } Entity;
 
 typedef struct Range_

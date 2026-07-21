@@ -96,8 +96,7 @@ static void* PhysicsEnqueueTask(b3TaskCallback* task, void* taskContext,
     (void)taskName;
     JobSystem* jobSystem = (JobSystem*)userContext;
     JobHandle handle = JobSystem_Execute(jobSystem, (JobSystemFn)task, taskContext);
-    if (handle == 0)
-    {
+    if (handle == 0) {
         task(taskContext);
         return NULL;
     }
@@ -112,10 +111,30 @@ static void PhysicsFinishTask(void* userTask, void* userContext)
     JobSystem_WaitJob(jobSystem, handle);
 }
 
+static void* PhysicsAllocFn(int32_t size, int32_t alignment) {
+	return AllocAligned((uint64_t)size, (uint64_t)alignment);
+}
+
+static void PhysicsFreeFn(void* mem) {
+	FreeAligned(mem);
+}
+
+static int PhysicsAssertFn(const char* condition, const char* fileName, int lineNumber) {
+	AX_ERROR("condition:%s, filename:%s, lineNumber:%d", condition, fileName, lineNumber);
+	return IsDebugMode();
+}
+
+static void PhysicsLogFn(const char* txt) {
+	AX_LOG("%s", txt);
+}
+
 void Physics_Init(void)
 {
 	if (B3_IS_NON_NULL(gPhysicsWorld)) return;
 
+	b3SetAllocator(PhysicsAllocFn, PhysicsFreeFn);
+	b3SetAssertFcn(PhysicsAssertFn);
+	b3SetLogFcn(PhysicsLogFn);
 	b3Version version = b3GetVersion();
 	AX_LOG("Box3D version %d.%d.%d\n", version.major, version.minor, version.revision);
 	PhysicsSettings_Load();
@@ -151,18 +170,19 @@ void Scene_InitPhysics(Scene* scene)
 }
 
 static void PhysicsDestroyMeshStorage(Scene* scene, bool transparent);
-static void PhysicsDestroyTerrainMeshStorage(Scene* scene);
 static void PhysicsDestroyLiveStaticColliders(Scene* scene);
 
 void Scene_PhysicsDestroy(Scene* scene)
 {
 	// the world is shared with every other scene now, so this scene's bodies must be
-	// destroyed individually instead of tearing down the whole world
+	// destroyed individually instead of tearing down the whole world.
+	// terrain colliders are NOT touched here - they're owned per-chunk by MarchingTerrain
+	// (tChunk.physicsBody/physicsMesh), not by this scene, and are torn down on their own
+	// chunk lifecycle (tFreeChunkSlot/tClearChunkCache/tMarchingDestroy).
 	PhysicsDestroyLiveStaticColliders(scene);
 
 	PhysicsDestroyMeshStorage(scene, false);
 	PhysicsDestroyMeshStorage(scene, true);
-	PhysicsDestroyTerrainMeshStorage(scene);
 	if (scene->surfacePhysicsBodies) DeAllocateTLSFGlobal(scene->surfacePhysicsBodies);
 	if (scene->transparentPhysicsBodies) DeAllocateTLSFGlobal(scene->transparentPhysicsBodies);
 	if (scene->pendingPhysics) DeAllocateTLSFGlobal(scene->pendingPhysics);
@@ -174,8 +194,6 @@ void Scene_PhysicsDestroy(Scene* scene)
 	SDL_SetAtomicInt(&scene->physicsColliderBuildDone, 0);
 	scene->physicsColliderBuildCallback = NULL;
 	scene->physicsColliderBuildResult = 0;
-	MemSet(scene->terrainPhysicsBodies, 0, sizeof(b3BodyId) * MAX_TERRAIN_PHYSICS_CHUNKS);
-	MemSet(scene->terrainPhysicsMeshes, 0, sizeof(b3MeshData*) * MAX_TERRAIN_PHYSICS_CHUNKS);
 }
 
 b3Vec3 ToB3Vec3(v128f v) { return (b3Vec3){ VecGetX(v), VecGetY(v), VecGetZ(v) }; }
@@ -228,19 +246,14 @@ static uintptr_t PhysicsBodyUserData(u32 sparseIdx, bool transparent)
 	return ((uintptr_t)sparseIdx << 1u) | (transparent ? 1u : 0u);
 }
 
-static uintptr_t PhysicsTerrainUserData(u32 chunkSlot)
-{
-	return ((uintptr_t)1u << (sizeof(uintptr_t) * 8u - 1u)) | (uintptr_t)chunkSlot;
-}
+// top bit tags a body as terrain (vs. the sparseIdx<<1|transparent encoding below). No
+// chunk-specific payload anymore - chunks own their body/mesh handles directly instead of
+// indexing into a shared slot array, so there's no slot number left to stash here.
+#define PHYSICS_TERRAIN_USERDATA ((void*)((uintptr_t)1u << (sizeof(uintptr_t) * 8u - 1u)))
 
 static bool PhysicsUserDataIsTerrain(void* userData)
 {
 	return (((uintptr_t)userData) & ((uintptr_t)1u << (sizeof(uintptr_t) * 8u - 1u))) != 0u;
-}
-
-static u32 PhysicsUserDataTerrainChunk(void* userData)
-{
-	return (u32)(((uintptr_t)userData) & ~((uintptr_t)1u << (sizeof(uintptr_t) * 8u - 1u)));
 }
 
 static u32 PhysicsUserDataSparse(void* userData)
@@ -319,8 +332,6 @@ static void PhysicsDestroyLiveStaticColliders(Scene* scene)
 {
 	PhysicsDestroyBodies(scene->surfacePhysicsBodies, scene->surfaceSet.maxEntities);
 	PhysicsDestroyBodies(scene->transparentPhysicsBodies, scene->transparentSet.maxEntities);
-	for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
-		Scene_PhysicsDestroyTerrainChunk(scene, i);
 	PhysicsDestroyMeshStorage(scene, false);
 	PhysicsDestroyMeshStorage(scene, true);
 }
@@ -467,40 +478,24 @@ void Scene_PhysicsSyncEntityBody(Scene* scene, bool transparent, u32 groupIdx, c
 	b3Body_SetTransform(body, ToB3Vec3(entity->position), ToB3Quat(UnpackQuaternionS16Norm1(entity->rotation)));
 }
 
-void Scene_PhysicsDestroyTerrainChunk(Scene* scene, u32 chunkSlot)
+void Scene_PhysicsDestroyTerrainChunk(u64* inOutBody, struct b3MeshData** inOutMesh)
 {
-	if (!scene || chunkSlot >= MAX_TERRAIN_PHYSICS_CHUNKS) return;
-	if (B3_IS_NON_NULL(scene->terrainPhysicsBodies[chunkSlot]))
-		b3DestroyBody(scene->terrainPhysicsBodies[chunkSlot]);
-	scene->terrainPhysicsBodies[chunkSlot] = b3_nullBodyId;
-	if (scene->terrainPhysicsMeshes[chunkSlot])
+	if (!inOutBody || !inOutMesh) return;
+	b3BodyId body = b3LoadBodyId(*inOutBody);
+	if (B3_IS_NON_NULL(body)) b3DestroyBody(body);
+	*inOutBody = 0u;
+	if (*inOutMesh)
 	{
-		b3DestroyMesh(scene->terrainPhysicsMeshes[chunkSlot]);
-		scene->terrainPhysicsMeshes[chunkSlot] = NULL;
+		b3DestroyMesh(*inOutMesh);
+		*inOutMesh = NULL;
 	}
 }
 
-static void PhysicsDestroyTerrainMeshStorage(Scene* scene)
-{
-	for (u32 i = 0; i < MAX_TERRAIN_PHYSICS_CHUNKS; i++)
-	{
-		if (!scene->terrainPhysicsMeshes[i]) continue;
-		b3DestroyMesh(scene->terrainPhysicsMeshes[i]);
-		scene->terrainPhysicsMeshes[i] = NULL;
-	}
-}
-
-const b3MeshData* Scene_GetTerrainMeshData(Scene* scene, s32 slot)
-{
-	return scene->terrainPhysicsMeshes[slot];
-}
-
-bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
+bool Scene_PhysicsSyncTerrainChunkMesh(u64* inOutBody, struct b3MeshData** inOutMesh,
                                        b3Vec3* vertices, u32 vertexCount,
                                        s32* indices, u32 indexCount)
 {
-	if (!scene || B3_IS_NULL(gPhysicsWorld)) return false;
-	if (chunkSlot >= MAX_TERRAIN_PHYSICS_CHUNKS) return false;
+	if (!inOutBody || !inOutMesh || B3_IS_NULL(gPhysicsWorld)) return false;
 	if (!vertices || !indices || vertexCount == 0u || indexCount < 3u) return false;
 
 	b3MeshDef md     = {0};
@@ -512,17 +507,17 @@ bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
 	b3MeshData* mesh = b3CreateMesh(&md, NULL, 0);
 	if (!mesh)
 	{
-		AX_WARN("physics: terrain mesh build failed for chunk slot %u", chunkSlot);
+		AX_WARN("physics: terrain mesh build failed");
 		return false;
 	}
 
-	b3MeshData* oldMesh = scene->terrainPhysicsMeshes[chunkSlot];
-	b3BodyId body = scene->terrainPhysicsBodies[chunkSlot];
+	b3MeshData* oldMesh = *inOutMesh;
+	b3BodyId body = b3LoadBodyId(*inOutBody);
 	if (B3_IS_NULL(body))
 	{
 		b3BodyDef bd = b3DefaultBodyDef();
 		bd.type     = b3_staticBody;
-		bd.userData = (void*)PhysicsTerrainUserData(chunkSlot);
+		bd.userData = PHYSICS_TERRAIN_USERDATA;
 		body = b3CreateBody(gPhysicsWorld, &bd);
 
 		b3ShapeDef sd = b3DefaultShapeDef();
@@ -532,11 +527,11 @@ bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
 		{
 			b3DestroyBody(body);
 			b3DestroyMesh(mesh);
-			AX_WARN("physics: terrain shape build failed for chunk slot %u", chunkSlot);
+			AX_WARN("physics: terrain shape build failed");
 			return false;
 		}
 
-		scene->terrainPhysicsBodies[chunkSlot] = body;
+		*inOutBody = b3StoreBodyId(body);
 	}
 	else
 	{
@@ -545,7 +540,7 @@ bool Scene_PhysicsSyncTerrainChunkMesh(Scene* scene, u32 chunkSlot,
 		b3Shape_SetMesh(shape, mesh, b3Vec3_one);
 	}
 
-	scene->terrainPhysicsMeshes[chunkSlot] = mesh;
+	*inOutMesh = mesh;
 	if (oldMesh) b3DestroyMesh(oldMesh);
 	return true;
 }
@@ -929,7 +924,7 @@ s32 Scene_PhysicsRaycastPick(const Scene* scene, v128f origin, v128f dir, BVHHit
 		hit->skinnedSet = 0xFFFFFFFFu;
 		hit->bundleIdx  = 0xFFFFFFFFu;
 		hit->groupIdx   = 0u;
-		hit->entityIdx  = PhysicsUserDataTerrainChunk(userData);
+		hit->entityIdx  = 0u; // no chunk id in userData anymore, see PHYSICS_TERRAIN_USERDATA
 		hit->triIndex   = (u32)r.triangleIndex;
 		return 1;
 	}

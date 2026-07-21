@@ -9,7 +9,7 @@
 #define TERRAIN_UV_SCALE  (1.0 / 6.0)
 #define TERRAIN_NORMAL_DX 1
 #define TERRAIN_NORMAL_STRENGTH 0.35
-#define TERRAIN_CHUNK_CELLS 16.0
+#define TERRAIN_CHUNK_CELLS 16.0 /* equal to T_CHUNK_CELLS */
 
 Texture2DArray<float4> AlbedoLayers : register(t0, space2);
 Texture2DArray<float4> NormalLayers : register(t1, space2);
@@ -80,10 +80,10 @@ int DecodeS16(uint v) {
 
 float3 DecodeTerrainPosition(uint2 packedPosition, uint drawID)
 {
+    // uint lod = chunkLocation.y >> 16;
     uint2 chunkLocation = ChunkLocations[drawID];
     int3 chunkCoord = int3(DecodeS16(chunkLocation.x), int(chunkLocation.x) >> 16, DecodeS16(chunkLocation.y));
-    uint lod = chunkLocation.y >> 16;
-    float chunkSize = TERRAIN_CHUNK_CELLS * float(1u << lod);
+    const float chunkSize = TERRAIN_CHUNK_CELLS;
     float3 local = float3(packedPosition.x & 0xFFFFu, packedPosition.x >> 16, packedPosition.y & 0xFFFFu) * (chunkSize / 65535.0);
     return float3(chunkCoord) * chunkSize + local;
 }
@@ -113,7 +113,8 @@ float4 SampleTriplanarLayer(Texture2DArray<float4> tex, float layer, float3 wpos
     float4 sz = tex.Sample(Sampler, float3(wpos.xy * TERRAIN_UV_SCALE, layer));
     return sx * blend.x + sy * blend.y + sz * blend.z;
 }
-
+/*
+// https://bgolus.medium.com/normal-mapping-for-a-triplanar-shader-10bf39dca05a
 float3 SampleTriplanarNormal(float layer, float3 wpos, float3 blend, float3 N)
 {
     float3 tx = NormalLayers.Sample(Sampler, float3(wpos.zy * TERRAIN_UV_SCALE, layer)).xyz * 2.0 - 1.0;
@@ -141,7 +142,7 @@ float3 SampleTriplanarNormal(float layer, float3 wpos, float3 blend, float3 N)
     if (dot(detailN, N) < 0.0) detailN = -detailN;
     return normalize(lerp(N, detailN, 0.8));
 }
-
+*/
 float4 frag(VSOutput i) : SV_Target0
 {
     float3 N = normalize(i.normal);
@@ -158,8 +159,8 @@ float4 frag(VSOutput i) : SV_Target0
     float4 armSample = SampleTriplanarLayer(ArmLayers, layerA, i.worldPos, triBlend) * wA
                      + SampleTriplanarLayer(ArmLayers, layerB, i.worldPos, triBlend) * wB;
 
-    float normalLayer = wA >= wB ? layerA : layerB;
-	float3 shadingN = N;// SampleTriplanarNormal(normalLayer, i.worldPos, triBlend, N);
+    // float normalLayer = wA >= wB ? layerA : layerB;
+	float3 shadingN = N; // SampleTriplanarNormal(normalLayer, i.worldPos, triBlend, N);
     float3 baseColor = float3(SRGBToLinear(f16_3(albedoSample.rgb))) * max(armSample.r, 0.08);
 
     if (uBrushPosRadius.w > 0.0)
@@ -169,6 +170,8 @@ float4 frag(VSOutput i) : SV_Target0
         baseColor = lerp(baseColor, float3(1.0, 0.85, 0.45), glow * 0.55);
     }
 
+    float3 viewDir = uCameraPositionPS.xyz - i.worldPos;
+    if (dot(shadingN, viewDir) < 0.0) shadingN = -shadingN;
     float metallic = saturate(armSample.b);
     float roughness = SpecularAntiAliasing(saturate(armSample.g), ddx(shadingN), ddy(shadingN));
 
@@ -179,15 +182,14 @@ float4 frag(VSOutput i) : SV_Target0
     if (cascadeIndex == 1u) shadowPos = i.shadowPos1;
     if (cascadeIndex == 2u) shadowPos = i.shadowPos2;
     float shadow = SampleShadow(ShadowMap, ShadowSampler, shadowPos, cascadeIndex, shadingN, uSunDirection.xyz);
-
+	shadow = max(shadow, 0.4);
     float2 uv = saturate(i.position.xy / float2(uOutputSize));
     float ao = AmbientOcclusion.SampleLevel(Sampler, uv, 0.0);
     shadow *= ContactShadow.SampleLevel(Sampler, uv, 0.0);
 
-    float3 viewDir = uCameraPositionPS.xyz - i.worldPos;
     float3 color = ApplyPBR(baseColor, shadingN, viewDir, metallic, roughness,
                             shadow, ao, uSunDirection.xyz);
-    color += baseColor * (0.025 + saturate(shadingN.y) * 0.05);
+    color += baseColor * (0.08 + saturate(shadingN.y) * 0.08);
     if (uLocalLightsEnabled != 0u)
         color += AccumulateTileLights(baseColor, shadingN, viewDir, metallic, roughness,
                                       i.worldPos, ao, uint2(i.position.xy), uTilesX, uTileSize);
