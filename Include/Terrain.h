@@ -125,6 +125,8 @@ bool        tFoliage_GetParams(u32 index, tFoliageParams* out);
 // bumps the type's generation: every resident chunk rebuilds its foliage set (not its
 // terrain mesh) over the next few frames, throttled the same way chunk streaming is
 void        tFoliage_SetParams(u32 index, const tFoliageParams* params);
+// randomizes density and rarity for every type while preserving all other settings
+void        tFoliage_RandomizeParams(void);
 
 void tUpdate(void);
 void tInvalidateAll(void);

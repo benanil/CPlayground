@@ -254,9 +254,6 @@ void tFoliage_DestroyChunkFoliage(tChunk* chunk);
 // per-frame: schedules foliage (re)builds for stale resident chunks and integrates
 // finished worker jobs. called once from tUpdate
 void tFoliage_Update(void);
-// marks every in-flight foliage job slot free without integrating results, used
-// during teardown after the shared job system has already been drained
-void tFoliage_DrainJobs(void);
 
 // one in-flight chunk build on a JobSystem worker. the main thread fills the inputs,
 // launches the job and reads the outputs after JobSystem_IsJobDone; exactly one job

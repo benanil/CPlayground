@@ -982,7 +982,6 @@ void tMarchingDestroy()
 
     RendererSetTerrainChunkDraws(NULL, 0);
     tClearChunkCache(); // drains in-flight builds first
-    tFoliage_DrainJobs();
     HMDestroy(&gMarchingTerrain.chunkLookup);
     DeAllocateTLSFGlobal(gMarchingTerrain.chunkDraws);
     DeAllocateTLSFGlobal(gMarchingTerrain.occupiedChunksBitset);

@@ -378,6 +378,10 @@ static void TerrainFoliageUI(void)
         return;
     }
 
+    if (UIButton(CLAY_ID("FoliageRandomize"), CLAY_STRING("Randomize density + rarity"),
+                 (Clay_Dimensions){ 240.0f, 26.0f }, false))
+        tFoliage_RandomizeParams();
+
     for (u32 i = 0u; i < numTypes && i < (u32)(sizeof(foliageTypeOpen) / sizeof(foliageTypeOpen[0])); i++)
     {
         tFoliageParams params;

@@ -22,6 +22,7 @@
 #define T_FOLIAGE_MAX_PATH      512
 #define T_FOLIAGE_NAME_LEN      64
 #define T_FOLIAGE_MAX_PER_CHUNK 192u
+#define T_FOLIAGE_GROUND_SNAP_OFFSET 0.1f
 
 typedef struct tFoliageType_
 {
@@ -30,8 +31,8 @@ typedef struct tFoliageType_
     u32   groupIdx;      // first primitive group in gFoliage.scene.surfaceSet, INVALID_GROUP if unresolved
     u32   groupCount;    // number of primitive groups in the bundle (e.g. trunk+needles as separate
                          // meshes) - every group must get an entity or parts of the model won't render
-    f32   localBaseY;    // local-space AABB min.y; shifts placement so the mesh's own base
-                         // (not its authored pivot) lands on the ground, whatever the pivot is
+    f32   localBaseY;    // lowest local-space point across all primitive groups
+    f32   normalAlign;   // terrain-normal tilt amount; slender meshes stay mostly upright
     b3HullData* hull;    // native-scale convex hull, built lazily on first collider request
     tFoliageParams params;
     bool  paramsDirty;   // set by tFoliage_SetParams; only this type's chunks get torn down
@@ -43,9 +44,9 @@ extern Graphics gGFX; // cpu mega buffers, declared per translation unit as else
 
 typedef struct tFoliagePlacement_
 {
-    float3 localPos; // chunk-relative meters
-    f32    scale;    // final uniform scale (size * variance), pre-multiplied on the worker
-    f32    yaw;      // deterministic per-instance rotation, generated on the worker
+    u64 localPos;    // Pack16x4Fixed chunk-relative position
+    u64 rotation;    // packed final terrain-aligned rotation
+    f32 scale;       // final uniform scale (size * variance), pre-multiplied on the worker
     u32    typeIndex;
 } tFoliagePlacement;
 
@@ -60,10 +61,8 @@ typedef struct tFoliageJob_
     tFoliagePlacement placements[T_FOLIAGE_MAX_PER_CHUNK];
 } tFoliageJob;
 
-// one resolved placement waiting to be batched into its foliage type's bulk
-// RenderSet_AddEntities call. position/rotation/scale are computed once per placement
-// and reused for every render group of the type; physicsBody is only attached to the
-// entity created for render group 0 (see IntegrateFinishedFoliage).
+// A resolved placement awaiting batching into RenderSet_AddEntities.
+// Transform is computed once per placement; physicsBody attaches only to render group 0.
 typedef struct tFoliageBatchItem_
 {
     tChunk* chunk;
@@ -77,6 +76,7 @@ typedef struct tFoliageState_
 {
     Scene scene;
     u32   numTypes;
+    PCG   pcg;
     tFoliageType types[T_MAX_FOLIAGE_SCENE];
     tFoliageJob  jobs[T_MAX_CHUNKS]; // one slot per resident chunk, all dispatched and
                                      // awaited within a single tFoliage_Update call
@@ -96,7 +96,6 @@ static void VisitFile(const char* path, void* data)
         AX_WARN("foliage path invalid");
         return;
     }
-	static PCG pcg = { 0x853c49e6748fea9bULL, 0xda3e39cb94b95bdbULL };
 	
     tFoliageType* type = &gFoliage.types[gFoliage.numTypes++];
     MemSet(type, 0, sizeof(*type));
@@ -104,8 +103,8 @@ static void VisitFile(const char* path, void* data)
     GetFileNameNoExt(type->path, type->name);
     type->groupIdx = INVALID_GROUP;
     type->params = (tFoliageParams){
-        .density = RepeatMinMaxF32(PCGNext(&pcg), 7.5f, 10.0),
-        .rarity  = RepeatMinMaxF32(PCGNext(&pcg), 0.88f, 0.95),
+        .density = RepeatMinMaxF32(PCGNext(&gFoliage.pcg), 7.5f, 10.0),
+        .rarity  = RepeatMinMaxF32(PCGNext(&gFoliage.pcg), 0.88f, 0.95),
         .size    = 1.0f,
         .enabled = true, // off by default until placement/visuals are verified per type
         .collider = false,
@@ -116,7 +115,8 @@ static void VisitFile(const char* path, void* data)
 void tFoliage_Init()
 {
     MemSet(&gFoliage, 0, sizeof(gFoliage));
-    Scene_Init(&gFoliage.scene);
+	gFoliage.pcg = (PCG){ 0x853c49e6748fea9bULL, 0xda3e39cb94b95bdbULL };
+	Scene_Init(&gFoliage.scene);
     if (VisitFolder("Assets/Foliage", VisitFile, NULL, true) == 0) {
         AX_WARN("foliage file traverse failed!");
         return;
@@ -134,16 +134,23 @@ void tFoliage_Init()
 
         type->groupIdx = range.start;
         type->groupCount = range.count;
-        // ground-snap must use the lowest point across every primitive group in the bundle
-        // (needles/trunk/etc are separate groups) - using only the first group's aabbMin
-        // buries any group whose local origin sits lower than that first group's base.
-        f32 minY = VecGetY(gFoliage.scene.surfaceSet.primitiveGroups[range.start].aabbMin);
+        PrimitiveGroup* firstGroup = &gFoliage.scene.surfaceSet.primitiveGroups[range.start];
+        v128f localBoundsMin = firstGroup->aabbMin;
+        v128f localBoundsMax = firstGroup->aabbMax;
         for (u32 g = range.start + 1; g < range.start + range.count; g++)
         {
-            f32 groupMinY = VecGetY(gFoliage.scene.surfaceSet.primitiveGroups[g].aabbMin);
-            if (groupMinY < minY) minY = groupMinY;
+            PrimitiveGroup* group = &gFoliage.scene.surfaceSet.primitiveGroups[g];
+            localBoundsMin = VecMin(localBoundsMin, group->aabbMin);
+            localBoundsMax = VecMax(localBoundsMax, group->aabbMax);
         }
-        type->localBaseY = minY;
+        type->localBaseY = VecGetY(localBoundsMin);
+        f32 height = VecGetY(localBoundsMax) - VecGetY(localBoundsMin);
+        f32 widthX = VecGetX(localBoundsMax) - VecGetX(localBoundsMin);
+        f32 widthZ = VecGetZ(localBoundsMax) - VecGetZ(localBoundsMin);
+        f32 horizontal = Sqrtf(widthX * widthX + widthZ * widthZ);
+        f32 aspect = height / Maxf32(horizontal, 1.0e-3f);
+        f32 tallness = Maxf32(aspect, 1.0f);
+        type->normalAlign = Clampf32(1.0f / (tallness * tallness * tallness), 0.03f, 0.75f);
         type->paramsDirty = true; // build this type's foliage on the first update
     }
 }
@@ -177,6 +184,17 @@ void tFoliage_SetParams(u32 index, const tFoliageParams* params)
     if (!params || index >= gFoliage.numTypes) return;
     gFoliage.types[index].params = *params;
     gFoliage.types[index].paramsDirty = true; // only this type rebuilds next tFoliage_Update
+}
+
+void tFoliage_RandomizeParams(void)
+{
+    for (u32 i = 0; i < gFoliage.numTypes; i++)
+    {
+        tFoliageType* type = &gFoliage.types[i];
+        type->params.density = RepeatMinMaxF32(PCGNext(&gFoliage.pcg), 3.5f, 8.0f);
+        type->params.rarity = RepeatMinMaxF32(PCGNext(&gFoliage.pcg), 0.85f, 0.95f);
+        type->paramsDirty = true;
+    }
 }
 
 // inverse of TerrainDensity_Quantize (>0 air, <0 solid). NOT T_DENSITY_DECODE_SCALE -
@@ -221,7 +239,7 @@ static f32 tFoliageSampleDensity(const s8* density, float3 localPos)
 // Prevents latching onto cave ceilings/overhangs (fixing floating foliage).
 // Rejects buried chunks, thin shells, and steep slopes.
 // Out: false if no valid surface found.
-static bool tFoliageFindSurfaceY(const s8* density, f32 x, f32 z, f32* outY)
+static bool tFoliageFindSurfaceY(const s8* density, f32 x, f32 z, f32* outY, float3* outNormal)
 {
     const f32 step = 0.5f, fineStep = 0.1f, maxY = (f32)T_CHUNK_CELLS;
     float3 p = { x, maxY, z };
@@ -252,9 +270,11 @@ static bool tFoliageFindSurfaceY(const s8* density, f32 x, f32 z, f32* outY)
         tFoliageSampleDensity(density, (float3){ x, y + e, z }) - tFoliageSampleDensity(density, (float3){ x, y - e, z }),
         tFoliageSampleDensity(density, (float3){ x, y, z + e }) - tFoliageSampleDensity(density, (float3){ x, y, z - e })
     };
-    if (F3NormSafe(grad).y < 0.6f) return false; // too steep, mirrors grass's slope cutoff
+    float3 normal = F3NormSafe(grad);
+    if (normal.y < 0.6f) return false; // too steep, mirrors grass's slope cutoff
 
     *outY = y;
+    *outNormal = normal;
     return true;
 }
 
@@ -267,12 +287,8 @@ static void GetRandom(v128u seed, s32 count, s32* rnd)
 		VecStoreI(rnd + i, seed);
 	}
 }
-// fills a noiseAxis*noiseAxis grid of offset NoiseCellular2D results,
-// one call per row: cell (i,j) is the same chunk-local point the placement loop visits at
-// its j-th/i-th step (x = density*(i+0.5), z = density*(j+0.5)), so cx[i*axis+j]/cz[...]
-// line up with the ix/iz indices tFoliagePlacement reads. worldX is constant across a row
-// (broadcast), worldZ varies per lane over 4 consecutive j's - that's what SIMD's for here,
-// not 4 arbitrary points.
+// Fills a noise grid of NoiseCellular2D results (one per row) matching the placement loop's steps.
+// Uses SIMD where worldX is broadcast and worldZ varies across consecutive lanes.
 static void GetCellular(s32 chunkX, s32 chunkZ, f32 density, s32 axis, f32 frequency,
                         f32 offsetX, f32 offsetZ, f32* cx, f32* cz)
 {
@@ -294,6 +310,21 @@ static void GetCellular(s32 chunkX, s32 chunkZ, f32 density, s32 axis, f32 frequ
 		}
 	}
 }
+
+static Quaternion CreateFoliageRotation(float3 normal, f32 yaw, f32 normalAlign)
+{
+    float3 up = F3Up();
+    float3 axis = F3Cross(&up, &normal);
+    f32 upDot = Clampf32(F3Dot(up, normal), -1.0f, 1.0f);
+    f32 axisLength = F3Dot(axis, axis);
+    Quaternion tilt = QIdentity();
+    if (axisLength > 1.0e-6f)
+        tilt = QFromAxisAngle(F3NormSafe(axis), Minf32(ACos(upDot) * normalAlign, MATH_PI * 0.25f));
+
+    Quaternion aroundUp = QFromAxisAngle(up, yaw);
+    return QNormEst(QMul(aroundUp, tilt));
+}
+
 #define T_MIN_DENSITY 0.25f
 #define T_NOISE_AXIS_MAX (int)(T_CHUNK_CELLS * (1.0f / T_MIN_DENSITY)) 
 // worker thread: pure placement, touches only this job slot's output and the read-only
@@ -302,7 +333,6 @@ static void RunFoliageJob(void* userData)
 {
     tFoliageJob* job = (tFoliageJob*)userData;
     job->count = 0u;
-    if (!job->density) return; // chunk had no cached density grid yet, nothing to sample
 
 	ALIGNSIMD s32 rnd[T_NOISE_AXIS_MAX * T_NOISE_AXIS_MAX * 4];
 	ALIGNSIMD f32 cx[T_NOISE_AXIS_MAX * T_NOISE_AXIS_MAX];
@@ -355,29 +385,27 @@ static void RunFoliageJob(void* userData)
                 f32 localZ = Clampf32(z + jitterZ, 0.0f, T_CHUNK_CELLS);
 
                 f32 localY;
-                if (!tFoliageFindSurfaceY(job->density, localX, localZ, &localY)) continue;
+                float3 normal;
+                if (!tFoliageFindSurfaceY(job->density, localX, localZ, &localY, &normal)) continue;
 
 				f32 scale = type->params.sizeVariance ? RepeatMinMaxF32(rnd[rId++], 0.8f, 1.2f) : 1.0f;
 
+                float3 localPos = F3Sub((float3){ localX, localY, localZ }, F3MulF(normal, T_FOLIAGE_GROUND_SNAP_OFFSET));
+                f32 yaw = NextFloat01(rnd[rId++]) * 2.0f * MATH_PI;
                 tFoliagePlacement* placement = &job->placements[job->count++];
-                placement->localPos = (float3){ localX, localY, localZ };
+                placement->localPos = Pack16x4Fixed(VecSetR(localPos.x, localPos.y, localPos.z, 0.0f), (f32)T_CHUNK_CELLS);
+                placement->rotation = PackQuaternionS16NormRet(CreateFoliageRotation(normal, yaw, type->normalAlign));
                 placement->scale = scale;
-                placement->yaw = NextFloat01(rnd[rId++]) * 2.0f * MATH_PI;
                 placement->typeIndex = t;
             }
         }
     }
 }
 
-// dispatches one job into a caller-owned slot from gFoliage.jobs. slots are a flat pool
-// indexed by schedule order (not a busy-scanned ring), since every job spawned this way
-// is awaited with JobSystem_Wait before the frame is done with it. density is borrowed
-// from the chunk's own cache (read here on the main thread, where it's safe) and handed
-// to the worker as a plain pointer - resolving it from inside the worker would mean
-// touching the tChunk array from a worker thread, which the build-job system explicitly
-// avoids (chunk indices/pointers are only stable from the main thread).
+// Safe because group entries remain contiguous and never reorder.
 static void ScheduleFoliageJob(JobSystem* js, tFoliageJob* job, const tChunk* chunk, bool placeAllEnabled)
 {
+	if (!chunk->density) return; // chunk had no cached density grid yet, nothing to sample
     job->chunkMin = chunk->min;
     job->density = chunk->density;
     job->placeAllEnabled = placeAllEnabled;
@@ -420,7 +448,7 @@ static b3HullData* EnsureFoliageTypeHull(tFoliageType* type)
     return type->hull;
 }
 
-static u64 CreateFoliageCollider(tFoliageType* type, float3 worldPos, f32 scale)
+static u64 CreateFoliageCollider(tFoliageType* type, float3 worldPos, f32 scale, Quaternion rotation)
 {
     // global world, not scene-owned, so this still collides with the gameplay scene
     b3WorldId world = Physics_GetWorld();
@@ -432,6 +460,7 @@ static u64 CreateFoliageCollider(tFoliageType* type, float3 worldPos, f32 scale)
     b3BodyDef bd = b3DefaultBodyDef();
     bd.type = b3_staticBody;
     bd.position = (b3Vec3){ worldPos.x, worldPos.y, worldPos.z };
+    bd.rotation = ToB3Quat(rotation);
     b3BodyId body = b3CreateBody(world, &bd);
 
     b3ShapeDef sd = b3DefaultShapeDef();
@@ -451,12 +480,7 @@ static void DestroyFoliageCollider(u64 stored)
     if (B3_IS_NON_NULL(body)) b3DestroyBody(body);
 }
 
-// destroys chunk->foliageEntities[start, start+count) - colliders individually, RenderSet
-// entities as one RenderSet_RemoveEntities call per contiguous same-group run. A group
-// belongs to exactly one foliage type and every insert (IntegrateFinishedFoliage's bulk
-// RenderSet_AddEntities) appends one chunk's placements of a (type, group) as one
-// contiguous block, and removal only ever shifts entities left without reordering them -
-// so entries sharing a groupIdx are always contiguous here, making the batched call safe.
+// Destroys chunk->foliageEntities range: colliders individually, RenderSet entities batched by groupIdx.
 static void DestroyFoliageEntityRange(tChunk* chunk, u32 start, u32 count)
 {
     RenderSet* set = &gFoliage.scene.surfaceSet;
@@ -505,12 +529,8 @@ static u32 FindFoliageTypeIndexForGroup(u32 groupIdx)
     return ~0u;
 }
 
-// tears down only the entities whose foliage type is currently dirty, compacting the
-// untouched survivors to the front of the chunk's own array in place (no realloc here -
-// IntegrateFinishedFoliage grows the buffer afterward if dirty types produced new placements).
-// entities of types that didn't change are left completely alone in the RenderSet. Since a
-// group belongs to exactly one type, a same-groupIdx run (see DestroyFoliageEntityRange) is
-// always uniformly dirty or clean - so runs are classified once, not entity by entity.
+// Tears down entities of dirty types only, compacting survivors in-place.
+// Untouched types are left alone; runs are classified once by groupIdx.
 static void RemoveDirtyChunkFoliage(tChunk* chunk)
 {
     if (!chunk->foliageEntities) { chunk->foliageCount = 0u; return; }
@@ -539,10 +559,8 @@ static void RemoveDirtyChunkFoliage(tChunk* chunk)
     chunk->foliageCount = (u16)kept;
 }
 
-// runs once per tFoliage_Update burst, after every scheduled job has finished (caller
-// already called JobSystem_Wait). Bulk-adds every dirty type's placements across every
-// chunk with one RenderSet_AddEntities call per (type, render group) instead of the old
-// per-entity RenderSet_AddEntity loop - the actual point of batching by foliage type.
+// Runs once per tFoliage_Update burst after JobSystem_Wait.
+// Bulk-adds dirty placements via RenderSet_AddEntities per (type, render group).
 static void IntegrateFinishedFoliage(u32 scheduledCount)
 {
     if (scheduledCount == 0u) return;
@@ -602,15 +620,20 @@ static void IntegrateFinishedFoliage(u32 scheduledCount)
             tFoliageType* type = &gFoliage.types[placement->typeIndex];
             if (type->groupIdx == INVALID_GROUP || !typeItems[placement->typeIndex]) continue;
 
-            float3 worldPos = F3Add(ToFloat3(job->chunkMin), placement->localPos);
+            float3 worldPos = F3Add(ToFloat3(job->chunkMin), Vec3Get(Unpack16x4Fixed(placement->localPos, (f32)T_CHUNK_CELLS)));
             f32 finalScale = type->params.size * placement->scale;
-            worldPos.y -= type->localBaseY * finalScale; // mesh's own base -> ground, not its authored pivot
-            u64 physicsBody = type->params.collider ? CreateFoliageCollider(type, worldPos, finalScale) : 0u;
+            worldPos.y -= type->localBaseY * finalScale;
+            u64 physicsBody = 0u;
+            if (type->params.collider)
+            {
+                Quaternion rotation = UnpackQuaternionS16Norm1(placement->rotation);
+                physicsBody = CreateFoliageCollider(type, worldPos, finalScale, rotation);
+            }
 
             tFoliageBatchItem* item = &typeItems[placement->typeIndex][typeWriteCursor[placement->typeIndex]++];
             item->chunk = chunk;
             item->position = VecSetR(worldPos.x, worldPos.y, worldPos.z, 0.0f);
-            item->rotation = PackQuaternionS16NormRet(QFromAxisAngle(F3Up(), placement->yaw));
+            item->rotation = placement->rotation;
             item->scale = EntityPackUniformWorldScale(finalScale);
             item->physicsBody = physicsBody;
         }
@@ -701,7 +724,7 @@ void tFoliage_Update(void)
             if (!chunk || chunk->buildState != CHUNK_READY || !chunk->mesh.vertices.heapPtr) continue;
             if (!chunk->density) continue; // no cached density grid yet, nothing to sample
 
-            bool needsInitialBuild = !chunk->foliageBuilt;
+			bool needsInitialBuild = !chunk->foliageBuilt;
             if (!anyDirty && !needsInitialBuild) continue; // nothing to do for this chunk right now
 
             ScheduleFoliageJob(js, &gFoliage.jobs[scheduledCount], chunk, needsInitialBuild);
@@ -720,9 +743,4 @@ void tFoliage_Update(void)
     // re-evaluated across every resident chunk - clear them, leave the rest untouched
     for (u32 t = 0; t < gFoliage.numTypes; t++)
         gFoliage.types[t].paramsDirty = false;
-}
-
-void tFoliage_DrainJobs(void)
-{
-
 }
