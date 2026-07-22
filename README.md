@@ -3,12 +3,14 @@
 </p>
 
 ## Overview
-`CEngine` is a data-oriented GPU driven C99 engine with a small amount of C++ used for basis texture compression. It builds an SDL3 GPU-based executable and now contains much more than a playground: a scene system, deferred renderer, asset pipeline, editor UI, animation, and streamed voxel terrain with lod.
+`CEngine` is a data-oriented GPU driven C99 engine with a small amount of C++ used for basis texture compression. It builds an SDL3 GPU-based executable and now contains much more than a playground: a scene system, forward+ renderer, asset pipeline, editor UI, animation, and streamed voxel terrain with lod.
 
 ## Features
-- Scene and asset pipeline with glTF/FBX import
-- Compute shader Hi-Z oclussion culling + frustum culling for draws and lights.
+- Scene and asset pipeline with glTF/glb/fbx/obj import
+- GPU driven rendering
 - BVH data structure over the world, (ray casting + picking support)
+- Box3d physics
+- Terrain + Foliage system
 - Texture system with 4k texture2d atlass array's instead of bindless textures
 - All objects in a world can be rendered with single draw call
 - Clay layout with SDF UI shapes such as rounded rectangle circle
@@ -18,18 +20,18 @@
 - Full compute + raster animation pipeline.
 ![Engine preview](Assets/Images/Untitled.png)
 ## Graphics Features
-- Deferred lighting.
+- Forward+ lighting.
 - GPU compute draw call recording with HI-Z oclussion culling + frustum culling + lod selection
 - Directional cascaded + point and spot light shadows.
 - Animation compute and animated-vertex generation.
-- HBAO, MLAA, tonemapping, god rays, procedural sky.
+- HBAO, MLAA, MSAA, tonemapping, god rays, procedural sky, height fog, Screen Space Shadows.
 - Precompiled shader outputs for SPIR-V and Metal (`spv/`, `msl/`).
 
 ## Project Layout
 - `Source/Rendering/`: renderer, pipelines, compute passes, shadows, draw submission.
 - `Source/AssetManagement/`: glTF/FBX import, mesh baking, texture processing, asset caching.
 - `Source/Editor/`: editor windows, scene tools, terrain tools, asset browser, console.
-- `Source/Terrain/`: streamed voxel terrain, Transvoxel meshing, edit persistence.
+- `Source/Terrain/`: streamed voxel terrain, marching cubes meshing, edit persistence.
 - `Source/UI/`: custom UI renderer/windowing/text integration.
 - `Include/`: public engine headers.
 - `Math/`: math types, matrices, vectors, colors, quaternions, SIMD helpers.
@@ -37,25 +39,24 @@
 
 ## External Libraries
 
-| Library | Purpose | Used by |
-| --- | --- | --- |
-| SDL3 | Platform + GPU backend | `CMakeLists.txt` |
-| basis_universal | Texture compression | `CMakeLists.txt` |
-| ufbx | FBX import | `AssetManager.c` |
-| meshoptimizer  | Mesh optimization | `MeshBake.c` |
-| clay  | Editor UI layout | `Include/UIRenderer.h` |
-| kb_text_shape | Text shaping | `KBTextShape.c` |
-| stb_rect_pack  | Atlas packing | `TextureSystem.c` |
-| stb_sprintf | Formatting | `Platform.c` |
+| Library | Purpose |
+| --- | --- |
+| SDL3  | Platform + GPU backend |
+| Box3D | Physics | 
+| basis_universal | Texture compression |
+| ufbx | FBX import |
+| meshoptimizer  | Mesh optimization |
+| clay  | Editor UI layout  |
+| kb_text_shape | Text shaping |
+| smol-atlas  | ![Atlas packing](https://github.com/aras-p/smol-atlas)|
 | stb_image | Image loading | tools/scripts |
 | stb_image_resize2 | Image resizing | tools/scripts |
-| stb_truetype  | Font parsing | `Slug.c` |
+| stb_truetype  | Font parsing |
 | stb_image_write | Image writing | tools/scripts |
-| stb_perlin | Terrain noise | graphics|
-| tlsf | Allocator | `Source/Memory.c`, `Graphics.c` |
-| dynarray  | Dynamic arrays | `AssetManager.c` |
-| sj | glTF JSON parsing | `GLTFParser.c` |
-| sdefl / sinfl  | Compression | `AssetManager.c`, `TerrainEdit.c` |
+| tlsf | Allocator |
+| dynarray  | Dynamic arrays |
+| sj | glTF JSON parsing  |
+| sdefl / sinfl  | Compression  |
 
 ## Prerequisites
 Install a C/C++ toolchain and CMake 3.16+.
@@ -85,6 +86,10 @@ python Build/Compile.py
 ```
 
 ### Basic build
+If you do this methods below you might get shader error because shaders are not compiled so use this command below to compile shaders
+```bash
+python Shaders/CompileShaders.py
+```
 ```bash
 cmake -S . -B build
 cmake --build build
