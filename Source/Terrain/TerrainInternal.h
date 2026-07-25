@@ -38,22 +38,25 @@
 // Non-indexed Marching Cubes needs one vertex for every triangle index.
 #define T_MARCHING_VERTEX_CAP (T_CHUNK_INDEX_CAP * 2u / 3u)
 #define T_CHUNK_SECONDARY_VERTEX_CAP (2048u)
-#define T_MAX_BUILDS_PER_FRAME        16u
+#define T_MAX_BUILDS_PER_FRAME        32u
 // bump buffer for buildVertices + buildIndices + mesher edgeCache; scales ~cubically
 // with T_CHUNK_CELLS. undersizing spills to the slow TLSF fallback (AX_WARN "arena spilled")
 #define T_BUILD_SCRATCH_SIZE         (4ull * 1024ull * 1024ull)
 #define T_MAX_PHYSICS_SYNCS_PER_FRAME 2u
-#define T_MAX_BUILD_JOBS 8u
+// max concurrent chunk builds (job system thread pool auto-sizes to core count, but only
+// this many can be in-flight); too small causes bursty main-thread integration -> stutter
+#define T_MAX_BUILD_JOBS 16u
 #define T_ENABLE_STATS 0
 
-// the transvoxel-unity port parks non-indexed triangle soup in the vertex heap
-// (~3x an indexed mesh), so it is sized above the old runtime's needs. these back
-// both the CPU mirrors (Graphics.c) and the GPU mirror (Rendering.c) - keep sane.
+// these back both the CPU mirrors (Graphics.c) and the GPU mirror (Rendering.c) - keep sane.
 // bigger T_CHUNK_CELLS means fewer resident chunks short-circuit as fully empty
 // (each spans more height), so real occupancy per view volume goes up - rescale
 // this budget when T_CHUNK_CELLS changes, don't just watch the eviction warning.
-#define T_MAX_VERTICES        (1u << 24) // 256MB at 16B/vertex
-#define T_MAX_INDICES         (4u << 22) // 32MB of u32
+#define T_MAX_VERTICES        (21u << 20) // 252MB at 12B/vertex
+// indices are chunk-relative u16 (per-chunk vertex count is capped at
+// T_MARCHING_VERTEX_CAP == 65536); sized ~5x T_MAX_VERTICES for the real indices:vertices
+// ratio of an indexed mesh, or the index heap exhausts first and silently caps vertex use
+#define T_MAX_INDICES          (105u << 20) // 210MB at 2B/index, 5x T_MAX_VERTICES
 #define T_VERTEX_CACHE_BUDGET (T_MAX_VERTICES * 7u / 8u)
 #define T_VERTEX_CACHE_TARGET (T_MAX_VERTICES * 3u / 4u)
 #define T_INDEX_CACHE_BUDGET  (T_MAX_INDICES * 7u / 8u)
@@ -130,7 +133,7 @@ typedef struct tVertexData_
 typedef struct tMeshData_
 {
     tVertex*  vertices;      // fixed-capacity ranges in the terrain geometry heaps
-    u32*      indices;
+    u16*      indices;       // chunk-relative, values always < T_MARCHING_VERTEX_CAP
 	s32 numIndices;
 	s32 numVertices;
 	s32 vertexCapacity;          // pushes beyond capacity are dropped (heaps are shared,
@@ -269,7 +272,7 @@ typedef struct tBuildJob_
     // worker-local append state, valid only while the job runs (thread scratch arena)
     tVertex* buildVertices;
     u32          buildVertexCount;
-    u32*         buildIndices;
+    u16*         buildIndices;    // chunk-relative, values always < T_MARCHING_VERTEX_CAP
     u32          buildIndexCount;
     // output, worker; mesh ranges are zero when empty or failed
     tMeshHandle  mesh;
@@ -318,6 +321,9 @@ f32  TerrainDensity_SDF(f32 x, f32 y, f32 z);
 void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, s8* out /*19^3*/);
 // world vertical band that can contain surface, chunks outside it are never created
 void TerrainDensity_GetYRange(f32* outMin, f32* outMax);
+// true when the chunk sits fully past the island falloff, where height/carve are provably
+// constant (flat, guaranteed empty) - lets callers skip sampling/meshing/slot allocation
+bool TerrainDensity_ChunkOutsideIslandEmpty(int3 chunkMin);
 
 // analytic column surface height (heightfield term, before the 3D carve). a good seed
 // for the vertical surface march below.
@@ -341,7 +347,7 @@ void tMeshDataDestroy(tMeshData* data);
 void tMeshDataClear(tMeshData* data);
 bool tMeshDataPushVertex(tMeshData* data, tVertex vertex);
 bool tMeshDataPushIndex(tMeshData* data, u32 index);
-u32* tMeshDataBuildValidIndices(const tMeshData* data);
+u16* tMeshDataBuildValidIndices(const tMeshData* data);
 bool tMesherMesh(const tDensityGenerator* generator, const s8* density, tBuildJob* job);
 
 // ---------------------------------------------------------------------------------

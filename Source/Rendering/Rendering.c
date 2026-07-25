@@ -214,7 +214,7 @@ void RendererSetTerrainChunkDraws(const TerrainChunkDraw* draws, u32 count)
     {
         commands[i] = (SDL_GPUIndexedIndirectDrawCommand){ draws[i].indexCount, 1u, draws[i].firstIndex, draws[i].baseVertex, 0u };
         chunkLocations[i * 2u + 0u] = draws[i].chunkXY;
-        chunkLocations[i * 2u + 1u] = draws[i].chunkZLod;
+        chunkLocations[i * 2u + 1u] = draws[i].chunkZ;
     }
     UpdateGPUBufferCycle(g_RenderState.terrainDrawArgsBuffer, commands,
                          count * sizeof(SDL_GPUIndexedIndirectDrawCommand), 0, true);
@@ -372,8 +372,8 @@ static void UploadDirtyGeometry(void)
         (const u8*)gGFX.TerrainGrassBuffer , (const u8*)gGFX.TerrainVertexBuffer, (const u8*)gGFX.TerrainIndexBuffer
     };
     const size_t strides[GeometryBuffer_Count] = {
-        sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), 
-        sizeof(GrassInstance), sizeof(tVertex), sizeof(u32)
+        sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32),
+        sizeof(GrassInstance), sizeof(tVertex), sizeof(u16)
     };
 
     // Snapshot and clear the queue under the lock, then do the (slower) GPU copies without holding
@@ -416,7 +416,7 @@ void InitBuffers(void)
     g_RenderState.lineDrawArgsBuffer       = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
     g_RenderState.gizmoLineBuffer          = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
     g_RenderState.terrainVertexBuffer      = CreateBuffer(NULL, sizeof(tVertex) * T_MAX_VERTICES    , BVertexBit, "CPTerrainChunkVertexBuffer");
-    g_RenderState.terrainIndexBuffer       = CreateBuffer(NULL, sizeof(u32) * T_MAX_INDICES, SDL_GPU_BUFFERUSAGE_INDEX, "CPTerrainChunkIndexBuffer");
+    g_RenderState.terrainIndexBuffer       = CreateBuffer(NULL, sizeof(u16) * T_MAX_INDICES, SDL_GPU_BUFFERUSAGE_INDEX, "CPTerrainChunkIndexBuffer");
     g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndexedIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
     g_RenderState.terrainChunkLocationBuffer = CreateBuffer(NULL, sizeof(u32) * 2u * MAX_TERRAIN_CHUNK_DRAWS, BReadRasterBit, "CPTerrainChunkLocationBuffer");
     g_RenderState.lightBuffer              = CreateBuffer(NULL, sizeof(LightGPU) * MAX_LIGHT_COUNT     , BReadRasterBit | BReadCompute    , "CPLightBuffer");
@@ -487,8 +487,7 @@ static SDL_GPUColorTargetInfo MakeMainColorTarget(WindowState* winstate)
     return target;
 }
 
-static SDL_GPUColorTargetInfo MakeLoadedSceneColorTarget(WindowState* winstate)
-{
+static SDL_GPUColorTargetInfo MakeLoadedSceneColorTarget(WindowState* winstate) {
     SDL_GPUColorTargetInfo target;
     SDL_zero(target);
     target.load_op  = SDL_GPU_LOADOP_LOAD;
@@ -498,8 +497,7 @@ static SDL_GPUColorTargetInfo MakeLoadedSceneColorTarget(WindowState* winstate)
     return target;
 }
 
-static SDL_GPUColorTargetInfo MakeLoadedTextureTarget(SDL_GPUTexture* texture)
-{
+static SDL_GPUColorTargetInfo MakeLoadedTextureTarget(SDL_GPUTexture* texture) {
     SDL_GPUColorTargetInfo target;
     SDL_zero(target);
     target.load_op  = SDL_GPU_LOADOP_LOAD;
@@ -509,8 +507,7 @@ static SDL_GPUColorTargetInfo MakeLoadedTextureTarget(SDL_GPUTexture* texture)
     return target;
 }
 
-SDL_GPUDepthStencilTargetInfo MakeDepthTarget(SDL_GPUTexture* texture, SDL_GPULoadOp loadOp, bool cycle)
-{
+SDL_GPUDepthStencilTargetInfo MakeDepthTarget(SDL_GPUTexture* texture, SDL_GPULoadOp loadOp, bool cycle) {
     SDL_GPUDepthStencilTargetInfo target;
     SDL_zero(target);
     target.clear_depth      = 1.0f; // standard-Z default (shadow maps); camera overrides to 0 (reversed-Z)
@@ -523,10 +520,8 @@ SDL_GPUDepthStencilTargetInfo MakeDepthTarget(SDL_GPUTexture* texture, SDL_GPULo
     return target;
 }
 
-static SDL_GPUDepthStencilTargetInfo MakeForwardDepthTarget(WindowState* winstate)
-{
-    if (g_RenderState.sceneSampleCount != SDL_GPU_SAMPLECOUNT_1 && winstate->tex_depth_msaa)
-    {
+static SDL_GPUDepthStencilTargetInfo MakeForwardDepthTarget(WindowState* winstate) {
+    if (g_RenderState.sceneSampleCount != SDL_GPU_SAMPLECOUNT_1 && winstate->tex_depth_msaa) {
         SDL_GPUDepthStencilTargetInfo target = MakeDepthTarget(winstate->tex_depth_msaa, SDL_GPU_LOADOP_CLEAR, true);
         target.store_op = SDL_GPU_STOREOP_DONT_CARE;
         target.clear_depth = 0.0f; // reversed-Z camera depth: far plane = 0
@@ -535,8 +530,7 @@ static SDL_GPUDepthStencilTargetInfo MakeForwardDepthTarget(WindowState* winstat
     return MakeDepthTarget(winstate->tex_depth, SDL_GPU_LOADOP_LOAD, false);
 }
 
-static void ApplyRuntimeGraphicsSettings(WindowState* winstate)
-{
+static void ApplyRuntimeGraphicsSettings(WindowState* winstate) {
     if (!GraphicsApplyMSAASettings()) return;
 
     SDL_WaitForGPUIdle(g_GPUDevice);
@@ -547,8 +541,7 @@ static void ApplyRuntimeGraphicsSettings(WindowState* winstate)
     CreateWindowBuffers();
 }
 
-static SDL_GPUColorTargetInfo MakeHiZDepthTarget(WindowState* winstate)
-{
+static SDL_GPUColorTargetInfo MakeHiZDepthTarget(WindowState* winstate) {
     SDL_GPUColorTargetInfo target;
     SDL_zero(target);
     target.load_op  = SDL_GPU_LOADOP_CLEAR;
@@ -559,8 +552,7 @@ static SDL_GPUColorTargetInfo MakeHiZDepthTarget(WindowState* winstate)
     return target;
 }
 
-static void UploadRenderSetEntities(RenderSet* set, RenderSetBuffers* buffers)
-{
+static void UploadRenderSetEntities(RenderSet* set, RenderSetBuffers* buffers) {
     if (set->numEntities == 0) return;
     UpdateGPUBufferCycle(buffers->entity, set->entities, set->numEntities * sizeof(Entity), 0ull, true);
 }
@@ -623,8 +615,7 @@ void Render(void)
     ApplyRuntimeGraphicsSettings(winstate);
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_GPUDevice);
-    if (!cmd)
-    {
+    if (!cmd) {
         AX_WARN("Failed to acquire command buffer :%s", SDL_GetError());
         Quit(2);
     }
@@ -632,15 +623,13 @@ void Render(void)
     static int swapchainLogged = 0;
     SDL_GPUTexture* swapchainTexture;
     Uint32 screenW, screenH;
-    if (!SDL_AcquireGPUSwapchainTexture(cmd, g_SDLWindow, &swapchainTexture, &screenW, &screenH))
-    {
+    if (!SDL_AcquireGPUSwapchainTexture(cmd, g_SDLWindow, &swapchainTexture, &screenW, &screenH)) {
         if (swapchainLogged++ < 4) AX_WARN("Failed to acquire swapchain texture: %s", SDL_GetError());
         SDL_CancelGPUCommandBuffer(cmd);
         return;
     }
 
-    if (swapchainTexture == NULL || screenW == 0u || screenH == 0u)
-    {
+    if (swapchainTexture == NULL || screenW == 0u || screenH == 0u) {
         if (swapchainLogged++ < 4) AX_WARN("Swapchain texture unavailable");
         SDL_CancelGPUCommandBuffer(cmd);
         return;
@@ -720,8 +709,7 @@ void Render(void)
                                          cameraFrustum, hiZViewProj, enableHiZ, &pointShadows, &spotShadows);
         AnimateSkinned(cmd);
 
-        if (g_RenderSettings.enableLocalLights)
-        {
+        if (g_RenderSettings.enableLocalLights) {
             RenderShadows(cmd);
         }
 
@@ -765,8 +753,7 @@ void Render(void)
         tonemapTilesX = tilesX;
         tonemapTileHeat = forwardLocalLights;
         static bool s_tileBudgetWarned = false;
-        if (!tilesFit && !s_tileBudgetWarned)
-        {
+        if (!tilesFit && !s_tileBudgetWarned) {
             s_tileBudgetWarned = true;
             AX_WARN("Forward+ render resolution exceeds the tile budget; local lights disabled");
         }
@@ -856,15 +843,13 @@ void Render(void)
     UIRenderCallback();
     UIEndFrame(cmd, &ui_target);
 
-    if (submitLightVisReadback)
-    {
+    if (submitLightVisReadback) {
         // Acquire a fence so next frame can tell when the visibility download has
         // landed before mapping the transfer buffer.
         g_LightVisFence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
         g_LightVisPending = (g_LightVisFence != NULL);
     }
-    else
-    {
+    else {
         SDL_SubmitGPUCommandBuffer(cmd);
     }
 }

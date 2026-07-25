@@ -37,14 +37,12 @@ static const float2 ShadowKernel[32] =
     float2(-0.191099, -0.707353)
 };
 
-struct ShadowCascadeBuffer
-{
+struct ShadowCascadeBuffer {
     float4 lightViewProj[12];
     float4 splitDistances;
 };
 
-struct PointShadowMatrix
-{
+struct PointShadowMatrix {
     float4 lightViewProj[4];
 };
 

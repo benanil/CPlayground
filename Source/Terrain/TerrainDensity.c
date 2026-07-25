@@ -387,6 +387,30 @@ f32 TerrainDensity_SurfaceY(f32 x, f32 z, f32 startY, float3* outNormal)
     return y;
 }
 
+bool TerrainDensity_ChunkOutsideIslandEmpty(int3 chunkMin)
+{
+    if (!td_Params.island) return false;
+
+    // closest point of the chunk footprint to the island center (world origin)
+    f32 size = (f32)T_CHUNK_CELLS * T_VOXEL_SIZE;
+    f32 minX = (f32)chunkMin.x, maxX = minX + size;
+    f32 minZ = (f32)chunkMin.z, maxZ = minZ + size;
+    f32 nearX = Clampf32(0.0f, minX, maxX);
+    f32 nearZ = Clampf32(0.0f, minZ, maxZ);
+    f32 nearDist = Sqrtf(nearX * nearX + nearZ * nearZ);
+    if (nearDist < td_Params.islandRadius + Maxf32(td_Params.islandFalloff, 1.0f))
+        return false; // fade isn't fully saturated everywhere in the chunk, sample normally
+
+    // fully faded: height collapses to flat seaLevel and carve is zeroed, so density is
+    // exactly (y - flatY) - uniform sign unless the Y band straddles the flat surface
+    f32 flatY = Maxf32(td_Params.seaLevel, TERRAIN_BEDROCK_SURFACE_Y);
+    f32 voxel = T_VOXEL_SIZE;
+    f32 oy = (f32)chunkMin.y;
+    f32 yLo = oy - voxel;
+    f32 yHi = oy + (f32)(T_SAMPLES_AXIS - 2) * voxel;
+    return flatY < yLo || flatY > yHi;
+}
+
 void TerrainDensity_GetYRange(f32* outMin, f32* outMax)
 {
     // Ported algorithm maps density 0.04..1.0 through the original y formula.

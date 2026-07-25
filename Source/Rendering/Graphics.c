@@ -64,9 +64,10 @@ extern void Quit(int rc);
 // tlsf instances managing the cpu mega buffers directly, the headers live
 // inside the buffers between bundle ranges
 static tlsf_t g_GeometryTLSF[GeometryBuffer_Count];
-// editor mesh import allocates/shrinks geometry ranges from a worker thread, so serialize the
-// heap mutations against main-thread bundle add/remove. one tlsf call per critical section.
-static SDL_SpinLock g_GeometryHeapLock;
+// editor mesh import allocates/shrinks geometry ranges from a worker thread, so serialize
+// heap mutations against main-thread bundle add/remove. one lock per kind (each kind owns
+// an independent tlsf_t) so terrain build-job workers don't serialize behind unrelated heaps
+static SDL_SpinLock g_GeometryHeapLock[GeometryBuffer_Count];
 
 static char* GeometryHeapBase(GeometryBufferKind kind)
 {
@@ -89,6 +90,7 @@ static u32 GeometryHeapStride(GeometryBufferKind kind)
         case GeometryBuffer_SurfaceVertex: return sizeof(AVertex);
         case GeometryBuffer_GrassInstance: return sizeof(GrassInstance);
         case GeometryBuffer_TerrainVert:   return sizeof(tVertex);
+        case GeometryBuffer_TerrainIndex:  return sizeof(u16);
 		default:                           return sizeof(u32);
     }
 }
@@ -100,8 +102,8 @@ static void InitGeometryHeaps(void)
         sizeof(AVertex)       * MAX_SURFACE_VERTEX,
         sizeof(u32)           * MAX_INDEX,
     	sizeof(GrassInstance) * T_MAX_GRASS,
-		sizeof(tVertex)   * T_MAX_VERTICES,
-        sizeof(u32)           * T_MAX_INDICES
+		sizeof(tVertex)       * T_MAX_VERTICES,
+        sizeof(u16)           * T_MAX_INDICES
 	};
 
     for (u32 kind = 0; kind < GeometryBuffer_Count; kind++)
@@ -157,9 +159,9 @@ u32 GeometryHeapAlloc(GeometryBufferKind kind, u32 count, void** raw)
         align = stride > align ? stride : align;
     else
         bytes += stride - 1u;
-    SDL_LockSpinlock(&g_GeometryHeapLock);
+    SDL_LockSpinlock(&g_GeometryHeapLock[kind]);
     void* ptr = tlsf_memalign(g_GeometryTLSF[kind], align, bytes);
-    SDL_UnlockSpinlock(&g_GeometryHeapLock);
+    SDL_UnlockSpinlock(&g_GeometryHeapLock[kind]);
     if (!ptr) return GEOMETRY_ALLOC_FAIL;
 
     size_t rawOffset = (size_t)((char*)ptr - GeometryHeapBase(kind));
@@ -173,9 +175,9 @@ void GeometryHeapShrink(GeometryBufferKind kind, void* raw, u32 offset, u32 newC
     size_t stride = GeometryHeapStride(kind);
     size_t dataEnd = ((size_t)offset + newCount) * stride;
     size_t newBytes = dataEnd - (size_t)((char*)raw - GeometryHeapBase(kind));
-    SDL_LockSpinlock(&g_GeometryHeapLock);
+    SDL_LockSpinlock(&g_GeometryHeapLock[kind]);
     void* ptr = tlsf_realloc(g_GeometryTLSF[kind], raw, newBytes);
-    SDL_UnlockSpinlock(&g_GeometryHeapLock);
+    SDL_UnlockSpinlock(&g_GeometryHeapLock[kind]);
     ASSERT(ptr == raw); // shrink trims in place, never moves
     (void)ptr;
 }
@@ -183,9 +185,9 @@ void GeometryHeapShrink(GeometryBufferKind kind, void* raw, u32 offset, u32 newC
 void GeometryHeapFree(GeometryBufferKind kind, void* raw)
 {
     if (!raw || !g_GeometryTLSF[kind]) return;
-    SDL_LockSpinlock(&g_GeometryHeapLock);
+    SDL_LockSpinlock(&g_GeometryHeapLock[kind]);
     tlsf_free(g_GeometryTLSF[kind], raw);
-    SDL_UnlockSpinlock(&g_GeometryHeapLock);
+    SDL_UnlockSpinlock(&g_GeometryHeapLock[kind]);
 }
 
 // samples must be 1, 2, 4, or 8
@@ -302,7 +304,7 @@ void GraphicsInit(bool msaa)
     gGFX.SurfaceVertexBuffer = OSAllocAligned(sizeof(AVertex) * MAX_SURFACE_VERTEX, 64);
     gGFX.TerrainGrassBuffer  = OSAllocAligned(sizeof(GrassInstance) * T_MAX_GRASS, 64);
     gGFX.TerrainVertexBuffer = OSAllocAligned(sizeof(tVertex) * T_MAX_VERTICES, 64);
-    gGFX.TerrainIndexBuffer  = OSAllocAligned(sizeof(u32) * T_MAX_INDICES, 64);
+    gGFX.TerrainIndexBuffer  = OSAllocAligned(sizeof(u16) * T_MAX_INDICES, 64);
 	gGFX.IndexBuffer         = OSAllocAligned(sizeof(u32) * MAX_INDEX + 16, 4); // 16->give little bit of space for memcpy
     if (!gGFX.SkinnedVertexBuffer || !gGFX.SurfaceVertexBuffer || !gGFX.TerrainVertexBuffer 
 		|| !gGFX.TerrainIndexBuffer || !gGFX.IndexBuffer)
@@ -481,16 +483,28 @@ void UpdateGPUBufferCycle(SDL_GPUBuffer* buffer, const void* data, size_t buffer
     SDL_UnmapGPUTransferBuffer(g_GPUDevice, dataTransferBuffer);
 
     SDL_UploadToGPUBuffer(copyPass,
-                          &(SDL_GPUTransferBufferLocation) { .transfer_buffer = dataTransferBuffer, .offset = 0}, 
-                          &(SDL_GPUBufferRegion) { .buffer = buffer,  .offset = offset,  .size = bufferSize }, 
+                          &(SDL_GPUTransferBufferLocation) { .transfer_buffer = dataTransferBuffer, .offset = 0},
+                          &(SDL_GPUBufferRegion) { .buffer = buffer,  .offset = offset,  .size = bufferSize },
                           cycle);
-    
+
     SDL_EndGPUCopyPass(copyPass);
-    
-    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(uploadCmdBuf);
-    SDL_WaitForGPUFences(g_GPUDevice, true, &fence, 1);
-    SDL_ReleaseGPUFence(g_GPUDevice, fence);
-    SDL_ReleaseGPUTransferBuffer(g_GPUDevice, dataTransferBuffer);
+
+    if (cycle)
+    {
+        // cycle=true gets a fresh internal buffer generation, so no race with GPU reads
+        // on the old one - no fence wait needed. SDL_ReleaseGPUTransferBuffer defers
+        // actual teardown until safe (SDL_gpu.h), so it's fine to release right away.
+        SDL_SubmitGPUCommandBuffer(uploadCmdBuf);
+        SDL_ReleaseGPUTransferBuffer(g_GPUDevice, dataTransferBuffer);
+    }
+    else
+    {
+        // same buffer generation, in place: wait so a GPU read in flight can't race it
+        SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(uploadCmdBuf);
+        SDL_WaitForGPUFences(g_GPUDevice, true, &fence, 1);
+        SDL_ReleaseGPUFence(g_GPUDevice, fence);
+        SDL_ReleaseGPUTransferBuffer(g_GPUDevice, dataTransferBuffer);
+    }
 }
 
 void UpdateGPUBuffer(SDL_GPUBuffer* buffer, const void* data, size_t bufferSize, size_t offset)
@@ -980,7 +994,7 @@ void GraphicsDestroy()
     OSFreeAligned(gGFX.SurfaceVertexBuffer, sizeof(AVertex) * MAX_SURFACE_VERTEX);
     OSFreeAligned(gGFX.TerrainGrassBuffer , sizeof(GrassInstance) * T_MAX_GRASS);
     OSFreeAligned(gGFX.TerrainVertexBuffer, sizeof(tVertex) * T_MAX_VERTICES);
-    OSFreeAligned(gGFX.TerrainIndexBuffer , sizeof(u32) * T_MAX_INDICES);
+    OSFreeAligned(gGFX.TerrainIndexBuffer , sizeof(u16) * T_MAX_INDICES);
     OSFreeAligned(gGFX.IndexBuffer        , sizeof(u32) * MAX_INDEX + 16);
     gGFX.SkinnedVertexBuffer = NULL;
     gGFX.SurfaceVertexBuffer = NULL;

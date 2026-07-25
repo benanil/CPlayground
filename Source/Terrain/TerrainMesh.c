@@ -54,6 +54,6 @@ bool tMeshDataPushIndex(tMeshData* data, u32 index)
 		AX_WARN("terrain mesh data push indexfailed");
 		return false;
 	}
-	data->indices[data->numIndices++] = index;
+	data->indices[data->numIndices++] = (u16)index;
 	return true;
 }

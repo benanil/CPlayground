@@ -113,7 +113,7 @@ typedef struct TerrainChunkDraw_
     u32 indexCount;
     s32 baseVertex;  // vertex heap element offset, added to each (chunk-local) index
     u32 chunkXY;     // s16 chunk x | s16 chunk y, in this draw's lod grid
-    u32 chunkZLod;   // s16 chunk z | u16 lod
+    u32 chunkZ;      // s16 chunk z
 } TerrainChunkDraw;
 void RendererSetTerrainChunkDraws(const TerrainChunkDraw* draws, u32 count);
 

@@ -436,8 +436,7 @@ purefn f64 Fract(f64 a) {
     return a - Floor(a); 
 }
 
-purefn bool InRange(float x, float start, float length)
-{
+purefn bool InRange(float x, float start, float length) {
     return x > start && x < start + length;
 }
 

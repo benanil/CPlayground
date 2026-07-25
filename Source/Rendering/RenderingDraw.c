@@ -320,7 +320,7 @@ static void RenderTerrainChunkRanges(SDL_GPURenderPass* pass, SDL_GPUBuffer* sha
     SDL_GPUBuffer* storageBuffers[2] = { g_RenderState.terrainChunkLocationBuffer, shadowCascadeBuffer };
     SDL_BindGPUVertexStorageBuffers(pass, 0, storageBuffers, shadowCascadeBuffer ? 2u : 1u);
     SDL_GPUBufferBinding indexBinding = { g_RenderState.terrainIndexBuffer, 0 };
-    SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
     SDL_DrawGPUIndexedPrimitivesIndirect(pass, g_RenderState.terrainDrawArgsBuffer, 0, g_NumTerrainChunkDraws);
 }
 
