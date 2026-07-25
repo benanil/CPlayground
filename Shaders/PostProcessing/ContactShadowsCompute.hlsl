@@ -38,7 +38,7 @@ void ContactShadowWrite(int2 pixel, float value)
 {
     // if (pixel.x < 0 || pixel.y < 0 || pixel.x >= int(shadowSize.x) || pixel.y >= int(shadowSize.y))
     //     return;
-    OutputShadow[pixel] = lerp(1.0f, value, intensity);
+    OutputShadow[pixel] = max(lerp(1.0f, value, intensity), 0.3f);
 }
 
 #define BEND_SSS_SAMPLE_DEPTH(inParameters, pixelXY) ContactShadowSampleDepth(pixelXY)

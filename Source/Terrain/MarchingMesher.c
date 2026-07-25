@@ -92,9 +92,9 @@ static u32 tMarchingEdgeCacheOffset(u32 edge, int3 cellPos)
 
 static bool tMarchingEmitVertex(tMeshData* meshData, float3 vertex, float3 normal)
 {
-    tVertexData data = {0};
+    tVertex data = {0};
     v128f localPos = VecSetR(vertex.x, vertex.y, vertex.z, 0.0f);
-    data.position = Pack16x4Fixed(localPos, (f32)T_CHUNK_CELLS);
+    data.position = PackXY11Z10UnormFixed(localPos, (f32)T_CHUNK_CELLS);
     v128f normVec = VecSetR(normal.x, normal.y, normal.z, 0.0f);
     data.normal = PackNormalOCT(normVec);
     return tMeshDataPushVertex(meshData, data);
@@ -106,7 +106,7 @@ static bool tMarchingCachedVertexMatchesEdge(const tMarchingMesher* mesher, cons
     if (vertexIndex < 0 || vertexIndex >= meshData->numVertices)
         return false;
 
-    float3 vertex = Vec3Get(Unpack16x4Fixed(meshData->vertices[vertexIndex].position, T_CHUNK_CELLS));
+    float3 vertex = Vec3Get(UnpackXY11Z10UnormFixed(meshData->vertices[vertexIndex].position, T_CHUNK_CELLS));
 	int3 mn = I3Min(p0i, p1i);
 	int3 mx = I3Max(p0i, p1i);
     const f32 epsilon = 0.01f;

@@ -121,16 +121,16 @@ typedef struct MaterialBlend_
 
 typedef struct tVertexData_
 {
-    u64 position;  // u16 fixed x/y/z local to chunk, w unused
+    u32 position;  // u16 fixed x/y/z local to chunk, w unused
     u32 normal;    // packed normal/tangent (PackNormalTangent)
     u32 materials; 
-} tVertexData;
-STATIC_ASSERT(sizeof(tVertexData) == 16, "tVertexData must stay 16 bytes");
+} tVertex;
 
+// 20 oct, 8 material index, 4 weight
 typedef struct tMeshData_
 {
-    tVertexData*  vertices;      // fixed-capacity ranges in the terrain geometry heaps
-    u32*          indices;
+    tVertex*  vertices;      // fixed-capacity ranges in the terrain geometry heaps
+    u32*      indices;
 	s32 numIndices;
 	s32 numVertices;
 	s32 vertexCapacity;          // pushes beyond capacity are dropped (heaps are shared,
@@ -267,7 +267,7 @@ typedef struct tBuildJob_
     tMeshData    scratchMesh;
     ArenaScratch scratchArena;
     // worker-local append state, valid only while the job runs (thread scratch arena)
-    tVertexData* buildVertices;
+    tVertex* buildVertices;
     u32          buildVertexCount;
     u32*         buildIndices;
     u32          buildIndexCount;
@@ -339,7 +339,7 @@ const struct TerrainGenParams_* TerrainDensity_GetParams(void);
 bool tMeshDataInit(tMeshData* data);
 void tMeshDataDestroy(tMeshData* data);
 void tMeshDataClear(tMeshData* data);
-bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex);
+bool tMeshDataPushVertex(tMeshData* data, tVertex vertex);
 bool tMeshDataPushIndex(tMeshData* data, u32 index);
 u32* tMeshDataBuildValidIndices(const tMeshData* data);
 bool tMesherMesh(const tDensityGenerator* generator, const s8* density, tBuildJob* job);

@@ -2,6 +2,7 @@
 
 #include "Include/ParallelFor.h"
 #include "Include/Platform.h"
+#include "Include/Memory.h"
 
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_stdinc.h>
@@ -46,10 +47,7 @@ typedef enum DDSBlockDecodeFormat_
 
 typedef struct DDSColor_
 {
-    u8 r;
-    u8 g;
-    u8 b;
-    u8 a;
+    u8 r, g, b, a;
 } DDSColor;
 
 typedef struct DDSUncompressedDecodeTask_
@@ -89,36 +87,29 @@ static u8 DDSExpand6(u32 value) {
     return (u8)((value << 2) | (value >> 4));
 }
 
-static bool DDSIsBC1(TinyDDS_Format format)
-{
-    return format == TDDS_BC1_RGBA_UNORM_BLOCK ||
-           format == TDDS_BC1_RGBA_SRGB_BLOCK ||
+static bool DDSIsBC1(TinyDDS_Format format) {
+    return format == TDDS_BC1_RGBA_UNORM_BLOCK || format == TDDS_BC1_RGBA_SRGB_BLOCK ||
            (int)format == TIF_DXGI_FORMAT_BC1_TYPELESS;
 }
 
 static bool DDSIsBC3(TinyDDS_Format format)
 {
-    return format == TDDS_BC3_UNORM_BLOCK ||
-           format == TDDS_BC3_SRGB_BLOCK ||
+    return format == TDDS_BC3_UNORM_BLOCK || format == TDDS_BC3_SRGB_BLOCK ||
            (int)format == TIF_DXGI_FORMAT_BC3_TYPELESS;
 }
 
 static bool DDSIsBC4(TinyDDS_Format format)
 {
-    return format == TDDS_BC4_UNORM_BLOCK ||
-           format == TDDS_BC4_SNORM_BLOCK ||
+    return format == TDDS_BC4_UNORM_BLOCK || format == TDDS_BC4_SNORM_BLOCK ||
            (int)format == TIF_DXGI_FORMAT_BC4_TYPELESS;
 }
 
-static bool DDSIsBC5(TinyDDS_Format format)
-{
-    return format == TDDS_BC5_UNORM_BLOCK ||
-           format == TDDS_BC5_SNORM_BLOCK ||
+static bool DDSIsBC5(TinyDDS_Format format) {
+    return format == TDDS_BC5_UNORM_BLOCK || format == TDDS_BC5_SNORM_BLOCK ||
            (int)format == TIF_DXGI_FORMAT_BC5_TYPELESS;
 }
 
-static bool DDSIsCompressed(TinyDDS_Format format)
-{
+static bool DDSIsCompressed(TinyDDS_Format format) {
     return DDSIsBC1(format) || DDSIsBC3(format) || DDSIsBC4(format) || DDSIsBC5(format);
 }
 
@@ -313,23 +304,13 @@ static bool DDSDecodeUncompressed(TinyDDS_Format format, const u8* src, u32 widt
         case TDDS_B8G8R8X8_UNORM:
             bytesPerPixel = 4;
             break;
-
-        case TDDS_R8_UNORM:
-            bytesPerPixel = 1;
-            break;
-
-        case TDDS_R8G8_UNORM:
-            bytesPerPixel = 2;
-            break;
-
-        default:
-            return false;
+        case TDDS_R8_UNORM: bytesPerPixel = 1; break;
+        case TDDS_R8G8_UNORM: bytesPerPixel = 2; break;
+        default: return false;
     }
 
-    if ((u64)size < (u64)width * height * bytesPerPixel)
-    {
+    if ((u64)size < (u64)width * height * bytesPerPixel) 
         return false;
-    }
 
     DDSUncompressedDecodeTask task;
     task.format = format;
@@ -338,7 +319,6 @@ static bool DDSDecodeUncompressed(TinyDDS_Format format, const u8* src, u32 widt
     task.width = width;
     task.bytesPerPixel = bytesPerPixel;
     ParallelFor(height, 128, DDSDecodeUncompressedRange, &task);
-
     return true;
 }
 
@@ -355,37 +335,21 @@ static void DDSDecodeCompressedRange(u32 beginBlockY, u32 endBlockY, void* userD
 
             switch (task->decodeFormat)
             {
-                case DDS_BLOCK_DECODE_BC1:
-                    DDSDecodeBC1Block(block, pixels);
-                    break;
-
-                case DDS_BLOCK_DECODE_BC3:
-                    DDSDecodeBC3Block(block, pixels);
-                    break;
-
-                case DDS_BLOCK_DECODE_BC4:
-                    DDSDecodeBC4Block(block, pixels);
-                    break;
-
-                case DDS_BLOCK_DECODE_BC5:
-                    DDSDecodeBC5Block(block, pixels);
-                    break;
+                case DDS_BLOCK_DECODE_BC1: DDSDecodeBC1Block(block, pixels); break;
+                case DDS_BLOCK_DECODE_BC3: DDSDecodeBC3Block(block, pixels); break;
+                case DDS_BLOCK_DECODE_BC4: DDSDecodeBC4Block(block, pixels); break;
+                case DDS_BLOCK_DECODE_BC5: DDSDecodeBC5Block(block, pixels); break;
             }
 
             for (u32 py = 0; py < 4; py++)
             {
                 const u32 y = by * 4u + py;
-                if (y >= task->height) {
-                    break;
-                }
+                if (y >= task->height)  break;
 
                 for (u32 px = 0; px < 4; px++)
                 {
                     const u32 x = bx * 4u + px;
-                    if (x >= task->width)
-                    {
-                        break;
-                    }
+                    if (x >= task->width) break;
 
                     const DDSColor p = pixels[py * 4u + px];
                     u8* out = task->dst + ((u64)y * task->width + x) * 4u;
@@ -407,25 +371,14 @@ static bool DDSDecodeCompressed(TinyDDS_Format format, const u8* src, u32 width,
     const u32 rowPitch = blocksX * blockBytes;
     DDSBlockDecodeFormat decodeFormat;
 
-    if ((u64)size < (u64)rowPitch * blocksY) {
+    if ((u64)size < (u64)rowPitch * blocksY) 
         return false;
-    }
 
-    if (DDSIsBC1(format)) {
-        decodeFormat = DDS_BLOCK_DECODE_BC1;
-    }
-    else if (DDSIsBC3(format)) {
-        decodeFormat = DDS_BLOCK_DECODE_BC3;
-    }
-    else if (DDSIsBC4(format)) {
-        decodeFormat = DDS_BLOCK_DECODE_BC4;
-    }
-    else if (DDSIsBC5(format)) {
-        decodeFormat = DDS_BLOCK_DECODE_BC5;
-    }
-    else {
-        return false;
-    }
+    if      (DDSIsBC1(format)) { decodeFormat = DDS_BLOCK_DECODE_BC1; }
+    else if (DDSIsBC3(format)) { decodeFormat = DDS_BLOCK_DECODE_BC3; }
+    else if (DDSIsBC4(format)) { decodeFormat = DDS_BLOCK_DECODE_BC4; }
+    else if (DDSIsBC5(format)) { decodeFormat = DDS_BLOCK_DECODE_BC5; }
+    else { return false; }
 
     DDSCompressedDecodeTask task;
     task.decodeFormat = decodeFormat;
@@ -441,43 +394,36 @@ static bool DDSDecodeCompressed(TinyDDS_Format format, const u8* src, u32 width,
     return true;
 }
 
-static void DDSTinyErrorCallback(void* user, const char* msg)
-{
+static void DDSTinyErrorCallback(void* user, const char* msg) {
     (void)user;
     AX_WARN("tinydds: %s", msg);
 }
 
-static void* DDSTinyAllocCallback(void* user, size_t size)
-{
+static void* DDSTinyAllocCallback(void* user, size_t size) {
     (void)user;
     return AllocateTLSFGlobal(size);
 }
 
-static void DDSTinyFreeCallback(void* user, void* memory)
-{
+static void DDSTinyFreeCallback(void* user, void* memory) {
     (void)user;
     DeAllocateTLSFGlobal(memory);
 }
 
-static size_t DDSTinyReadCallback(void* user, void* buffer, size_t byteCount)
-{
+static size_t DDSTinyReadCallback(void* user, void* buffer, size_t byteCount) {
     return SDL_ReadIO((SDL_IOStream*)user, buffer, byteCount);
 }
 
-static bool DDSTinySeekCallback(void* user, int64_t offset)
-{
+static bool DDSTinySeekCallback(void* user, int64_t offset) {
     return SDL_SeekIO((SDL_IOStream*)user, offset, SDL_IO_SEEK_SET) >= 0;
 }
 
-static int64_t DDSTinyTellCallback(void* user)
-{
+static int64_t DDSTinyTellCallback(void* user) {
     return SDL_TellIO((SDL_IOStream*)user);
 }
 
 bool DDSLoadDecompressImage(const char* inputFilename, DDSImage* outImage)
 {
-    if (!inputFilename || !outImage)
-    {
+    if (!inputFilename || !outImage) {
         AX_WARN("DDSLoadImage invalid arguments");
         return false;
     }
@@ -487,8 +433,7 @@ bool DDSLoadDecompressImage(const char* inputFilename, DDSImage* outImage)
     outImage->pixels = 0;
 
     SDL_IOStream* file = SDL_IOFromFile(inputFilename, "rb");
-    if (!file)
-    {
+    if (!file) {
         AX_WARN("can't open DDS file %s", inputFilename);
         return false;
     }
@@ -502,23 +447,20 @@ bool DDSLoadDecompressImage(const char* inputFilename, DDSImage* outImage)
     callbacks.tellFn = DDSTinyTellCallback;
 
     TinyDDS_ContextHandle dds = TinyDDS_CreateContext(&callbacks, file);
-    if (!dds)
-    {
+    if (!dds) {
         AX_WARN("DDS context creation failed: %s", inputFilename);
         SDL_CloseIO(file);
         return false;
     }
 
-    if (!TinyDDS_ReadHeader(dds))
-    {
+    if (!TinyDDS_ReadHeader(dds)) {
         AX_WARN("failed parsing DDS header: %s", inputFilename);
         TinyDDS_DestroyContext(dds);
         SDL_CloseIO(file);
         return false;
     }
 
-    if (!TinyDDS_Is2D(dds) || TinyDDS_ArraySlices(dds) > 1 || TinyDDS_IsCubemap(dds))
-    {
+    if (!TinyDDS_Is2D(dds) || TinyDDS_ArraySlices(dds) > 1 || TinyDDS_IsCubemap(dds)) {
         AX_WARN("DDS arrays, cubemaps, and 3D textures are not supported: %s", inputFilename);
         TinyDDS_DestroyContext(dds);
         SDL_CloseIO(file);
@@ -531,8 +473,7 @@ bool DDSLoadDecompressImage(const char* inputFilename, DDSImage* outImage)
     const u32 size = TinyDDS_ImageSize(dds, 0);
     const TinyDDS_Format format = TinyDDS_GetFormat(dds);
 
-    if (!width || !height || !src || !size)
-    {
+    if (!width || !height || !src || !size) {
         AX_WARN("DDS has no usable base image: %s", inputFilename);
         TinyDDS_DestroyContext(dds);
         SDL_CloseIO(file);
@@ -541,8 +482,7 @@ bool DDSLoadDecompressImage(const char* inputFilename, DDSImage* outImage)
 
     const u64 decodedSize = (u64)width * height * 4u;
     u8* decoded = (u8*)AllocateTLSFGlobal((size_t)decodedSize);
-    if (!decoded)
-    {
+    if (!decoded) {
         AX_WARN("DDS allocation failed: %s", inputFilename);
         TinyDDS_DestroyContext(dds);
         SDL_CloseIO(file);
@@ -550,17 +490,14 @@ bool DDSLoadDecompressImage(const char* inputFilename, DDSImage* outImage)
     }
 
     bool ok;
-    if (DDSIsCompressed(format))
-    {
+    if (DDSIsCompressed(format)) {
         ok = DDSDecodeCompressed(format, src, width, height, size, decoded);
     }
-    else
-    {
+    else {
         ok = DDSDecodeUncompressed(format, src, width, height, size, decoded);
     }
 
-    if (!ok)
-    {
+    if (!ok) {
         AX_WARN("unsupported DDS format %d: %s", (int)format, inputFilename);
         DeAllocateTLSFGlobal(decoded);
         TinyDDS_DestroyContext(dds);
@@ -579,10 +516,7 @@ bool DDSLoadDecompressImage(const char* inputFilename, DDSImage* outImage)
 
 void DDSFreeImage(DDSImage* image)
 {
-    if (!image)
-    {
-        return;
-    }
+    if (!image) return;
 
     DeAllocateTLSFGlobal(image->pixels);
     image->width = 0;

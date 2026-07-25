@@ -399,16 +399,18 @@ purefn int Abss32(int x) {
     return (x ^ temp) - temp;
 }
 
-purefn float Absf32(float x)
-{
+purefn float Absf32(float x) {
     int ix = BitCast(int, x) & 0x7FFFFFFF; // every bit except sign mask
     return BitCast(float, ix);
 }
 
-purefn double Absf64(double x)
-{
+purefn double Absf64(double x) {
     uint64_t  ix = BitCast(uint64_t, x) & (~(1ull << 63ull));// every bit except sign mask
     return BitCast(double, ix);
+}
+
+purefn float Roundf32(float f) {
+	return VecGetX(VecRound(VecSet1(f)));
 }
 
 purefn f32 Floorf32(f32 x) {

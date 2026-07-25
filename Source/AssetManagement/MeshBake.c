@@ -63,7 +63,7 @@ static void WeightsForPrimitive(APrimitive* primitive, ASkinedVertex* currVertex
         {
             // Read from the current vertex, not by advancing a shared pointer; float VEC4 weights are 16 bytes.
             const f32* vertexWeights = (const f32*)(weights + (size_t)j * (size_t)weightStride);
-            u32 packedWeights = PackXY11Z10UnormToU32(Vec3Load(vertexWeights));
+            u32 packedWeights = PackXY11Z10Unorm(Vec3Load(vertexWeights));
             if (packedWeights == 0) packedWeights = 1023;
             currVertex[j].weights = packedWeights;
         }

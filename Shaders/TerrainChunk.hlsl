@@ -9,7 +9,7 @@
 #define TERRAIN_UV_SCALE  (1.0 / 6.0)
 #define TERRAIN_NORMAL_DX 1
 #define TERRAIN_NORMAL_STRENGTH 0.35
-#define TERRAIN_CHUNK_CELLS 16.0 /* equal to T_CHUNK_CELLS */
+#define T_CHUNK_CELLS 16.0 /* equal to T_CHUNK_CELLS */
 
 Texture2DArray<float4> AlbedoLayers : register(t0, space2);
 Texture2DArray<float4> NormalLayers : register(t1, space2);
@@ -37,7 +37,7 @@ StructuredBuffer<ShadowCascadeBuffer> sShadowCascades : register(t1);
 
 struct VSInput
 {
-    uint2 position   : POSITION0;
+    uint position   : POSITION0;
     uint normal      : NORMAL;
     uint materials   : TEXCOORD0;
 };
@@ -78,14 +78,12 @@ int DecodeS16(uint v) {
     return int(v << 16) >> 16;
 }
 
-float3 DecodeTerrainPosition(uint2 packedPosition, uint drawID)
+float3 DecodeTerrainPosition(uint packedPosition, uint drawID)
 {
-    // uint lod = chunkLocation.y >> 16;
     uint2 chunkLocation = ChunkLocations[drawID];
     int3 chunkCoord = int3(DecodeS16(chunkLocation.x), int(chunkLocation.x) >> 16, DecodeS16(chunkLocation.y));
-    const float chunkSize = TERRAIN_CHUNK_CELLS;
-    float3 local = float3(packedPosition.x & 0xFFFFu, packedPosition.x >> 16, packedPosition.y & 0xFFFFu) * (chunkSize / 65535.0);
-    return float3(chunkCoord) * chunkSize + local;
+    float3 local = UnpackVec3XY11Z10Unorm(packedPosition) * (f32)T_CHUNK_CELLS;
+    return float3(chunkCoord) * (f32)T_CHUNK_CELLS + local;
 }
 
 VSOutput vert(VSInput i, [[vk::builtin("DrawIndex")]] uint drawID : DRAWINDEX)

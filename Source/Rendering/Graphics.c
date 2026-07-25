@@ -88,7 +88,7 @@ static u32 GeometryHeapStride(GeometryBufferKind kind)
         case GeometryBuffer_SkinnedVertex: return sizeof(ASkinedVertex);
         case GeometryBuffer_SurfaceVertex: return sizeof(AVertex);
         case GeometryBuffer_GrassInstance: return sizeof(GrassInstance);
-        case GeometryBuffer_TerrainVert:   return sizeof(tVertexData);
+        case GeometryBuffer_TerrainVert:   return sizeof(tVertex);
 		default:                           return sizeof(u32);
     }
 }
@@ -100,7 +100,7 @@ static void InitGeometryHeaps(void)
         sizeof(AVertex)       * MAX_SURFACE_VERTEX,
         sizeof(u32)           * MAX_INDEX,
     	sizeof(GrassInstance) * T_MAX_GRASS,
-		sizeof(tVertexData)   * T_MAX_VERTICES,
+		sizeof(tVertex)   * T_MAX_VERTICES,
         sizeof(u32)           * T_MAX_INDICES
 	};
 
@@ -301,7 +301,7 @@ void GraphicsInit(bool msaa)
     gGFX.SkinnedVertexBuffer = OSAllocAligned(sizeof(ASkinedVertex) * MAX_SKINNED_SOURCE_VERTEX, 64);
     gGFX.SurfaceVertexBuffer = OSAllocAligned(sizeof(AVertex) * MAX_SURFACE_VERTEX, 64);
     gGFX.TerrainGrassBuffer  = OSAllocAligned(sizeof(GrassInstance) * T_MAX_GRASS, 64);
-    gGFX.TerrainVertexBuffer = OSAllocAligned(sizeof(tVertexData) * T_MAX_VERTICES, 64);
+    gGFX.TerrainVertexBuffer = OSAllocAligned(sizeof(tVertex) * T_MAX_VERTICES, 64);
     gGFX.TerrainIndexBuffer  = OSAllocAligned(sizeof(u32) * T_MAX_INDICES, 64);
 	gGFX.IndexBuffer         = OSAllocAligned(sizeof(u32) * MAX_INDEX + 16, 4); // 16->give little bit of space for memcpy
     if (!gGFX.SkinnedVertexBuffer || !gGFX.SurfaceVertexBuffer || !gGFX.TerrainVertexBuffer 
@@ -979,7 +979,7 @@ void GraphicsDestroy()
     OSFreeAligned(gGFX.SkinnedVertexBuffer, sizeof(ASkinedVertex) * MAX_SKINNED_SOURCE_VERTEX);
     OSFreeAligned(gGFX.SurfaceVertexBuffer, sizeof(AVertex) * MAX_SURFACE_VERTEX);
     OSFreeAligned(gGFX.TerrainGrassBuffer , sizeof(GrassInstance) * T_MAX_GRASS);
-    OSFreeAligned(gGFX.TerrainVertexBuffer, sizeof(tVertexData) * T_MAX_VERTICES);
+    OSFreeAligned(gGFX.TerrainVertexBuffer, sizeof(tVertex) * T_MAX_VERTICES);
     OSFreeAligned(gGFX.TerrainIndexBuffer , sizeof(u32) * T_MAX_INDICES);
     OSFreeAligned(gGFX.IndexBuffer        , sizeof(u32) * MAX_INDEX + 16);
     gGFX.SkinnedVertexBuffer = NULL;

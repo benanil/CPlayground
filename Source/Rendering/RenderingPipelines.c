@@ -461,9 +461,9 @@ static void InitTerrainTrianglePipeline(void)
     SDL_GPUShader* fragment_shader = PIPELINE_FRAG_DEF(Shaders_TerrainChunkFrag_spv), .num_uniform_buffers = 1, .num_samplers = 8, .num_storage_buffers = 5 }); CHECK_CREATE(fragment_shader, "Terrain Triangle Fragment Shader")
 
     const SDL_GPUVertexAttribute vertex_attributes[3] = {
-        { .location = 0, .buffer_slot = 0, .format = VFORMAT_UINT2,  .offset = offsetof(tVertexData, position) },
-        { .location = 1, .buffer_slot = 0, .format = VFORMAT_UINT,   .offset = offsetof(tVertexData, normal) },
-        { .location = 2, .buffer_slot = 0, .format = VFORMAT_UINT,   .offset = offsetof(tVertexData, materials) },
+        { .location = 0, .buffer_slot = 0, .format = VFORMAT_UINT,  .offset = offsetof(tVertex, position) },
+        { .location = 1, .buffer_slot = 0, .format = VFORMAT_UINT,  .offset = offsetof(tVertex, normal) },
+        { .location = 2, .buffer_slot = 0, .format = VFORMAT_UINT,  .offset = offsetof(tVertex, materials) },
     };
 
     g_TerrainTrianglePipeline = SDL_CreateGPUGraphicsPipeline(g_GPUDevice, &(SDL_GPUGraphicsPipelineCreateInfo){
@@ -485,7 +485,7 @@ static void InitTerrainTrianglePipeline(void)
         .multisample_state = (SDL_GPUMultisampleState){ .sample_count = g_RenderState.sceneSampleCount },
         .vertex_input_state = (SDL_GPUVertexInputState){
             .vertex_buffer_descriptions = &(SDL_GPUVertexBufferDescription){
-                0, sizeof(tVertexData), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
+                0, sizeof(tVertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
             },
             .num_vertex_buffers    = 1,
             .vertex_attributes     = vertex_attributes,
@@ -522,7 +522,7 @@ static void InitTerrainTrianglePipeline(void)
         .multisample_state = (SDL_GPUMultisampleState){ .sample_count = SDL_GPU_SAMPLECOUNT_1 },
         .vertex_input_state = (SDL_GPUVertexInputState){
             .vertex_buffer_descriptions = &(SDL_GPUVertexBufferDescription){
-                0, sizeof(tVertexData), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
+                0, sizeof(tVertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0
             },
             .num_vertex_buffers    = 1,
             .vertex_attributes     = vertex_attributes,

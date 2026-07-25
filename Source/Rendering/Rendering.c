@@ -373,7 +373,7 @@ static void UploadDirtyGeometry(void)
     };
     const size_t strides[GeometryBuffer_Count] = {
         sizeof(ASkinedVertex), sizeof(AVertex), sizeof(u32), 
-        sizeof(GrassInstance), sizeof(tVertexData), sizeof(u32)
+        sizeof(GrassInstance), sizeof(tVertex), sizeof(u32)
     };
 
     // Snapshot and clear the queue under the lock, then do the (slower) GPU copies without holding
@@ -415,7 +415,7 @@ void InitBuffers(void)
     g_RenderState.lineBuffer               = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_LINE_COUNT   , BVertexBit     | BWriteComputeBit, "CPLineVertexBuffer");
     g_RenderState.lineDrawArgsBuffer       = CreateBuffer(NULL, sizeof(u32) * 8                        , BIndirectBit   | BWriteComputeBit, "CPLinedrawArgsBuffer");
     g_RenderState.gizmoLineBuffer          = CreateBuffer(NULL, sizeof(ALineVertex) * MAX_GIZMO_VERTICES, BVertexBit                      , "CPGizmoLineBuffer");
-    g_RenderState.terrainVertexBuffer      = CreateBuffer(NULL, sizeof(tVertexData) * T_MAX_VERTICES    , BVertexBit, "CPTerrainChunkVertexBuffer");
+    g_RenderState.terrainVertexBuffer      = CreateBuffer(NULL, sizeof(tVertex) * T_MAX_VERTICES    , BVertexBit, "CPTerrainChunkVertexBuffer");
     g_RenderState.terrainIndexBuffer       = CreateBuffer(NULL, sizeof(u32) * T_MAX_INDICES, SDL_GPU_BUFFERUSAGE_INDEX, "CPTerrainChunkIndexBuffer");
     g_RenderState.terrainDrawArgsBuffer    = CreateBuffer(NULL, sizeof(SDL_GPUIndexedIndirectDrawCommand) * MAX_TERRAIN_CHUNK_DRAWS, BIndirectBit, "CPTerrainDrawArgsBuffer");
     g_RenderState.terrainChunkLocationBuffer = CreateBuffer(NULL, sizeof(u32) * 2u * MAX_TERRAIN_CHUNK_DRAWS, BReadRasterBit, "CPTerrainChunkLocationBuffer");

@@ -38,7 +38,7 @@ void tMeshDataClear(tMeshData* data)
 	data->numIndices = 0;
 }
 
-bool tMeshDataPushVertex(tMeshData* data, tVertexData vertex)
+bool tMeshDataPushVertex(tMeshData* data, tVertex vertex)
 {
 	if (!data || !data->vertices || data->numVertices >= data->vertexCapacity) {
 		AX_WARN("terrain mesh data push vertex failed");

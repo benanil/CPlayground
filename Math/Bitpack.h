@@ -11,7 +11,7 @@
 #define c10MaxValue   1023
 #define c10Mask       0x3FFu
 
-purefn u32 VCALL PackXY11Z10SnormToU32(v128f v)
+purefn u32 VCALL PackXY11Z10Snorm(v128f v)
 {
     v = VecClamp(v, VecSet1(-1.0f), VecSet1(1.0f));
     v = VecMul(v, VecSetR(1023.f, 1023.f, 511.f, 0.f));
@@ -24,7 +24,7 @@ purefn u32 VCALL PackXY11Z10SnormToU32(v128f v)
     return VeciGetX(i);
 }
 
-purefn u32 VCALL PackXY11Z10UnormToU32(v128f v)
+purefn u32 VCALL PackXY11Z10Unorm(v128f v)
 {
     v = VecClamp01(v);
     v = VecMul(v, VecSetR(2047.f, 2047.f, 1023.f, 0.f));
@@ -35,6 +35,19 @@ purefn u32 VCALL PackXY11Z10UnormToU32(v128f v)
     i = VeciOr(i, VecSwapHalvesU(i));
     i = VeciOr(i, VecSwapPairsU(i));
     return VeciGetX(i);
+}
+
+purefn u32 VCALL PackXY11Z10UnormFixed(v128f v, float scale) {
+	return PackXY11Z10Unorm(VecDivf(v, scale));
+}
+
+purefn v128f VCALL UnpackXY11Z10UnormFixed(u32 v, float scale) {
+	v128u u = VeciSet1(v);
+    u = VeciSrl(u, VeciSetR(0, 11, 22, 0));
+	u = VeciAnd(u, VeciSetR(0x7FF, 0x7FF, 0x3FF, 0));
+	v128f f = VecI32ToF32(u);
+	f = VecDiv(f, VecSetR((f32)0x7FF, (f32)0x7FF, (f32)0x3FF, (f32)0));
+	return VecMulf(f, scale);
 }
 
 static inline u64 VCALL PackUnorm16x4(v128f val)
@@ -153,7 +166,7 @@ purefn u32 VCALL PackNormalTangent(v128f normal, v128f tangent)
 {
     v128f oct          = OctEncode(normal);
     float diamond      = EncodeTangentDiamond(normal, tangent);
-    u32 packedOct      = PackXY11Z10SnormToU32(VecSetR(VecGetX(oct), VecGetY(oct), 0.0f, 0.0f)) & 0x3FFFFFu;
+    u32 packedOct      = PackXY11Z10Snorm(VecSetR(VecGetX(oct), VecGetY(oct), 0.0f, 0.0f)) & 0x3FFFFFu;
     u32 packedDiamond  = (u32)(Saturatef32(diamond) * 511.0f + 0.5f) & 0x1FFu;
     u32 handedness     = VecGetW(tangent) < 0.0f ? 1u : 0u;
     return packedOct | (packedDiamond << 22) | (handedness << 31);
@@ -162,7 +175,7 @@ purefn u32 VCALL PackNormalTangent(v128f normal, v128f tangent)
 purefn u32 VCALL PackNormalOCT(v128f normal)
 {
     v128f oct = OctEncode(normal);
-    return PackXY11Z10SnormToU32(VecSetR(VecGetX(oct), VecGetY(oct), 0.0f, 0.0f)) & 0x3FFFFFu;
+    return PackXY11Z10Snorm(VecSetR(VecGetX(oct), VecGetY(oct), 0.0f, 0.0f)) & 0x3FFFFFu;
 }
 
 // 9 bit per channel xyz, and 2 bit for max index, and 1 bit for max val sign, reconstruct w afterwards

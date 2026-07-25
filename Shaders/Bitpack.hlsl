@@ -14,6 +14,16 @@ f16_3 UnpackVec3XY11Z10Snorm(uint packed) {
     );
 }
 
+f16_3 UnpackVec3XY11Z10Unorm(uint packed) {
+    const f16 scale11 = f16(1.0 / 2047.0);
+    const f16 scale10 = f16(1.0 / 1023.0);
+    return f16_3(
+        f16( packed        & 0x7FFu) * scale11,
+        f16((packed >> 11) & 0x7FFu) * scale11,
+        f16( packed >> 22          ) * scale10
+    );
+}
+
 f16 UnpackHalf(uint packed)
 {
     #if INT16_SUPPORTED
@@ -77,16 +87,6 @@ float4 UnpackUnorm16x4(uint2 p) {
 uint2 PackUnorm16x4(float4 v) {
     uint4 u = uint4(round(saturate(v) * 65534.0)) & 0xFFFFu;
     return uint2(u.x | (u.y << 16), u.z | (u.w << 16));
-}
-
-f16_3 UnpackVec3XY11Z10Unorm(uint packed) {
-    const f16 scale11 = f16(1.0 / 2047.0);
-    const f16 scale10 = f16(1.0 / 1023.0);
-    return f16_3(
-        f16( packed        & 0x7FFu) * scale11,
-        f16((packed >> 11) & 0x7FFu) * scale11,
-        f16( packed >> 22          ) * scale10
-    );
 }
 
 float4 UnpackColor4Uint(uint color)

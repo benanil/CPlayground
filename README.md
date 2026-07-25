@@ -48,7 +48,7 @@
 | meshoptimizer  | Mesh optimization |
 | clay  | Editor UI layout  |
 | kb_text_shape | Text shaping |
-| smol-atlas  | ![Atlas packing](https://github.com/aras-p/smol-atlas)|
+| smol-atlas  | [Atlas packing](https://github.com/aras-p/smol-atlas)|
 | stb_image | Image loading | tools/scripts |
 | stb_image_resize2 | Image resizing | tools/scripts |
 | stb_truetype  | Font parsing |
@@ -85,11 +85,12 @@ python 3.9 and above
 python Build/Compile.py
 ```
 
-### Basic build
-If you do this methods below you might get shader error because shaders are not compiled so use this command below to compile shaders
+If you compile without python script you might get missing shader compile errors to fix that compile shaders like below
 ```bash
 python Shaders/CompileShaders.py
 ```
+
+### Basic build
 ```bash
 cmake -S . -B build
 cmake --build build

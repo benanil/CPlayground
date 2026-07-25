@@ -95,7 +95,7 @@ float SampleShadow(Texture2D<float> shadowMap, SamplerState samp,
         float  mapDepth = shadowMap.SampleLevel(samp, sampleUV, float(cascadeIndex));
         shadow += float(mapDepth >= (depth - bias));
     }
-    return max(shadow / float(kernelSize), 0.2f);
+    return max(shadow / float(kernelSize), 0.3f);
 }
 
 #endif

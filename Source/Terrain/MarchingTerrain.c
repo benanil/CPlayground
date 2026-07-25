@@ -113,7 +113,7 @@ static void tAppendMeshSlotTriangles(tBuildJob* job)
     f32 chunkSize = (f32)(T_CHUNK_CELLS);
     for (size_t v = 0; v < vertexCount; v++)
     {
-        v128f local = Unpack16x4Fixed(mesh->vertices[v].position, chunkSize);
+        v128f local = UnpackXY11Z10UnormFixed(mesh->vertices[v].position, chunkSize);
         v128f p = VecAdd(local, offset);
         // Safe normalize: flat or nearly collapsed triangles can leave zero-length
         // normals; a plain normalize would spray NaN colors.
@@ -121,7 +121,7 @@ static void tAppendMeshSlotTriangles(tBuildJob* job)
         float3 n = Vec3Get(tUnpackNormal(mesh->vertices[v].normal));
         u32 materials, blend;
         tTerrainMaterial(world, n, &materials, &blend);
-		tVertexData vertex = {0};
+		tVertex vertex = {0};
 		vertex.position  = mesh->vertices[v].position;
 		vertex.normal    = mesh->vertices[v].normal;
 		vertex.materials = materials | (blend << 16);
@@ -139,9 +139,9 @@ static void tAppendMeshSlotTriangles(tBuildJob* job)
         if ((size_t)ia >= vertexCount || (size_t)ib >= vertexCount || (size_t)ic >= vertexCount)
             continue;
 
-        v128f pa = Unpack16x4Fixed(mesh->vertices[ia].position, chunkSize);
-        v128f pb = Unpack16x4Fixed(mesh->vertices[ib].position, chunkSize);
-        v128f pc = Unpack16x4Fixed(mesh->vertices[ic].position, chunkSize);
+        v128f pa = UnpackXY11Z10UnormFixed(mesh->vertices[ia].position, chunkSize);
+        v128f pb = UnpackXY11Z10UnormFixed(mesh->vertices[ib].position, chunkSize);
+        v128f pc = UnpackXY11Z10UnormFixed(mesh->vertices[ic].position, chunkSize);
 
         // Skip zero-area marching-cubes triangles instead of shading degenerate faces.
         v128f ab = VecSub(pb, pa);
@@ -280,7 +280,7 @@ static void BeginBuildJob(tBuildJob* job)
 
 static bool PrepareBuildScratch(tBuildJob* job)
 {
-    job->buildVertices = (tVertexData*)ArenaPushGlobal(sizeof(tVertexData) * T_MARCHING_VERTEX_CAP);
+    job->buildVertices = (tVertex*)ArenaPushGlobal(sizeof(tVertex) * T_MARCHING_VERTEX_CAP);
     job->buildIndices = (u32*)ArenaPushGlobal(sizeof(u32) * T_CHUNK_INDEX_CAP);
     if (!job->buildVertices || !job->buildIndices) {
         AX_WARN("marching terrain build scratch allocation failed");
@@ -319,7 +319,7 @@ static bool BuildPhysicsMesh(tBuildJob* job, u32 vertexCount, u32 indexCount)
         f32 chunkSize = (f32)(T_CHUNK_CELLS);
         v128f offset = VecI32ToF32(VeciLoad((const u32*)&job->min.x));
         for (u32 v = 0; v < vertexCount; v++) {
-            v128f local = Unpack16x4Fixed(job->buildVertices[v].position, chunkSize);
+            v128f local = UnpackXY11Z10UnormFixed(job->buildVertices[v].position, chunkSize);
             v128f p = VecAdd(local, offset);
             job->mesh.physics.vertices[v] = (b3Vec3){ VecGetX(p), VecGetY(p), VecGetZ(p) };
         }
@@ -354,7 +354,7 @@ static bool UploadChunkMesh(tBuildJob* job)
         return false;
     }
 
-    MemCopy((tVertexData*)gGFX.TerrainVertexBuffer + first, job->buildVertices, vertexCount * sizeof(tVertexData));
+    MemCopy((tVertex*)gGFX.TerrainVertexBuffer + first, job->buildVertices, vertexCount * sizeof(tVertex));
     Rendering_QueueGeometryUpload(GeometryBuffer_TerrainVert, first, first + vertexCount);
     MemCopy((u32*)gGFX.TerrainIndexBuffer + idxFirst, job->buildIndices, indexCount * sizeof(u32));
     Rendering_QueueGeometryUpload(GeometryBuffer_TerrainIndex, idxFirst, idxFirst + indexCount);
