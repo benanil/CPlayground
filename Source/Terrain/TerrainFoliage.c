@@ -47,7 +47,7 @@ typedef struct tFoliagePlacement_
     u64 localPos;    // Pack16x4Fixed chunk-relative position
     u64 rotation;    // packed final terrain-aligned rotation
     f32 scale;       // final uniform scale (size * variance), pre-multiplied on the worker
-    u32    typeIndex;
+    u32 typeIndex;
 } tFoliagePlacement;
 
 typedef struct tFoliageJob_
@@ -69,7 +69,6 @@ typedef struct tFoliageBatchItem_
     v128f   position;
     u64     rotation;
     u64     scale;
-    u64     physicsBody;
 } tFoliageBatchItem;
 
 typedef struct tFoliageState_
@@ -413,73 +412,6 @@ static void ScheduleFoliageJob(JobSystem* js, tFoliageJob* job, const tChunk* ch
     JobSystem_Execute(js, RunFoliageJob, job);
 }
 
-#define T_FOLIAGE_HULL_MAX_VERTS 64
-
-// builds and caches the type's native-scale convex hull from its primitive's vertex cloud.
-// per-instance colliders clone+scale it via b3CreateTransformedHullShape.
-static b3HullData* EnsureFoliageTypeHull(tFoliageType* type)
-{
-    if (type->hull) return type->hull;
-    if (type->groupIdx == INVALID_GROUP) return NULL;
-
-    RenderSet* set = &gFoliage.scene.surfaceSet;
-    if (type->groupIdx >= set->numGroups) return NULL;
-    PrimitiveGroup* group = &set->primitiveGroups[type->groupIdx];
-    u32 numVertices = group->lodNumVertices[0];
-    if (numVertices < 4u) return NULL;
-    if (group->bundleIdx >= gFoliage.scene.numBundles || !gFoliage.scene.bundleRefs[group->bundleIdx].bundle)
-        return NULL;
-
-    const SceneBundle* bundle = gFoliage.scene.bundleRefs[group->bundleIdx].bundle;
-    const APrimitive* prim = &bundle->meshes[group->meshIndex].primitives[group->primitiveIndex];
-    u32 vertexOffset = group->lodVertexOffset[0];
-    v128f decodeMin = VecLoad(prim->min);
-    v128f decodeExtent = VecMax(VecSub(VecLoad(prim->max), decodeMin), VecSet1(1.0e-6f));
-
-    b3Vec3* points = (b3Vec3*)AllocateTLSFGlobal(sizeof(b3Vec3) * numVertices);
-    if (!points) return NULL;
-
-    const AVertex* vb = gGFX.SurfaceVertexBuffer + vertexOffset;
-    for (u32 v = 0; v < numVertices; v++)
-        points[v] = ToB3Vec3(VecAdd(decodeMin, VecMul(UnpackUnorm16x4(vb[v].position), decodeExtent)));
-
-    type->hull = b3CreateHull(points, (int)numVertices, T_FOLIAGE_HULL_MAX_VERTS);
-    DeAllocateTLSFGlobal(points);
-    return type->hull;
-}
-
-static u64 CreateFoliageCollider(tFoliageType* type, float3 worldPos, f32 scale, Quaternion rotation)
-{
-    // global world, not scene-owned, so this still collides with the gameplay scene
-    b3WorldId world = Physics_GetWorld();
-    if (B3_IS_NULL(world)) return 0u;
-
-    b3HullData* hull = EnsureFoliageTypeHull(type);
-    if (!hull) return 0u;
-
-    b3BodyDef bd = b3DefaultBodyDef();
-    bd.type = b3_staticBody;
-    bd.position = (b3Vec3){ worldPos.x, worldPos.y, worldPos.z };
-    bd.rotation = ToB3Quat(rotation);
-    b3BodyId body = b3CreateBody(world, &bd);
-
-    b3ShapeDef sd = b3DefaultShapeDef();
-    b3Vec3 scaleVec = { scale, scale, scale };
-    b3ShapeId shape = b3CreateTransformedHullShape(body, &sd, hull, b3Transform_identity, scaleVec);
-    if (B3_IS_NULL(shape)) {
-        b3DestroyBody(body);
-        return 0u;
-    }
-    return b3StoreBodyId(body);
-}
-
-static void DestroyFoliageCollider(u64 stored)
-{
-    if (stored == 0u) return;
-    b3BodyId body = b3LoadBodyId(stored);
-    if (B3_IS_NON_NULL(body)) b3DestroyBody(body);
-}
-
 // Destroys chunk->foliageEntities range: colliders individually, RenderSet entities batched by groupIdx.
 static void DestroyFoliageEntityRange(tChunk* chunk, u32 start, u32 count)
 {
@@ -492,9 +424,6 @@ static void DestroyFoliageEntityRange(tChunk* chunk, u32 start, u32 count)
         u32 runStart = i;
         while (i < end && (chunk->foliageEntities[i].packed >> 3) == groupIdx) i++;
         u32 runCount = i - runStart;
-
-        for (u32 k = runStart; k < i; k++)
-            DestroyFoliageCollider(chunk->foliageEntities[k].physicsBody);
 
         tFoliageEntity* first = &chunk->foliageEntities[runStart];
         if (first->sparseIdx >= set->maxEntities || groupIdx >= set->numGroups) continue;
@@ -601,7 +530,7 @@ static void IntegrateFinishedFoliage(u32 scheduledCount)
     }
 
     // pass 2: bucket every dirty-type placement into that type's batch array. worldPos/
-    // rotation/scale/collider are resolved once here and reused for every render group.
+    // rotation/scale are resolved once here and reused for every render group.
     tFoliageBatchItem* typeItems[T_MAX_FOLIAGE_SCENE] = {0};
     u32 typeWriteCursor[T_MAX_FOLIAGE_SCENE] = {0};
     for (u32 t = 0; t < gFoliage.numTypes; t++)
@@ -623,19 +552,12 @@ static void IntegrateFinishedFoliage(u32 scheduledCount)
             float3 worldPos = F3Add(ToFloat3(job->chunkMin), Vec3Get(Unpack16x4Fixed(placement->localPos, (f32)T_CHUNK_CELLS)));
             f32 finalScale = type->params.size * placement->scale;
             worldPos.y -= type->localBaseY * finalScale;
-            u64 physicsBody = 0u;
-            if (type->params.collider)
-            {
-                Quaternion rotation = UnpackQuaternionS16Norm1(placement->rotation);
-                physicsBody = CreateFoliageCollider(type, worldPos, finalScale, rotation);
-            }
 
             tFoliageBatchItem* item = &typeItems[placement->typeIndex][typeWriteCursor[placement->typeIndex]++];
             item->chunk = chunk;
             item->position = VecSetR(worldPos.x, worldPos.y, worldPos.z, 0.0f);
             item->rotation = placement->rotation;
             item->scale = EntityPackUniformWorldScale(finalScale);
-            item->physicsBody = physicsBody;
         }
     }
 
@@ -649,7 +571,6 @@ static void IntegrateFinishedFoliage(u32 scheduledCount)
 
         Entity* entityBuf = (Entity*)AllocateTLSFGlobal(sizeof(Entity) * count);
         if (!entityBuf) {
-            for (u32 k = 0; k < count; k++) DestroyFoliageCollider(typeItems[t][k].physicsBody);
             DeAllocateTLSFGlobal(typeItems[t]);
             continue;
         }
@@ -659,10 +580,7 @@ static void IntegrateFinishedFoliage(u32 scheduledCount)
             u32 groupIdx = type->groupIdx + g;
             u32 sparseBase = RenderSet_AllocateSparseIDRange(set, (int)count);
             if (sparseBase == INVALID_ENTITY)
-            {
-                if (g == 0u) for (u32 k = 0; k < count; k++) DestroyFoliageCollider(typeItems[t][k].physicsBody);
                 continue;
-            }
 
             for (u32 k = 0; k < count; k++)
             {
@@ -677,17 +595,15 @@ static void IntegrateFinishedFoliage(u32 scheduledCount)
 
             if (RenderSet_AddEntities(set, groupIdx, count, entityBuf) == INVALID_ENTITY)
             {
-                for (u32 k = 0; k < count; k++) RenderSet_FreeSparseID(set, sparseBase + k);
-                if (g == 0u) for (u32 k = 0; k < count; k++) DestroyFoliageCollider(typeItems[t][k].physicsBody);
+                RenderSet_FreeSparseIDRange(set, sparseBase, count);
                 continue;
             }
 
             for (u32 k = 0; k < count; k++)
             {
                 tChunk* itemChunk = typeItems[t][k].chunk;
-                u64 bodyForThisEntity = (g == 0u) ? typeItems[t][k].physicsBody : 0u;
-                itemChunk->foliageEntities[itemChunk->foliageCount++] =
-                    (tFoliageEntity){ sparseBase + k, groupIdx << 3, bodyForThisEntity };
+				tFoliageEntity foliage = { sparseBase + k, groupIdx << 3 };
+				itemChunk->foliageEntities[itemChunk->foliageCount++] = foliage;
             }
         }
 

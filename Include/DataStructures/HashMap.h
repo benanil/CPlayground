@@ -19,12 +19,12 @@
 *
 * In all other files, simply include the header normally like STB libraries.
 *
-* TYPE-SAFE WRAPPERS (HM_DEFINE_TYPE):
+* TYPE-SAFE WRAPPERS (HM_DEFINE_TYPE) nice to have not required:
 * Use this macro to generate specific helper functions for your types.
 * Example:
 * typedef struct { float x, y; } Vec2;
 * HM_DEFINE_TYPE(Vec2, Vec2)
-* HM_DEFINE_TYPE(U64, uint64_t) // nice to have
+* HM_DEFINE_TYPE(U64, uint64_t)
 * This generates:
 * - Vec2* HMFindVec2(const HashMap* hm, uint64_t key);
 * - bool  HMTryGet(const HashMap* hm, uint64_t key, void* out);

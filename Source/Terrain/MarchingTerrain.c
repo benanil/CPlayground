@@ -14,6 +14,9 @@
 // box3d's collider build (b3CreateMesh, BVH) runs synchronously on the main thread; terrain
 // past this radius is unreachable, so gate collider creation by distance, not draw distance
 #define T_PHYSICS_COLLIDER_RADIUS 64.0f
+// never evict terrain this close to the camera, regardless of visibility/age - protects
+// the immediate surroundings from ever popping out even under heavy cache pressure
+#define T_EVICT_PROTECT_RADIUS (T_MARCHING_DRAW_DISTANCE / 2.5f)
 
 typedef struct tMarchingTerrainState_
 {
@@ -35,7 +38,7 @@ typedef struct tMarchingTerrainState_
     u32     culledChunks;
     u32     emptyChunks;
     u32     physicsSyncCursor;
-    u32     evictCursor;    // rotating scan start for tFreeOldestChunkSlot, see there
+    u32     lruHead, lruTail; // residency LRU list ends, T_CHUNK_LRU_NONE-terminated
     SDL_AtomicInt physicsInvalidated;
     SDL_AtomicInt heapPressure;
     u64    lastStatsTicks;
@@ -251,14 +254,19 @@ static void tSetChunkPending(tChunk* chunk, PendingMeshState pendingState)
 }
 
 // true once the camera's collider radius overlaps the chunk's AABB
-static bool tChunkNearCameraForPhysics(const tChunk* chunk)
+static bool tChunkWithinRadius(const tChunk* chunk, f32 radius)
 {
     float3 p = g_Camera.position;
     f32 cx = Clampf32(p.x, chunk->aabbMin.x, chunk->aabbMax.x);
     f32 cy = Clampf32(p.y, chunk->aabbMin.y, chunk->aabbMax.y);
     f32 cz = Clampf32(p.z, chunk->aabbMin.z, chunk->aabbMax.z);
     f32 dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
-    return (dx * dx + dy * dy + dz * dz) <= (T_PHYSICS_COLLIDER_RADIUS * T_PHYSICS_COLLIDER_RADIUS);
+    return (dx * dx + dy * dy + dz * dz) <= (radius * radius);
+}
+
+static bool tChunkNearCameraForPhysics(const tChunk* chunk)
+{
+    return tChunkWithinRadius(chunk, T_PHYSICS_COLLIDER_RADIUS);
 }
 
 static void tSyncChunkPhysics(tChunk* chunk)
@@ -550,6 +558,46 @@ static void tRemapBuildJobChunkIndex(u32 oldIndex, u32 newIndex)
     }
 }
 
+#define T_CHUNK_LRU_NONE UINT32_MAX
+
+// unlink a chunk from wherever it sits in the residency LRU (safe no-op if unlinked)
+static void tLRUUnlink(u32 index)
+{
+    tChunk* chunk = &gMarchingTerrain.chunks[index];
+    if (chunk->lruPrev != T_CHUNK_LRU_NONE) gMarchingTerrain.chunks[chunk->lruPrev].lruNext = chunk->lruNext;
+    else gMarchingTerrain.lruHead = chunk->lruNext;
+    if (chunk->lruNext != T_CHUNK_LRU_NONE) gMarchingTerrain.chunks[chunk->lruNext].lruPrev = chunk->lruPrev;
+    else gMarchingTerrain.lruTail = chunk->lruPrev;
+    chunk->lruPrev = T_CHUNK_LRU_NONE;
+    chunk->lruNext = T_CHUNK_LRU_NONE;
+}
+
+// append as most-recently-touched; only valid for a chunk not currently linked
+static void tLRUPushTail(u32 index)
+{
+    tChunk* chunk = &gMarchingTerrain.chunks[index];
+    chunk->lruPrev = gMarchingTerrain.lruTail;
+    chunk->lruNext = T_CHUNK_LRU_NONE;
+    if (gMarchingTerrain.lruTail != T_CHUNK_LRU_NONE) gMarchingTerrain.chunks[gMarchingTerrain.lruTail].lruNext = index;
+    else gMarchingTerrain.lruHead = index;
+    gMarchingTerrain.lruTail = index;
+}
+
+static void tLRUTouch(u32 index) { tLRUUnlink(index); tLRUPushTail(index); }
+
+// swap-compact moved a chunk from oldIndex to newIndex (tFreeChunkSlot): its own
+// lruPrev/lruNext came along in the struct copy, but its neighbours (and head/tail)
+// still point at oldIndex - repoint them, mirroring tRemapBuildJobChunkIndex
+static void tLRURemapIndex(u32 oldIndex, u32 newIndex)
+{
+    (void)oldIndex;
+    tChunk* chunk = &gMarchingTerrain.chunks[newIndex];
+    if (chunk->lruPrev != T_CHUNK_LRU_NONE) gMarchingTerrain.chunks[chunk->lruPrev].lruNext = newIndex;
+    else gMarchingTerrain.lruHead = newIndex;
+    if (chunk->lruNext != T_CHUNK_LRU_NONE) gMarchingTerrain.chunks[chunk->lruNext].lruPrev = newIndex;
+    else gMarchingTerrain.lruTail = newIndex;
+}
+
 static void tFreeChunkSlot(u32 index)
 {
     if (index >= gMarchingTerrain.chunkCount) return;
@@ -561,6 +609,7 @@ static void tFreeChunkSlot(u32 index)
     tFoliage_DestroyChunkFoliage(chunk);
     DeAllocateTLSFGlobal(chunk->density);
     chunk->density = NULL;
+    tLRUUnlink(index);
 
     u32 lastIndex = gMarchingTerrain.chunkCount - 1u;
     if (index != lastIndex)
@@ -569,6 +618,7 @@ static void tFreeChunkSlot(u32 index)
         u64 movedKey = tChunkKey(gMarchingTerrain.chunks[index].min);
         HMInsertOrAssign(&gMarchingTerrain.chunkLookup, movedKey, &index);
         tRemapBuildJobChunkIndex(lastIndex, index);
+        tLRURemapIndex(lastIndex, index);
     }
 
     MemsetZero(&gMarchingTerrain.chunks[lastIndex], sizeof(gMarchingTerrain.chunks[lastIndex]));
@@ -578,33 +628,25 @@ static void tFreeChunkSlot(u32 index)
         gMarchingTerrain.physicsSyncCursor = 0u;
 }
 
+// walks the residency LRU oldest-first (O(1) in the common case - anything still in
+// range got touched to the tail recently, so real candidates sit right at the head)
 static bool tFreeOldestChunkSlot(bool requireMesh, bool respectKeepFrames)
 {
-    if (gMarchingTerrain.chunkCount == 0u) return false;
-
-    // rotating scan (CLOCK-style, not strict oldest) instead of restarting at index 0
-    // every call - a burst of evictions in one frame used to be O(evictions * chunkCount)
-    if (gMarchingTerrain.evictCursor >= gMarchingTerrain.chunkCount)
-        gMarchingTerrain.evictCursor = 0u;
-
-    u32 start = gMarchingTerrain.evictCursor;
-    for (u32 n = 0; n < gMarchingTerrain.chunkCount; n++)
+    for (u32 i = gMarchingTerrain.lruHead; i != T_CHUNK_LRU_NONE; )
     {
-        u32 i = (start + n) % gMarchingTerrain.chunkCount;
         tChunk* chunk = &gMarchingTerrain.chunks[i];
+        u32 next = chunk->lruNext;
 		bool chunkVisible = tAABBVisible(chunk->aabbMin, chunk->aabbMax, gMarchingTerrain.frustum);
-        if (ChunkBuildInFlight(i) || chunkVisible) continue;
-        if (requireMesh && !chunk->mesh.vertices.heapPtr && !chunk->pendingMesh.vertices.heapPtr)
-            continue;
-        if (respectKeepFrames && chunk->lastTouchedFrame + T_CACHE_KEEP_FRAMES >= gMarchingTerrain.frameIndex)
-            continue;
-
-        gMarchingTerrain.evictCursor = i + 1u; // next call resumes just past this slot
-        tFreeChunkSlot(i);
-        return true;
+        bool okMesh = !requireMesh || chunk->mesh.vertices.heapPtr || chunk->pendingMesh.vertices.heapPtr;
+        bool okAge  = !respectKeepFrames || chunk->lastTouchedFrame + T_CACHE_KEEP_FRAMES < gMarchingTerrain.frameIndex;
+        bool tooClose = tChunkWithinRadius(chunk, T_EVICT_PROTECT_RADIUS);
+        if (!ChunkBuildInFlight(i) && !chunkVisible && !tooClose && okMesh && okAge)
+        {
+            tFreeChunkSlot(i);
+            return true;
+        }
+        i = next;
     }
-
-    gMarchingTerrain.evictCursor = 0u;
     return false;
 }
 
@@ -663,6 +705,8 @@ static void tClearChunkCache(void)
     gMarchingTerrain.cacheVertices = 0u;
     gMarchingTerrain.cacheIndices = 0u;
     gMarchingTerrain.physicsSyncCursor = 0;
+    gMarchingTerrain.lruHead = T_CHUNK_LRU_NONE;
+    gMarchingTerrain.lruTail = T_CHUNK_LRU_NONE;
     if (gMarchingTerrain.occupiedChunksBitset)
         MemsetZero(gMarchingTerrain.occupiedChunksBitset, T_CHUNK_BITSET_WORDS * sizeof(u64));
     HMClear(&gMarchingTerrain.chunkLookup);
@@ -766,6 +810,7 @@ static tChunk* GetOrCreateChunk(int3 min)
     if (chunk)
     {
         chunk->lastTouchedFrame = gMarchingTerrain.frameIndex;
+        tLRUTouch(*found);
         if (chunk->dirty && !ChunkBuildInFlight(*found) && chunk->pendingState == PENDING_NONE)
             ScheduleChunkBuild(*found, chunk);
         return chunk;
@@ -783,6 +828,7 @@ static tChunk* GetOrCreateChunk(int3 min)
         .pendingState = PENDING_NONE,
     };
     chunk->lastTouchedFrame = gMarchingTerrain.frameIndex;
+    tLRUPushTail(index);
     s32 worldSize = T_CHUNK_CELLS;
     chunk->aabbMin = ToFloat3(min);
     chunk->aabbMax = F3AddF(chunk->aabbMin, (f32)worldSize);
@@ -852,6 +898,13 @@ static bool tSubmitChunkColumn(s32 chunkX, s32 chunkZ, bool useFrustum)
         if (useFrustum && !tAABBVisible(aabbMin, aabbMax, gMarchingTerrain.frustum))
         {
             gMarchingTerrain.culledChunks++;
+            // still in range, just not on screen this frame - keep it resident so
+            // turning away doesn't make it evictable and force a rebuild on turning back
+            tChunk* offscreen = tFindChunkByMin(min);
+            if (offscreen) {
+                offscreen->lastTouchedFrame = gMarchingTerrain.frameIndex;
+                tLRUTouch((u32)(offscreen - gMarchingTerrain.chunks));
+            }
             continue;
         }
 
@@ -915,7 +968,9 @@ bool tMarchingInit(void)
     if (gMarchingTerrain.initialized)
         return true;
     MemSet(&gMarchingTerrain, 0, sizeof(gMarchingTerrain));
-	
+    gMarchingTerrain.lruHead = T_CHUNK_LRU_NONE;
+    gMarchingTerrain.lruTail = T_CHUNK_LRU_NONE;
+
     gMarchingTerrain.jobSystem = JobSystem_Create(0, 0);
     if (!gMarchingTerrain.jobSystem)
     {

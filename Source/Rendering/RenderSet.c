@@ -169,7 +169,7 @@ u32 RenderSet_AllocateSparseIDRange(RenderSet* set, int count)
     return (u32)sparseIdx;
 }
 
-static void FreeSparseIDRange(RenderSet* set, u32 sparseIdx, u32 count)
+void RenderSet_FreeSparseIDRange(RenderSet* set, u32 sparseIdx, u32 count)
 {
     if (sparseIdx >= set->maxEntities || count == 0u) return;
 
@@ -351,7 +351,7 @@ u32 RenderSet_AddEntities(RenderSet* set, u32 primitiveIdx, u32 numAdded, const 
 {
     u32 startIdx = LeaveSpaceForEntities(set, primitiveIdx, numAdded);
     if (startIdx == INVALID_ENTITY) {
-        FreeSparseIDRange(set, data[0].sparseIdx, numAdded);
+        RenderSet_FreeSparseIDRange(set, data[0].sparseIdx, numAdded);
         return INVALID_ENTITY;
     }
     PrimitiveGroup* group = &set->primitiveGroups[primitiveIdx];
@@ -406,8 +406,7 @@ void RendersetAddANodesAsEntities(RenderSet* rs, const ANode* nodes, s32 numNode
 
 u32 RenderSet_AddScene(RenderSet* set, u32 bundleIdx, v128f position, v128f rotation, v128f scale, bool wantSkinned)
 {
-    if (bundleIdx >= set->numBundles || set->bundles[bundleIdx] == NULL)
-    {
+    if (bundleIdx >= set->numBundles || set->bundles[bundleIdx] == NULL) {
         AX_WARN("add scene bundle bounds check failed!");
         return 0;
     }
@@ -452,8 +451,7 @@ u32 RenderSet_AddScene(RenderSet* set, u32 bundleIdx, v128f position, v128f rota
         }
     }
 
-    if (totalPrimAdded == 0u)
-    {
+    if (totalPrimAdded == 0u) {
         ArenaPopGlobal(((u32)numNodes + 1u) * sizeof(Entity));
         ArenaPopGlobal(numPrimitives * sizeof(u32));
         return 0;

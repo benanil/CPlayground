@@ -118,32 +118,16 @@ static void SlugAppendCubicApprox(SlugCurve* curves, u32* count, f32 p0x, f32 p0
     curves[(*count)++] = (SlugCurve){ { midx, midy }, { (3.0f * p123x - p3x) * 0.5f, (3.0f * p123y - p3y) * 0.5f }, { p3x, p3y } };
 }
 
-static void SlugLogFontInfo(const stbtt_fontinfo* info)
-{
-    if (!info) { AX_LOG("stbtt_fontinfo: NULL"); return; }
-    AX_LOG("stbtt_fontinfo: data=%p fontstart=%d numGlyphs=%d", info->data, info->fontstart, info->numGlyphs);
-    AX_LOG("  tables: loca=%d head=%d glyf=%d hhea=%d hmtx=%d kern=%d gpos=%d svg=%d", info->loca, info->head, info->glyf, info->hhea, info->hmtx, info->kern, info->gpos, info->svg);
-    AX_LOG("  index_map=%d indexToLocFormat=%d", info->index_map, info->indexToLocFormat);
-    AX_LOG("  cff:         data=%p cursor=%d size=%d", info->cff.data,         info->cff.cursor,         info->cff.size);
-    AX_LOG("  charstrings: data=%p cursor=%d size=%d", info->charstrings.data, info->charstrings.cursor, info->charstrings.size);
-    AX_LOG("  gsubrs:      data=%p cursor=%d size=%d", info->gsubrs.data,      info->gsubrs.cursor,      info->gsubrs.size);
-    AX_LOG("  subrs:       data=%p cursor=%d size=%d", info->subrs.data,       info->subrs.cursor,       info->subrs.size);
-    AX_LOG("  fontdicts:   data=%p cursor=%d size=%d", info->fontdicts.data,   info->fontdicts.cursor,   info->fontdicts.size);
-    AX_LOG("  fdselect:    data=%p cursor=%d size=%d", info->fdselect.data,    info->fdselect.cursor,    info->fdselect.size);
-}
-
 static u32 SlugExtractCurves(stbtt_fontinfo* info, u32 glyphIndex, f32 emScale, SlugCurve** outCurves)
 {
     *outCurves = NULL;
 
-    if (!info || !info->data)
-    {
+    if (!info || !info->data) {
         AX_WARN("SlugExtractCurves: invalid font info");
         return 0;
     }
 
-    if (glyphIndex >= (u32)info->numGlyphs)
-    {
+    if (glyphIndex >= (u32)info->numGlyphs) {
         AX_WARN("SlugExtractCurves: invalid glyph index %u / %d", glyphIndex, info->numGlyphs);
         return 0;
     }

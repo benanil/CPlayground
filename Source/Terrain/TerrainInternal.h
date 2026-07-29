@@ -200,7 +200,6 @@ typedef struct tFoliageEntity_
 {
     u32 sparseIdx;
     u32 packed;
-    u64 physicsBody;
 } tFoliageEntity;
 
 typedef struct tChunk_
@@ -221,6 +220,9 @@ typedef struct tChunk_
     // foliage type's params change (see tFoliageType.paramsDirty in TerrainFoliage.c)
     tFoliageEntity* foliageEntities;
     u32   lastTouchedFrame;
+    // intrusive residency LRU (MarchingTerrain.c), T_CHUNK_LRU_NONE-terminated; lets
+    // eviction pick the true least-recently-touched chunk without scanning the array
+    u32   lruPrev, lruNext;
     u16   foliageCount;
     // false until tFoliage_Update has scheduled at least one job for this chunk (zero
     // placements is a valid outcome and still sets this - it means "decided", not "has
@@ -321,8 +323,8 @@ f32  TerrainDensity_SDF(f32 x, f32 y, f32 z);
 void TerrainDensity_SampleChunk(s32 cx, s32 cy, s32 cz, s8* out /*19^3*/);
 // world vertical band that can contain surface, chunks outside it are never created
 void TerrainDensity_GetYRange(f32* outMin, f32* outMax);
-// true when the chunk sits fully past the island falloff, where height/carve are provably
-// constant (flat, guaranteed empty) - lets callers skip sampling/meshing/slot allocation
+// true when the chunk sits past the island falloff - no ocean yet, so callers skip
+// sampling/meshing/slot allocation (and physics, since no mesh means no collider) entirely
 bool TerrainDensity_ChunkOutsideIslandEmpty(int3 chunkMin);
 
 // analytic column surface height (heightfield term, before the 3D carve). a good seed

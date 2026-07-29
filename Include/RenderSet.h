@@ -126,6 +126,7 @@ bool  RenderSet_FindNodeEntity(const RenderSet* set, Range range, u32 meshIndex,
 u32   RenderSet_AllocateSparseID(RenderSet* set);
 u32   RenderSet_AllocateSparseIDRange(RenderSet* set, int count);
 void  RenderSet_FreeSparseID(RenderSet* set, u32 sparseIdx);
+void RenderSet_FreeSparseIDRange(RenderSet* set, u32 sparseIdx, u32 count);
 u32   RenderSet_CountTriangles(const RenderSet* set);
 
 // debug validation for insertion/upload invariants. out: false when corruption is found.

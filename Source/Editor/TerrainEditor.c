@@ -86,7 +86,7 @@ static void TerrainEditorInit(void)
     terrainUI.caveAmplitude  = 0.3f;
     terrainUI.caveFrequency  = 0.045f;
     terrainUI.fixedWorldSize = (f32)TERRAIN_FIXED_WORLD_DEFAULT_SIZE;
-    terrainUI.islandRadius   = 160.0f;
+    terrainUI.islandRadius   = 260.0f;
     terrainUI.islandFalloff  = 100.0f;
     terrainUI.brushRadius    = 6.0f;
     terrainUI.brushStrength  = 1.0f;

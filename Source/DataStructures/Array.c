@@ -1,8 +1,7 @@
 #include "Include/DataStructures/Array.h"
 #include "Include/Platform.h"
 
-static size_t* ArrayHeader(const void* arr)
-{
+static size_t* ArrayHeader(const void* arr) {
     return (size_t*)arr - ArrayField_Count;
 }
 
@@ -14,8 +13,7 @@ void* ArrayCreateRaw(size_t capacity, size_t stride)
     size_t headerSize = ArrayField_Count * sizeof(size_t);
     size_t dataSize   = capacity * stride;
     size_t* arr       = (size_t*)AllocateTLSFGlobal(headerSize + dataSize);
-    if (!arr)
-    {
+    if (!arr) {
         AX_WARN("array allocation failed (%llu bytes)", (u64)(headerSize + dataSize));
         return NULL;
     }
@@ -26,42 +24,30 @@ void* ArrayCreateRaw(size_t capacity, size_t stride)
     return (void*)(arr + ArrayField_Count);
 }
 
-void ArrayDestroyRaw(void* arr)
-{
-    if (!arr)
-        return;
-
+void ArrayDestroyRaw(void* arr) {
+    if (!arr) return;
     DeAllocateTLSFGlobal(ArrayHeader(arr));
 }
 
-size_t ArrayFieldGet(const void* arr, ArrayField field)
-{
-    if (!arr)
-        return 0;
-
+size_t ArrayFieldGet(const void* arr, ArrayField field) {
+	if (!arr) return 0;
     return ArrayHeader(arr)[field];
 }
 
-void ArrayFieldSet(void* arr, ArrayField field, size_t value)
-{
-    if (!arr)
-        return;
-
+void ArrayFieldSet(void* arr, ArrayField field, size_t value) {
+    if (!arr) return;
     ArrayHeader(arr)[field] = value;
 }
 
 void* ArrayResizeRaw(void* arr)
 {
-    if (!arr)
-        return NULL;
-
+    if (!arr) return NULL;
     size_t capacity  = ArrayCapacity(arr);
     size_t stride    = ArrayStride(arr);
     size_t newCap    = capacity ? capacity * ARRAY_GROWTH_FACTOR : ARRAY_DEFAULT_CAPACITY;
     size_t totalSize = ArrayField_Count * sizeof(size_t) + newCap * stride;
     size_t* resized  = (size_t*)ReAllocateTLSFGlobal(ArrayHeader(arr), totalSize);
-    if (!resized)
-    {
+    if (!resized) {
         AX_WARN("array resize failed (%llu bytes)", (u64)totalSize);
         return arr;
     }
@@ -72,15 +58,13 @@ void* ArrayResizeRaw(void* arr)
 
 void* ArrayPushRaw(void* arr, const void* value)
 {
-    if (!arr || !value)
-        return arr;
+    if (!arr || !value) return arr;
 
     size_t length = ArrayLength(arr);
     if (length >= ArrayCapacity(arr))
     {
         arr = ArrayResizeRaw(arr);
-        if (length >= ArrayCapacity(arr))
-        {
+        if (length >= ArrayCapacity(arr)) {
             AX_WARN("array push failed, capacity exhausted");
             return arr;
         }
