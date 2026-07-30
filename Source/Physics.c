@@ -11,6 +11,7 @@
 
 #include <box3d/box3d.h>
 #include <SDL3/SDL_stdinc.h>
+#include <SDL3/SDL_timer.h>
 
 extern Graphics gGFX; // cpu mega buffers, declared per translation unit as elsewhere (BVH.c)
 
@@ -174,6 +175,13 @@ static void PhysicsDestroyLiveStaticColliders(Scene* scene);
 
 void Scene_PhysicsDestroy(Scene* scene)
 {
+	// Scene_BuildStaticCollidersAsync may still be running on a worker thread holding a raw
+	// pointer to this Scene (e.g. new scene created right after load, before the build
+	// finished) - tearing down now would race its writes. physicsColliderBuildDone is the
+	// worker's own completion signal, so wait for it instead of adding a join primitive.
+	while (SDL_GetAtomicInt(&scene->physicsColliderBuildRunning) && !SDL_GetAtomicInt(&scene->physicsColliderBuildDone))
+		SDL_Delay(1);
+
 	// the world is shared with every other scene now, so this scene's bodies must be
 	// destroyed individually instead of tearing down the whole world.
 	// terrain colliders are NOT touched here - they're owned per-chunk by MarchingTerrain

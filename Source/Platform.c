@@ -20,6 +20,7 @@
 	#include "Windows/PlatformWindows.c"
 	
 	static void PlatformApplyRoundedWindowRegion(void);
+	static void PlatformSetHighPriority(void);
 	static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep);
 #endif
 
@@ -350,6 +351,7 @@ void PlatformInit()
 {
     #ifdef PLATFORM_WINDOWS
     SetUnhandledExceptionFilter(CrashHandler);
+    PlatformSetHighPriority();
     #endif
     EnableConsoleColors();
     SDL_SetLogPriorities(2); //SDL_LOG_PRIORITY_VERBOSE);

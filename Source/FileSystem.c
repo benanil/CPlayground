@@ -742,11 +742,22 @@ void NormalizePath(const char* path, char* out, u32 outSize)
     out[i] = '\0';
 }
 
+// Unlike ChangeExtension (keeps path's dot, expects a bare extension after it, e.g. "abm"),
+// `extension` here already carries its own dot (e.g. "_albedo.ctex") and replaces the original
+// extension including its dot - else it doubles up ("name.scene" -> "name._albedo.ctex").
 void ChangeExtensionAndCopy(const char* path, const char* extension, char* out, u32 outSize)
 {
     MemsetZero(out, outSize);
-    MemCopy(out, path, StringLength(path));
-    ChangeExtension(out, outSize, extension);
+    int len = StringLength(path);
+    MemCopy(out, path, len);
+
+    int baseLen = len;
+    while (baseLen > 0 && out[baseLen - 1] != '.') baseLen--;
+    baseLen = baseLen > 0 ? baseLen - 1 : len; // drop the trailing dot too; no dot at all -> keep the whole path
+
+    int extLen = StringLength(extension);
+    if (baseLen + extLen >= (int)outSize) return; // caller's buffer too small, leave truncated copy as-is
+    MemCopy(out + baseLen, extension, extLen + 1); // + null terminator
 }
 
 bool CombinePaths(char* dst, uint64_t dstSize, const char* a, const char* b)

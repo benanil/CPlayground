@@ -10,6 +10,7 @@
 #include "Include/Platform.h"
 #include "Include/Rendering.h"
 #include "Include/Bitset.h"
+#include "Include/ParallelFor.h"
 #include "Math/Bitpack.h"
 
 #define SCENE_FILE_VERSION 4
@@ -560,6 +561,53 @@ static void BuildColliderEndCallback(void* data, s32 result)
 	scene->physicsReady = true;
 }
 
+typedef struct SceneStageRangeCtx_
+{
+    SceneBundleStage* stages;
+    bool baked;
+} SceneStageRangeCtx;
+
+static void SceneStageRange(u32 begin, u32 end, void* userData)
+{
+    SceneStageRangeCtx* ctx = (SceneStageRangeCtx*)userData;
+    for (u32 b = begin; b < end; b++)
+        (ctx->baked ? Scene_AddBundleBakedStage : Scene_AddBundleStage)(&ctx->stages[b]);
+}
+
+// Stages every bundle (mesh, plus textures on the slow path) across worker threads via
+// ParallelFor, then publishes serially on the main thread. Shared by both load paths below;
+// baked bundles are already-atlased (mesh only), everything else goes through stage/finalize.
+// out: false on any bundle failure, scene is left with whatever finalized before the failure
+static bool SceneSerializer_LoadBundles(Scene* scene, const SceneFileData* data, bool baked)
+{
+    SceneBundleStage* stages =
+        (SceneBundleStage*)AllocateTLSFGlobal(Maxu32(data->numBundles, 1u) * sizeof(SceneBundleStage));
+
+    for (u32 b = 0; b < data->numBundles; b++)
+    {
+        stages[b].storedPath     = data->bundlePaths + (u64)b * 1024u;
+        stages[b].skinned        = data->bundleSkinned[b] != 0u;
+        stages[b].materialOffset = data->bundleMaterialOff[b];
+    }
+
+    SceneStageRangeCtx ctx = { stages, baked };
+    ParallelFor(data->numBundles, 1u, SceneStageRange, &ctx);
+
+    bool ok = true;
+    for (u32 b = 0; b < data->numBundles; b++)
+    {
+        u32 bundleIdx = baked ? Scene_AddBundleBakedFinalize(scene, &stages[b])
+                              : Scene_AddBundleFinalize(scene, &stages[b]);
+        if (bundleIdx == INVALID_BUNDLE) { ok = false; continue; }
+        if (scene->bundleRefs[bundleIdx].materialOffset != data->bundleMaterialOff[b])
+            AX_WARN("scene bundle material offset drifted: %s %d != %d", data->bundlePaths + (u64)b * 1024u,
+                    scene->bundleRefs[bundleIdx].materialOffset, data->bundleMaterialOff[b]);
+    }
+
+    DeAllocateTLSFGlobal(stages);
+    return ok;
+}
+
 s32 SceneSerializer_Load(Scene* scene, const char* path)
 {
     double startTime = TimeSinceStartup();
@@ -581,15 +629,10 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
 
     if (fast)
     {
-        for (u32 b = 0; b < data.numBundles; b++)
+        if (!SceneSerializer_LoadBundles(scene, &data, true))
         {
-            const char* bundlePath = data.bundlePaths + (u64)b * 1024u;
-            u32 bundleIdx = Scene_AddBundleBaked(scene, bundlePath, data.bundleMaterialOff[b]);
-            if (bundleIdx == INVALID_BUNDLE)
-            {
-                ArenaRestore(&GlobalArena, mark);
-                return 0;
-            }
+            ArenaRestore(&GlobalArena, mark);
+            return 0;
         }
 
         const char* atlasPaths[TextureClass_Count];
@@ -617,18 +660,11 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
     else
     {
         AX_LOG("scene loading through the slow path (no baked atlases): %s", path);
-        for (u32 b = 0; b < data.numBundles; b++)
+
+        if (!SceneSerializer_LoadBundles(scene, &data, false))
         {
-            const char* bundlePath = data.bundlePaths + (u64)b * 1024u;
-            u32 bundleIdx = Scene_AddBundle(scene, bundlePath, data.bundleSkinned[b] != 0u);
-            if (bundleIdx == INVALID_BUNDLE)
-            {
-                ArenaRestore(&GlobalArena, mark);
-                return 0;
-            }
-            if (scene->bundleRefs[bundleIdx].materialOffset != data.bundleMaterialOff[b])
-                AX_WARN("scene bundle material offset drifted: %s %d != %d",
-                        bundlePath, scene->bundleRefs[bundleIdx].materialOffset, data.bundleMaterialOff[b]);
+            ArenaRestore(&GlobalArena, mark);
+            return 0;
         }
     }
 
@@ -712,7 +748,7 @@ s32 SceneSerializer_Load(Scene* scene, const char* path)
         RenderSet_Validate(set, isSkinned ? "load skinned" : (s == 2u ? "load transparent surface" : "load surface"));
     }
 
-  if (data.numLights > 0)
+	if (data.numLights > 0)
         MemCopy(scene->lights, data.lights, data.numLights * sizeof(LightGPU));
     scene->numLights = data.numLights;
 

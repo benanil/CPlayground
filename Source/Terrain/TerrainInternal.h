@@ -27,7 +27,7 @@
 #define TERRAIN_BEDROCK_SURFACE_Y (TERRAIN_BEDROCK_Y + 0.5f)
 
 #define T_LOD_COUNT                   4u
-#define T_MAX_CHUNKS                 (16384u)
+#define T_MAX_CHUNKS                 (16384u*2)
 #define T_CHUNK_BITSET_WORDS        ((T_MAX_CHUNKS + 63ull) / 64ull)
 #define T_CHUNK_CELLS_PER_VOLUME (T_CHUNK_CELLS * T_CHUNK_CELLS * T_CHUNK_CELLS)
 // Regular cells: max 12 edge vertices/cell before sharing. Shared-grid edge count is lower,

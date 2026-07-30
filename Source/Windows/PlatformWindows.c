@@ -56,6 +56,15 @@ static void PlatformApplyRoundedWindowRegion(void)
     DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
 }
 
+// SDL only exposes per-thread priority, not process priority class, so this needs the raw
+// Win32 API. HIGH_PRIORITY_CLASS (not REALTIME - that can starve the OS) keeps the whole
+// process off efficiency cores during heavy asset import/compression.
+static void PlatformSetHighPriority(void)
+{
+    if (!SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS))
+        AX_WARN("SetPriorityClass(HIGH_PRIORITY_CLASS) failed: %lu", GetLastError());
+}
+
 static void PrintCrashFrame(u32 idx, void* addr)
 {
     HANDLE process = GetCurrentProcess();

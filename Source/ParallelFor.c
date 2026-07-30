@@ -3,7 +3,7 @@
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_thread.h>
 
-#define PARALLEL_FOR_MAX_WORKERS 64u
+#define PARALLEL_FOR_MAX_WORKERS 256u
 
 typedef struct ParallelForTask_
 {
@@ -63,12 +63,11 @@ void ParallelFor(u32 itemCount, u32 minItemsPerWorker, ParallelForFn fn, void* u
     for (u32 i = 1u; i < taskCount; i++)
     {
         threads[threadCount] = SDL_CreateThread(ParallelForThreadMain, "ParallelFor", &tasks[i]);
-        if (threads[threadCount])
-        {
+        
+		if (threads[threadCount]) {
             threadCount++;
         }
-        else
-        {
+        else {
             ParallelForThreadMain(&tasks[i]);
         }
     }

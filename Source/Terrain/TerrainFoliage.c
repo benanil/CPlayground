@@ -3,6 +3,7 @@
 #include "Include/Platform.h"
 #include "Include/Graphics.h"
 #include "Include/JobSystem.h"
+#include "Include/ParallelFor.h"
 #include "Include/TextureSystem.h"
 #include "Include/Memory.h"
 #include "Include/Scene.h"
@@ -111,6 +112,17 @@ static void VisitFile(const char* path, void* data)
     };
 }
 
+static void FoliageStageRange(u32 begin, u32 end, void* userData)
+{
+    SceneBundleStage* stages = (SceneBundleStage*)userData;
+	for (u32 i = begin; i < end; i++) 
+	{
+		stages[i].storedPath = gFoliage.types[i].path;
+		stages[i].skinned    = false;
+        Scene_AddBundleStage(&stages[i]);
+	}
+}
+
 void tFoliage_Init()
 {
     MemSet(&gFoliage, 0, sizeof(gFoliage));
@@ -120,12 +132,19 @@ void tFoliage_Init()
         AX_WARN("foliage file traverse failed!");
         return;
     }
+    if (gFoliage.numTypes == 0) return;
+
+    // Stage every foliage bundle's mesh+texture load across worker threads via ParallelFor.
+    // Finalize (RenderSet/TextureSystem/AnimationSystem mutation) still runs serially on the
+    // main thread afterwards, same as the rest of Scene_Init's callers.
+	SceneBundleStage* stages = (SceneBundleStage*)AllocateTLSFGlobal(T_MAX_FOLIAGE_SCENE * sizeof(SceneBundleStage));
+    ParallelFor(gFoliage.numTypes, 1u, FoliageStageRange, stages);
 
     for (u32 i = 0; i < gFoliage.numTypes; i++)
     {
         tFoliageType* type = &gFoliage.types[i];
         AX_LOG("foliage: %s", type->path);
-        u32 bundleIdx = Scene_AddBundle(&gFoliage.scene, type->path, false);
+        u32 bundleIdx = Scene_AddBundleFinalize(&gFoliage.scene, &stages[i]);
         if (bundleIdx == INVALID_BUNDLE) continue;
 
         Range range = gFoliage.scene.surfaceSet.bundlePrimRange[bundleIdx];
@@ -152,6 +171,7 @@ void tFoliage_Init()
         type->normalAlign = Clampf32(1.0f / (tallness * tallness * tallness), 0.03f, 0.75f);
         type->paramsDirty = true; // build this type's foliage on the first update
     }
+	DeAllocateTLSFGlobal(stages);
 }
 
 void tFoliage_Destroy()	

@@ -423,7 +423,10 @@ u32 RenderSet_AddScene(RenderSet* set, u32 bundleIdx, v128f position, v128f rota
  
     u32* primitiveCounts = ArenaAllocGlobal(numPrimitives * sizeof(u32));
     MemSet(primitiveCounts, 0, numPrimitives * sizeof(u32));
+    // zeroed: hiddenBitAndAmbient is never set below, was left as garbage otherwise (shader
+    // reads its top bits as an ambient boost multiplier, blowing surfaces out to white)
     Entity* nodeEntities = ArenaAllocGlobal(((u32)numNodes + 1u) * sizeof(Entity));
+    MemsetZero(nodeEntities, ((u32)numNodes + 1u) * sizeof(Entity));
 
     u32 meshNodeCount = 0;
     u32 totalPrimAdded = 0;

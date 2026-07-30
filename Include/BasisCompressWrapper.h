@@ -49,6 +49,9 @@ int basis_encoder_init(void);
  * @param quality_level     Compression quality (0..255 for ETC1S, 0..100 for UASTC).
  *                          Use -1 for library default.
  * @param effort_level      Compression effort/speed (0..10). Use -1 for default.
+ * @param multithreaded     Use the encoder's own internal thread pool for this call. Pass
+ *                          false when the caller already compresses many images in parallel
+ *                          (e.g. via ParallelFor) to avoid every call fighting over all cores.
  * @return 0 on success, non-zero error code on failure.
  */
 int basis_compress_file(const char* input_filename,
@@ -56,7 +59,8 @@ int basis_compress_file(const char* input_filename,
                         unsigned int flags,
                         int mip_smallest_dim,
                         int quality_level,
-                        int effort_level);
+                        int effort_level,
+                        bool multithreaded);
 
 /**
  * Compresses in-memory RGBA32 layers (with caller supplied mip chains) into a

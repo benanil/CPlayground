@@ -263,11 +263,7 @@ JobSystem* JobSystem_Create(u32 threadCount, u32 queueCapacity)
     if (queueCapacity == 0u) queueCapacity = JOB_SYSTEM_DEFAULT_QUEUE_CAPACITY;
 
     JobSystem* jobs = (JobSystem*)SDL_calloc(1, sizeof(JobSystem));
-    if (!jobs)
-    {
-        AX_WARN("job system allocation failed");
-        return NULL;
-    }
+    if (!jobs) { AX_WARN("job alloc fail"); return NULL; }
 
     jobs->queueCount = threadCount;
     jobs->handleSlotCount = Minu32(threadCount * queueCapacity, JOB_SYSTEM_MAX_HANDLE_SLOTS);

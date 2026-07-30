@@ -221,6 +221,39 @@ void Scene_Update(float deltaTime);
 // out: scene bundle index, INVALID_BUNDLE otherwise
 u32 Scene_AddBundle(Scene* scene, const char* path, bool skinned);
 
+// One staged bundle load: mesh acquire (BundleCacheAcquire) plus cached-texture decode/GPU
+// upload (LoadBundleImagesFromCache). Touches only the bundle cache and this stage's own
+// buffer, so it's safe off the main thread (ParallelFor); Scene_AddBundleFinalize then
+// publishes it serially on the main thread (see tFoliage_Init, SceneSerializer_LoadBundles).
+// Shared by Scene_AddBundleStage (mesh+textures) and Scene_AddBundleBakedStage (mesh only,
+// materialOffset given directly) - skinned/staging unused on the baked path, materialOffset
+// unused on the normal path.
+typedef struct SceneBundleStage_
+{
+    SceneBundle* bundle;
+    const char*  storedPath; // bundle cache owned string, stable for the entry's lifetime
+    u64          cacheKey;
+    u32          materialOffset; // Scene_AddBundleBaked* path only
+    bool         skinned;        // Scene_AddBundle* path only
+    bool         loaded;         // false when the load failed; Finalize/Abort are still safe to call
+    Texture      staging[1024];  // Scene_AddBundle* path only
+} SceneBundleStage;
+
+// caller sets stage->storedPath (+ stage->skinned) before calling; result lands in
+// stage->loaded (false on failure, Finalize/Abort still safe to call then). void*, single
+// argument so callers fan this out with ParallelFor via a small per-index range wrapper.
+void Scene_AddBundleStage(void* stage);
+
+// Main-thread only: publishes a staged load into the scene (GPU texture packing, material/
+// animation bookkeeping, render set registration) - the part that mutates shared scene state
+// and so can't run off-thread. Releases the cache reference Scene_AddBundleStage took either
+// way. out: scene bundle index, INVALID_BUNDLE on failure or when the stage itself had failed
+u32 Scene_AddBundleFinalize(Scene* scene, SceneBundleStage* stage);
+
+// Drops a staged load without adding it to any scene (e.g. caller decided not to use it).
+// No-op when the stage failed to load. Safe from any thread.
+void Scene_AddBundleStageAbort(SceneBundleStage* stage);
+
 // Scene_AddBundle with the skinned flag detected from the bundle's skin data
 u32 Scene_AddBundleAuto(Scene* scene, const char* path);
 
@@ -234,6 +267,14 @@ void Scene_ReleaseBundlePeek(const char* path);
 // baked scene load path where the pages are restored separately.
 // out: scene bundle index, INVALID_BUNDLE otherwise
 u32 Scene_AddBundleBaked(Scene* scene, const char* path, u32 materialOffset);
+
+// Scene_AddBundleBaked split the same way as Scene_AddBundleStage/Finalize above: the Stage
+// half is just BundleCacheAcquire (no texture work at all on the baked path), safe from any
+// thread; Finalize does the material-slot/anim/render-set bookkeeping, main-thread only.
+// caller sets stage->storedPath + stage->materialOffset before calling; see Scene_AddBundleStage.
+void Scene_AddBundleBakedStage(void* stage);
+u32  Scene_AddBundleBakedFinalize(Scene* scene, SceneBundleStage* stage);
+void Scene_AddBundleBakedStageAbort(SceneBundleStage* stage);
 
 u32 Scene_DefaultAnimation(const Scene* scene, u32 bundleIdx);
 u32 Scene_FindBundleForRenderGroup(const Scene* scene, bool skinned, u32 groupIdx);

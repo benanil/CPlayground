@@ -27,7 +27,6 @@ extern "C" SDL_GPUDevice* g_GPUDevice;
 // -----------------------------------------------------------------------------
 // Internal helpers
 // -----------------------------------------------------------------------------
-static bool g_encoder_initialized = false;
 
 static bool load_input_image(const char* input_filename, image& img) {
     if (FileHasExtension(input_filename, (int)SDL_strlen(input_filename), ".dds")) {
@@ -397,10 +396,7 @@ static Texture create_rgba_texture_array_from_files(const char* const* paths,
 }
 
 int basis_encoder_init(void) {
-    if (!g_encoder_initialized) {
-        basisu_encoder_init();
-        g_encoder_initialized = true;
-    }
+    basisu_encoder_init(); // already mutex-guarded + one-shot internally
     return 0;
 }
 
@@ -472,7 +468,8 @@ static bool setup_params(basis_compressor_params& params,
                          unsigned int flags,
                          int mip_smallest_dim,
                          int quality_level,
-                         int effort_level) {
+                         int effort_level,
+                         bool multithreaded) {
     // Clear and set basic output
     params.clear();
     params.m_out_filename = output_filename;
@@ -536,10 +533,10 @@ static bool setup_params(basis_compressor_params& params,
     if (!setup_format_params(params, flags, quality_level, effort_level))
         return false;
 
-    // Multithreading: enable by default if we have a job pool.
-    params.m_multithreading = true;
-    // Status output: match original code (prints to console)
-    params.m_status_output = true;
+    // per-call job pool: only worth it for a lone call, not when the caller already runs many
+    // of these in parallel (ParallelFor over a batch) - status output would garble too then.
+    params.m_multithreading = multithreaded;
+    params.m_status_output = multithreaded;
     params.m_print_stats = false;   // avoid extra clutter
     return true;
 }
@@ -552,12 +549,11 @@ int basis_compress_file(const char* input_filename,
                         unsigned int textureFlags,
                         int mip_smallest_dim,
                         int quality_level,
-                        int effort_level) 
+                        int effort_level,
+                        bool multithreaded)
 {
-    if (!g_encoder_initialized) {
-        if (basis_encoder_init() != 0) {
-            return -100;
-        }
+    if (basis_encoder_init() != 0) {
+        return -100;
     }
     if (input_filename == NULL)
     {
@@ -572,7 +568,7 @@ int basis_compress_file(const char* input_filename,
         flags |= BASIS_FORMAT_ETC1S;   // Use ETC1S for metallic/roughness (higher compression)
     else
         flags |= BASIS_FORMAT_UASTC;   // Use UASTC for other textures (higher quality)
-        
+
     if (isNormal)
         flags |= BASIS_FLAG_NORMAL_MAP;
     if (isMetallicRoughness)
@@ -580,7 +576,7 @@ int basis_compress_file(const char* input_filename,
 
     basis_compressor_params params;
     if (!setup_params(params, input_filename, output_filename, flags,
-                      mip_smallest_dim, quality_level, effort_level)) {
+                      mip_smallest_dim, quality_level, effort_level, multithreaded)) {
         return -1;  // parameter setup failed
     }
 
@@ -613,10 +609,8 @@ int basis_compress_array_memory(const unsigned char* const* layer_mips,
                                 int effort_level,
                                 const char* output_filename)
 {
-    if (!g_encoder_initialized) {
-        if (basis_encoder_init() != 0) {
-            return -100;
-        }
+    if (basis_encoder_init() != 0) {
+        return -100;
     }
     if (!layer_mips || num_layers < 1 || num_mips < 1 || width < 1 || height < 1 || !output_filename) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "basis_compress_array_memory: invalid arguments for %s",
@@ -708,10 +702,8 @@ int basis_compress_texture_array_files(const char* const* paths,
         return -1;
     }
 
-    if (!g_encoder_initialized) {
-        if (basis_encoder_init() != 0) {
-            return -100;
-        }
+    if (basis_encoder_init() != 0) {
+        return -100;
     }
 
     const int num_mips = (int)get_array_mip_count((uint32_t)size);

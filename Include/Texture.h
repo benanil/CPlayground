@@ -12,10 +12,10 @@ typedef struct Texture_
     SDL_GPUTextureFormat format;
     void* buffer;
     u64 bufferSize;
-    u32 channels;
-    u32 type;
     u32 mipLevels;
     u32 numLayers;
+    s8 channels;
+    s8 type;
 } Texture;
 
 #endif // TEXTURE_H

@@ -375,6 +375,7 @@ purefn f32 Saturatef32(f32 x) { return MMIN(1.0f, MMAX(x, 0.0f)); }
 purefn f32 Clampf32(f32 x, f32 min, f32 max) { return MMIN(max, MMAX(x, min)); }
 purefn f64 Clampf64(f64 x, f64 min, f64 max) { return MMIN(max, MMAX(x, min)); }
 purefn s32 Clamps32(s32 x, s32 min, s32 max) { return MMIN(max, MMAX(x, min)); }
+purefn u32 Clampu32(u32 x, u32 min, u32 max) { return MMIN(max, MMAX(x, min)); }
 purefn f32 Minf32(f32 a, f32 b) { return a < b ? a : b; }
 purefn f32 Maxf32(f32 a, f32 b) { return a > b ? a : b; }
 purefn s32 Mins32(s32 a, s32 b) { return a < b ? a : b; }

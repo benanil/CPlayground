@@ -1005,12 +1005,13 @@ s32 TextureSystem_AppendBundle(TextureSystem* ts, const SceneBundle* bundle, con
     ArenaMark mark = ArenaSave(&GlobalArena);
     u8*  wanted[TextureClass_Count];
     u32* descMap[TextureClass_Count];
+    u32  defaultDescriptorOf[TextureClass_Count];
     for (u32 c = 0; c < TextureClass_Count; c++)
     {
         wanted[c]  = (u8*)ArenaAllocZero(&GlobalArena, Maxu32(numImages, 1u));
         descMap[c] = (u32*)ArenaAlloc(&GlobalArena, Maxu32(numImages, 1u) * sizeof(u32));
-        u32 defaultDescriptor = GetTextureClassInfo(c).defaultDescriptor;
-        for (u32 i = 0; i < numImages; i++) descMap[c][i] = defaultDescriptor;
+        defaultDescriptorOf[c] = GetTextureClassInfo(c).defaultDescriptor;
+        for (u32 i = 0; i < numImages; i++) descMap[c][i] = defaultDescriptorOf[c];
     }
     TexturePlacement* placements = (TexturePlacement*)ArenaAlloc(&GlobalArena, Maxu32(numImages, 1u) * sizeof(TexturePlacement));
     u8* placementOk = (u8*)ArenaAlloc(&GlobalArena, Maxu32(numImages, 1u));
@@ -1056,6 +1057,14 @@ s32 TextureSystem_AppendBundle(TextureSystem* ts, const SceneBundle* bundle, con
             descMap[c][p->imageIndex] = AddDescriptor(ts, c, p->item, p->page, (float)p->x, (float)p->y, (float)p->width, (float)p->height);
         }
         AX_LOG("texture class %d packed %d images", c, placedCount);
+
+        // wanted but still pointing at the default descriptor = fell back (see warnings above for why)
+        u32 fellBackToDefault = 0;
+        for (u32 i = 0; i < numImages; i++)
+            if (wanted[c][i] && descMap[c][i] == defaultDescriptorOf[c]) fellBackToDefault++;
+        if (fellBackToDefault > 0)
+            AX_WARN("texture class %s: %d/%d wanted image(s) fell back to the default texture - will render wrong (see warnings above for why)",
+                    GetTextureClassInfo(c).label, fellBackToDefault, numImages);
     }
 
     if (!ts->compressed)

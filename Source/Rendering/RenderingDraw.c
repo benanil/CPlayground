@@ -331,7 +331,7 @@ void RenderTerrain(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass, mat4x4 vi
     SDL_GPUTexture* albedo = NULL;
     SDL_GPUTexture* normal = NULL;
     SDL_GPUTexture* arm = NULL;
-    if (!tGetMaterialTextures(&albedo, &normal, &arm)) return;
+	if (!tGetMaterialTextures(&albedo, &normal, &arm)) return;
 
     SDL_BindGPUGraphicsPipeline(pass, g_TerrainTrianglePipeline);
     SDL_GPUTextureSamplerBinding samplers[8] = {
