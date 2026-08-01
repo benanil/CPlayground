@@ -231,7 +231,7 @@ static inline void CameraUpdate(Camera* camera, f32 dt, bool canCapture)
 
     camera->mouseOld = InfiniteMouse(mousePos);
     Camera_RecalculateView(camera);
-    // frustumPlanes = CreateFrustumPlanes(view * projection);
+    // frustumPlanes updated unconditionally in Rendering.c (Render()) using the RevZ variant
 }
 
 #if defined(__cplusplus)

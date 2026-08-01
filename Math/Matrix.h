@@ -682,7 +682,17 @@ purefn FrustumPlanes VCALL CreateFrustumPlanesRevZ(mat4x4 viewProjection)
     return result;
 }
 
-purefn v128f VCALL MaxPointAlongNormal(v128f min, v128f max, v128f n) 
+static inline void NormalizeFrustumPlanes(FrustumPlanes* fp)
+{
+    fp->planes[0] = VecNorm(fp->planes[0]);
+    fp->planes[1] = VecNorm(fp->planes[1]);
+    fp->planes[2] = VecNorm(fp->planes[2]);
+    fp->planes[3] = VecNorm(fp->planes[3]);
+    fp->planes[4] = VecNorm(fp->planes[4]);
+	fp->planes[5] = VecNorm(fp->planes[5]);
+}
+
+purefn v128f VCALL MaxPointAlongNormal(v128f min, v128f max, v128f n)
 {
     return VecSelect(min, max, VecCmpGe(n, VecZero()));
 }

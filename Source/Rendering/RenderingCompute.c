@@ -8,7 +8,6 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd, RenderSet* renderSet
                                  FrustumPlanes     frustumPlanes,
                                  mat4x4            viewProj,
                                  CullDrawFlags     flags,
-                                 u32               forcedLOD,
                                  u32               instanceMultiplier,
                                  const f32         cullSphere[4])
 {
@@ -16,21 +15,21 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd, RenderSet* renderSet
     CHECK_CREATE(g_CullDrawArgsComputePipeline, "Cull Draw Args Compute Pipeline");
     struct {
         FrustumPlanes planes;
+        FrustumPlanes cameraPlanes;
+        mat4x4 viewProjection;
+		f32 cullSphere[4];
         u32 numEntities;
         u32 numPrimitiveGroups;
-        u32 mode;
-        u32 flags;
-        mat4x4 viewProjection;
+        u32 modeAndFlags;
+        u32 _pad0;
         u32 hiZSize[2];
         u32 hiZMipCount;
         f32 hiZDepthBias;
-        u32 lodCount;
         u32 sparseIndexLODStride;
-        u32 forcedLOD;
         f32 lodDistanceModifier;
         u32 instanceMultiplier;
-        u32 padding[3];
-        f32 cullSphere[4];
+		u32 _pad1;
+		u32 padding[2];
     } params;
 
     WindowState* winstate = &g_WindowState;
@@ -38,24 +37,23 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd, RenderSet* renderSet
     u32 hiZWidth = winstate->hiz_width;
     u32 hiZHeight = winstate->hiz_height;
     u32 hiZMipCount = winstate->hiz_mip_count;
+	u8 isShadow = (flags & CullDrawFlag_Shadow) != 0;
     MemCopy(&params.planes, frustumPlanes.planes, sizeof(FrustumPlanes));
-    params.numEntities = renderSet->numEntities;
+	if (isShadow) MemCopy(&params.cameraPlanes, g_Camera.frustumPlanes.planes, sizeof(FrustumPlanes));
     params.numPrimitiveGroups = renderSet->numGroups;
-    params.mode = 0;
-    params.flags = flags;
+    params.numEntities    = renderSet->numEntities;
+    params.modeAndFlags   = 0 | (flags << 8);
     params.viewProjection = viewProj;
-    params.hiZSize[0] = hiZWidth;
-    params.hiZSize[1] = hiZHeight;
-    params.hiZMipCount = hiZMipCount;
-    params.hiZDepthBias = 0.02f;
-    params.lodCount = ((flags & CullDrawFlag_EnableLODSelection) != 0u || forcedLOD < MESH_LOD_COUNT) ? MESH_LOD_COUNT : 1u;
+    params.hiZSize[0]     = hiZWidth;
+    params.hiZSize[1]     = hiZHeight;
+    params.hiZMipCount    = hiZMipCount;
+    params.hiZDepthBias   = 0.02f;
     params.sparseIndexLODStride = renderSet->maxEntities;
-    params.forcedLOD = forcedLOD;
-    params.lodDistanceModifier = Maxf32(g_RenderSettings.lodDistanceModifier, 0.001f);
+    params.lodDistanceModifier = Maxf32(g_RenderSettings.lodDistanceModifier + isShadow, 0.001f);
     params.instanceMultiplier = Maxu32(instanceMultiplier, 1u);
-    params.padding[0] = params.padding[1] = params.padding[2] = 0u;
+    params.padding[0] = params.padding[1] = 0;
     if (cullSphere) MemCopy(params.cullSphere, cullSphere, sizeof(params.cullSphere));
-    else SDL_zero(params.cullSphere);
+    else MemCopy(params.cullSphere, &g_Camera.position.x, sizeof(float3));
 
     SDL_GPUBuffer* ro_buffers[3] = {
         buffers->entity,
@@ -73,15 +71,12 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd, RenderSet* renderSet
         { buffers->dispatchArgs }
     };
 
-    // The reset (mode 0) and cull (mode 1) dispatches share RW buffers: mode 0 plain-writes
-    // drawArgs[].numInstances/visibilityMask/visibleCount/dispatchArgs to zero, while mode 1
-    // atomically accumulates into the same locations. SDL_GPU does NOT synchronize dispatches
-    // within a single compute pass (see SDL_DispatchGPUCompute docs), so running them in one
-    // pass lets the reset's zeroing store land after mode 1's atomics, clobbering a group's
-    // instance count to 0 for the frame -> intermittent flicker (worst for high-LOD draw slots,
-    // i.e. small/thin/distant objects). End the reset pass before beginning the cull pass.
-    u32 resetCount = renderSet->numGroups * params.lodCount;
-    if ((flags & CullDrawFlag_VisibilityOutput) != 0u && renderSet->numEntities > resetCount) resetCount = renderSet->numEntities;
+	// End the reset pass before starting the cull pass. SDL_GPU does not 
+	// synchronize dispatches within a pass, so running reset (mode 0) and cull 
+	// (mode 1) together causes race conditions that zero out instance counts.
+    u32 resetCount = renderSet->numGroups * MESH_LOD_COUNT;
+    if ((flags & CullDrawFlag_VisibilityOutput) != 0u && renderSet->numEntities > resetCount) 
+		resetCount = renderSet->numEntities;
 
     SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, NULL, 0, rw_bindings, SDL_arraysize(rw_bindings));
     SDL_BindGPUComputePipeline(pass, g_CullDrawArgsComputePipeline);
@@ -94,7 +89,7 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd, RenderSet* renderSet
 
     if (renderSet->numEntities > 0)
     {
-        params.mode = 1;
+        params.modeAndFlags |= 1;
         pass = SDL_BeginGPUComputePass(cmd, NULL, 0, rw_bindings, SDL_arraysize(rw_bindings));
         SDL_BindGPUComputePipeline(pass, g_CullDrawArgsComputePipeline);
         SDL_BindGPUComputeStorageBuffers(pass, 0, ro_buffers, SDL_arraysize(ro_buffers));

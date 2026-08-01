@@ -18,15 +18,21 @@
 #define TD_CENTER_GAIN  0.75f
 
 static TerrainGenParams td_Params = {
-    .seed = 0,
-    .seaLevel = 0.0f,
-    .baseHeight = -8.0f,
-    .hillAmplitude  = 0.3f,  .hillFrequency  = 0.5f,
-    .ridgeAmplitude = 0.5f,  .ridgeFrequency = 0.45f,
-    .carveAmplitude = 1.0f,  .carveFrequency = 0.045f,
-    .island = false,
-    .islandRadius = 250.0f, .islandFalloff = 110.0f,
-    .fixedWorldSize = TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
+	.seed           = 1.0f,
+	.seaLevel       = -25.0f,
+	.baseHeight     = -30.0f,
+	.hillAmplitude  = 0.4f,
+	.hillFrequency  = 0.5f,
+	.ridgeAmplitude = 0.5f,
+	.ridgeFrequency = 0.2f,
+	.carveAmplitude = 0.3f,
+	.carveFrequency = 0.045f,
+	.fixedWorldSize = (f32)TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
+	.islandRadius   = 260.0f,
+	.islandFalloff  = 100.0f,
+	.island         = true,
+	.islandRadius   = 260.0f,
+	.islandFalloff  = 100.0f
 };
 // seed turns into a large noise domain offset, world coords stay near the origin
 // so the s8 quantization and chunk keys are unaffected
@@ -256,15 +262,21 @@ static v128f TerrainDensity_IslandFadeV(v128f x, v128f z)
 TerrainGenParams Terrain_DefaultGenParams(void)
 {
     TerrainGenParams defaults = {
-        .seed           = 0,
-        .seaLevel       = 0.0f,
-        .baseHeight     = -8.0f,
-        .hillAmplitude  = 1.0f,  .hillFrequency = 1.0f,
-        .ridgeAmplitude = 1.0f,  .ridgeFrequency = 0.45f,
-        .carveAmplitude = 1.0f,  .carveFrequency = 0.045f,
-        .island = false,
-        .islandRadius = 250.0f, .islandFalloff = 110.0f,
-        .fixedWorldSize = TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
+        .seed           = 1.0f,
+		.seaLevel       = -25.0f,
+		.baseHeight     = -30.0f,
+		.hillAmplitude  = 0.4f,
+		.hillFrequency  = 0.5f,
+		.ridgeAmplitude = 0.5f,
+		.ridgeFrequency = 0.2f,
+		.carveAmplitude = 0.3f,
+		.carveFrequency = 0.045f,
+		.fixedWorldSize = (f32)TERRAIN_FIXED_WORLD_DEFAULT_SIZE,
+		.islandRadius   = 260.0f,
+		.islandFalloff  = 100.0f,
+		.island         = true,
+		.islandRadius   = 260.0f,
+		.islandFalloff  = 100.0f
     };
     return defaults;
 }

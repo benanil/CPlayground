@@ -557,12 +557,12 @@ static void UploadRenderSetEntities(RenderSet* set, RenderSetBuffers* buffers) {
     UpdateGPUBufferCycle(buffers->entity, set->entities, set->numEntities * sizeof(Entity), 0ull, true);
 }
 
-void CullScene(SDL_GPUCommandBuffer* cmd, FrustumPlanes planes, mat4x4 viewProj, CullDrawFlags flags, u32 forcedLOD)
+void CullScene(SDL_GPUCommandBuffer* cmd, FrustumPlanes planes, mat4x4 viewProj, CullDrawFlags flags)
 {
     Scene* scene = g_ActiveScene;
-    DispatchCullDrawArgsCompute(cmd, &scene->skinnedSet, &scene->skinnedBuffers, planes, viewProj, flags, forcedLOD, 1u, NULL);
-    DispatchCullDrawArgsCompute(cmd, &scene->surfaceSet, &scene->surfaceBuffers, planes, viewProj, flags, forcedLOD, 1u, NULL);
-    DispatchCullDrawArgsCompute(cmd, &scene->transparentSet, &scene->transparentBuffers, planes, viewProj, flags, forcedLOD, 1u, NULL);
+    DispatchCullDrawArgsCompute(cmd, &scene->skinnedSet, &scene->skinnedBuffers, planes, viewProj, flags, 1u, NULL);
+    DispatchCullDrawArgsCompute(cmd, &scene->surfaceSet, &scene->surfaceBuffers, planes, viewProj, flags, 1u, NULL);
+    DispatchCullDrawArgsCompute(cmd, &scene->transparentSet, &scene->transparentBuffers, planes, viewProj, flags, 1u, NULL);
 }
 
 static void GatherSkinnedAnimationVisibility(SDL_GPUCommandBuffer* cmd, RenderSet* skinnedSet, RenderSetBuffers* skinnedBuffers,
@@ -570,9 +570,9 @@ static void GatherSkinnedAnimationVisibility(SDL_GPUCommandBuffer* cmd, RenderSe
                                              const ShadowData* pointShadows, const ShadowData* spotShadows)
 {
 
-    u32 flags = CullDrawFlag_VisibilityOutput | CullDrawFlag_ResetVisibility | CullDrawFlag_EnableLODSelection;
+    u32 flags = CullDrawFlag_VisibilityOutput | CullDrawFlag_ResetVisibility;
     if (enableHiZ) flags |= CullDrawFlag_EnableHiZ; // only test occlusion when the Hi-Z (matrix+depth) pair is valid
-    DispatchCullDrawArgsCompute(cmd, skinnedSet, skinnedBuffers, cameraFrustum, cameraViewProj, flags, ~0u, 1u, NULL);
+    DispatchCullDrawArgsCompute(cmd, skinnedSet, skinnedBuffers, cameraFrustum, cameraViewProj, flags, 1u, NULL);
 
     ShadowCascadeData cascades = GetShadowCascades();
     for (u32 cascade = 0; cascade < SHADOW_CASCADE_COUNT; cascade++)
@@ -580,7 +580,7 @@ static void GatherSkinnedAnimationVisibility(SDL_GPUCommandBuffer* cmd, RenderSe
         mat4x4 shadowViewProj = cascades.lightViewProj[cascade];
         FrustumPlanes shadowFrustum = CreateFrustumPlanes(shadowViewProj);
         DispatchCullDrawArgsCompute(cmd, skinnedSet, skinnedBuffers, shadowFrustum, shadowViewProj,
-                                      CullDrawFlag_VisibilityOutput, 1u, 1u, NULL);
+                                      CullDrawFlag_VisibilityOutput | CullDrawFlag_Shadow, 1u, NULL);
     }
 
     for (u32 shadow = 0; shadow < pointShadows->count; shadow++)
@@ -588,7 +588,7 @@ static void GatherSkinnedAnimationVisibility(SDL_GPUCommandBuffer* cmd, RenderSe
         LightGPU* light = &g_RenderLights[pointShadows->lightIndices[shadow]];
         u32 baseLayer = light->shadowIndex * POINT_SHADOW_FACE_COUNT;
         DispatchCullDrawArgsCompute(cmd, skinnedSet, skinnedBuffers, (FrustumPlanes){0}, pointShadows->lightViewProj[baseLayer],
-                                      CullDrawFlag_VisibilityOutput | CullDrawFlag_CullSphere, 1u, 1u, light->positionRadius);
+                                      CullDrawFlag_VisibilityOutput | CullDrawFlag_CullSphere,  1u, light->positionRadius);
     }
 
     for (u32 shadow = 0; shadow < spotShadows->count; shadow++)
@@ -596,7 +596,7 @@ static void GatherSkinnedAnimationVisibility(SDL_GPUCommandBuffer* cmd, RenderSe
         LightGPU* light = &g_RenderLights[spotShadows->lightIndices[shadow]];
         mat4x4 shadowViewProj = spotShadows->lightViewProj[light->shadowIndex];
         DispatchCullDrawArgsCompute(cmd, skinnedSet, skinnedBuffers, CreateFrustumPlanes(shadowViewProj), shadowViewProj,
-                                    CullDrawFlag_VisibilityOutput, 1u, 1u, NULL);
+                                    CullDrawFlag_VisibilityOutput, 1u, NULL);
     }
 }
 
@@ -663,6 +663,7 @@ void Render(void)
     bool enableHiZ  = g_RenderSettings.enableOcclusion && winstate->hiz_valid;
     mat4x4 hiZViewProj = enableHiZ ? winstate->hiz_view_proj : viewProj;
     FrustumPlanes cameraFrustum = CreateFrustumPlanesRevZ(viewProj);
+    g_Camera.frustumPlanes = cameraFrustum;
     SDL_GPUTexture* finalTexture = winstate->tex_post;
     SDL_GPUColorTargetInfo final_load_target = MakeLoadedTextureTarget(finalTexture);
     bool submitLightVisReadback = false;
@@ -719,9 +720,9 @@ void Render(void)
         // matrix the depth pyramid was rendered with (last frame). With occlusion off, hiZViewProj
         // falls back to the *current* viewProj, which would not match last frame's depth texture and
         // would produce flicker, so the flag must be gated on enableHiZ rather than hardcoded on.
-        CullDrawFlags cullFlags = CullDrawFlag_EnableLODSelection;
+        CullDrawFlags cullFlags = CullDrawFlag_None;
         if (enableHiZ) cullFlags |= CullDrawFlag_EnableHiZ;
-        CullScene(cmd, cameraFrustum, hiZViewProj, cullFlags, ~0u);
+        CullScene(cmd, cameraFrustum, hiZViewProj, cullFlags);
 
         // foliage lives in its own scene (separate render sets/textures), not merged into
         // g_ActiveScene, so it needs the same per-frame upload+cull step done by hand here.
@@ -732,7 +733,7 @@ void Render(void)
             UploadRenderSetStatics(&foliageScene->surfaceSet, &foliageScene->surfaceBuffers);
             UploadRenderSetEntities(&foliageScene->surfaceSet, &foliageScene->surfaceBuffers);
             DispatchCullDrawArgsCompute(cmd, &foliageScene->surfaceSet, &foliageScene->surfaceBuffers,
-                                        cameraFrustum, hiZViewProj, cullFlags, ~0u, 1u, NULL);
+                                        cameraFrustum, hiZViewProj, cullFlags, 1u, NULL);
         }
 
         RenderDepth(cmd, &(DepthPassContext){

@@ -52,9 +52,8 @@ typedef enum CullDrawFlags_
     CullDrawFlag_EnableHiZ           = 1u << 0,
     CullDrawFlag_VisibilityOutput    = 1u << 1,
     CullDrawFlag_ResetVisibility     = 1u << 2,
-    CullDrawFlag_EnableLODSelection  = 1u << 3,
-    CullDrawFlag_CullSphere          = 1u << 4,
-    CullDrawFlag_NoFrustum           = 1u << 5
+    CullDrawFlag_CullSphere          = 1u << 3,
+    CullDrawFlag_Shadow              = 1u << 4
 } CullDrawFlags;
 
 typedef struct ScenePassContext_
@@ -125,7 +124,6 @@ void DispatchCullDrawArgsCompute(SDL_GPUCommandBuffer* cmd,
                                  FrustumPlanes       frustumPlanes,
                                  mat4x4              viewProj,
                                  CullDrawFlags       flags,
-                                 u32                 forcedLOD,
                                  u32                 instanceMultiplier,
                                  const f32           cullSphere[4]);
 
@@ -154,6 +152,6 @@ void RenderTerrainTrianglesDepth(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* p
 SDL_GPUDepthStencilTargetInfo MakeDepthTarget(SDL_GPUTexture* texture, SDL_GPULoadOp loadOp, bool cycle);
 void UploadShadowCascadeBuffer(const ShadowCascadeData* cascades);
 void UpdateLightShadows(void);
-void CullScene(SDL_GPUCommandBuffer* cmd, FrustumPlanes planes, mat4x4 viewProj, CullDrawFlags flags, u32 forcedLOD);
+void CullScene(SDL_GPUCommandBuffer* cmd, FrustumPlanes planes, mat4x4 viewProj, CullDrawFlags flags);
 
 #endif
